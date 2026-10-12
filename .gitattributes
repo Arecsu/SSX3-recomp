@@ -1,0 +1,15 @@
+# Binary assets go through Git LFS
+*.png  filter=lfs diff=lfs merge=lfs -text
+*.jpg  filter=lfs diff=lfs merge=lfs -text
+*.bmp  filter=lfs diff=lfs merge=lfs -text
+*.zip  filter=lfs diff=lfs merge=lfs -text
+*.whl  filter=lfs diff=lfs merge=lfs -text
+*.bin  filter=lfs diff=lfs merge=lfs -text
+*.dmp  filter=lfs diff=lfs merge=lfs -text
+*.xmv  filter=lfs diff=lfs merge=lfs -text
+
+# Windows-side scripts keep CRLF; shell scripts and patches stay LF
+*.bat  text eol=crlf
+*.ps1  text eol=crlf
+*.sh   text eol=lf
+*.patch text eol=lf

@@ -1,0 +1,97 @@
+diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
+index c65ba43..9067e2f 100644
+--- a/src/kernel/kernel_bridge.c
++++ b/src/kernel/kernel_bridge.c
+@@ -4472,15 +4472,49 @@ static void bridge_KeWaitForMultipleObjects(void)
+     }
+     if (count > BRIDGE_MAXIMUM_WAIT_OBJECTS)
+         count = BRIDGE_MAXIMUM_WAIT_OBJECTS;
+-    for (i = 0; i < count; i++)
+-        handles[i] = bridge_resolve_handle(
+-            objects_va ? BRIDGE_MEM32(objects_va + i * 4) : 0);
++    /* Objects[] holds dispatcher object pointers (KEVENT, KTIMER, ...), not
++     * handles -- this is the Ke wait, not the Nt one. Resolve each the way
++     * KeWaitForSingleObject does: a title-built event, then the shadow event
++     * KeInitializeEvent/KeInitializeTimerEx made, then a handle token. Handle
++     * resolution alone gave every KTIMER an invalid handle, so the wait failed
++     * at once; SSX 3's timer thread (guest 0x0021C1B5) waits WaitAny on up to
++     * 63 KTIMERs plus a KEVENT and retried that failure millions of times a
++     * second. */
++    for (i = 0; i < count; i++) {
++        uint32_t object = objects_va ? BRIDGE_MEM32(objects_va + i * 4) : 0;
++        int type;
++        HANDLE ge = ke_guest_event(object, &type);
++
++        if (ge) {   /* guest SignalState is the truth; see the single wait */
++            if (BRIDGE_MEM32(object + 4) == 0) {
++                ResetEvent(ge);
++                if (BRIDGE_MEM32(object + 4) != 0)
++                    SetEvent(ge);
++            } else {
++                SetEvent(ge);
++            }
++            handles[i] = ge;
++            continue;
++        }
++        handles[i] = ke_shadow_lookup(object);
++        if (!handles[i])
++            handles[i] = bridge_resolve_handle(object);
++    }
+ 
+     g_eax = (uint32_t)xbox_KeWaitForMultipleObjects(
+         count, (PVOID *)handles, wait_type,
+         STACK_ARG(3), (KPROCESSOR_MODE)STACK_ARG(4),
+         (BOOLEAN)alertable, XBOX_TO_NATIVE(timeout_va),
+         XBOX_TO_NATIVE(STACK_ARG(7)));
++
++    /* WaitAny satisfied by object i: a synchronization event is consumed,
++     * as KeWaitForSingleObject does for the same case. */
++    if (wait_type == 1 && g_eax < count) {
++        uint32_t object = BRIDGE_MEM32(objects_va + g_eax * 4);
++        int type;
++        if (ke_guest_event(object, &type) && type == 1)
++            BRIDGE_MEM32(object + 4) = 0;
++    }
+ }
+ 
+ #undef BRIDGE_MAXIMUM_WAIT_OBJECTS
+diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
+index c65632c..7ac952a 100644
+--- a/src/kernel/nv2a_pb_exec.c
++++ b/src/kernel/nv2a_pb_exec.c
+@@ -2171,8 +2171,19 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
+     float in[NV2A_VSH_INPUTS][4];
+     uint32_t a;
+ 
+-    for (a = 0; a < NV2A_VSH_INPUTS; a++)
+-        fetch_attr(&s_gpu.attr[a], index, in[a]);   /* absent: 0,0,0,1 */
++    for (a = 0; a < NV2A_VSH_INPUTS; a++) {
++        /* An attribute with no array (size 0) reads its current value, the
++         * one the SET_VERTEX_DATA* methods left -- as the hardware and xemu
++         * do -- not a fixed 0,0,0,1. SSX 3's sprite program passes its 4x4
++         * transforms in v8..v15 this way, set per batch with
++         * SET_VERTEX_DATA4F; reading zeros there sent every vertex of the
++         * front end to the viewport offset. imm_attr starts at 0,0,0,1, so
++         * an attribute nobody set still reads the old default. */
++        if (!s_gpu.attr[a].size && a < NV_VERTEX_ATTRS)
++            memcpy(in[a], s_gpu.imm_attr[a], sizeof in[a]);
++        else
++            fetch_attr(&s_gpu.attr[a], index, in[a]);   /* absent: 0,0,0,1 */
++    }
+     return nv2a_vsh_run((const float (*)[4])in, out);
+ }
+ 
+@@ -2202,8 +2213,11 @@ static void raster_batch_program(void)
+             left = t ? atoi(t) : 0;
+         }
+         /* Spread out: one every 20000 program batches, so a run that spends
+-         * its first half in menus still traces the 3D scene. */
+-        if (left > 0 && n >= 3 && s_gpu.batches_program % 20000 == 0) {
++         * its first half in menus still traces the 3D scene -- plus the first
++         * few, or a title that has drawn only a few hundred (a front end)
++         * never reaches a multiple and traces nothing. */
++        if (left > 0 && n >= 3 && (s_gpu.batches_program <= 4
++                                   || s_gpu.batches_program % 20000 == 0)) {
+             float in[4];
+             left--;
+             fprintf(stderr, "[VTRACE] prim %u n %u idx %u %u %u\n", s_gpu.prim,
