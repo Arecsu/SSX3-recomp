@@ -13,6 +13,7 @@
 #include "recomp/gen/recomp_types.h"
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 /*
  * sub_00183EBB - XAPI startup media check (XDK 5558 library code).
@@ -102,6 +103,72 @@ void sub_0025BD81(void)
     if (p)
         xbox_DspAckAdd(p + 0x810);
     sub_0025BD81_gen();
+}
+
+/*
+ * EA job queues (RECOMP_JOB_TRACE=1): the 43% race-load stall leaves a
+ * world-stream job unrun with every worker asleep. The queue is
+ * {count +0, flags +4, head +8, tail +0xC, compare fn +0x10, ctx +0x14,
+ * RTL_CRITICAL_SECTION +0x18}; sub_0017BE60(queue, job) inserts in priority
+ * order, sub_0017BDA0(queue) pops the head. Each call goes into a ring that
+ * every thread dump prints (ssx3_JobTraceDump), so a stall shows its last
+ * few thousand queue operations.
+ */
+typedef struct { DWORD ms, tid; uint32_t op, queue, job, prio, count; } JobEv;
+#define JOB_RING 4096
+static JobEv s_jobs[JOB_RING];
+static volatile LONG s_job_n;
+static int s_job_on = -1;
+
+static void job_note(uint32_t op, uint32_t queue, uint32_t job)
+{
+    LONG i;
+    if (s_job_on < 0)
+        s_job_on = getenv("RECOMP_JOB_TRACE") != NULL;
+    if (!s_job_on)
+        return;
+    i = InterlockedIncrement(&s_job_n) - 1;
+    s_jobs[i % JOB_RING].ms    = GetTickCount();
+    s_jobs[i % JOB_RING].tid   = GetCurrentThreadId();
+    s_jobs[i % JOB_RING].op    = op;
+    s_jobs[i % JOB_RING].queue = queue;
+    s_jobs[i % JOB_RING].job   = job;
+    s_jobs[i % JOB_RING].prio  = job ? MEM8(job + 0x11) : 0xFFFFFFFFu;
+    s_jobs[i % JOB_RING].count = queue ? MEM32(queue) : 0;
+}
+
+void ssx3_JobTraceDump(void)
+{
+    LONG n = s_job_n, i, first;
+    if (s_job_on <= 0 || n == 0)
+        return;
+    first = n > JOB_RING ? n - JOB_RING : 0;
+    fprintf(stderr, "[JOBS] last %ld of %ld queue operations (ms tid op queue job prio count):\n",
+            n - first, n);
+    for (i = first; i < n; i++) {
+        const JobEv *e = &s_jobs[i % JOB_RING];
+        fprintf(stderr, "[JOB] %lu %lu %s %08X %08X %u %u\n", e->ms, e->tid,
+                e->op == 1 ? "ins" : e->op == 2 ? "pop" : "pop0",
+                e->queue, e->job, e->prio, e->count);
+    }
+    fflush(stderr);
+}
+
+extern void sub_0017BE60_gen(void);
+extern void sub_0017BDA0_gen(void);
+
+void sub_0017BE60(void)
+{
+    uint32_t queue = MEM32(g_esp + 4), job = MEM32(g_esp + 8);
+    sub_0017BE60_gen();
+    job_note(1, queue, job);
+}
+
+void sub_0017BDA0(void)
+{
+    uint32_t queue = MEM32(g_esp + 4);
+    sub_0017BDA0_gen();
+    job_note(g_eax ? 2 : 3, queue, g_eax);
 }
 
 /*

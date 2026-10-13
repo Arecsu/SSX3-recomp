@@ -18,6 +18,7 @@ public static class Win {
 foreach ($k in $Env.Keys) { Set-Item -Path "env:$k" -Value $Env[$k] }
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+. "$PSScriptRoot\archive_logs.ps1"; Save-PreviousLogs $root
 $p = Start-Process -FilePath "$root\build\ssx3_recomp.exe" -WorkingDirectory $root `
         -RedirectStandardOutput "$root\stdout.txt" -RedirectStandardError "$root\stderr.txt" -PassThru
 $null = $p.Handle

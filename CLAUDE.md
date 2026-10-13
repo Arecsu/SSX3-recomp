@@ -7,8 +7,10 @@ owner's own disc rip. Target: the toolkit's Windows/MSVC/D3D11 path, driven
 from WSL.
 
 **Status (2026-10-13):** playable. Boots, intro, menus, race load and live
-races on Snow Jam with HUD, rider shadows and (newly) audio; 4-9 FPS with
-the toolkit's software rasteriser. `tools\play.bat` starts it with the
+races on Snow Jam with HUD, rider shadows and audio; 9-12 FPS in a race
+with the toolkit's software rasteriser, now that the GPU executor runs
+asynchronously by default (RECOMP_NV2A_ACK_THREAD=1, main.c; =0 restores the
+old lock-step mode at 4-7 FPS). `tools\play.bat` starts it with the
 keyboard as player 1 (an XInput pad also works). Reliability boot -> race
 briefing ~8/9 runs (an intermittent race-load stall at 43% remains). Open:
 speed (no GPU path), an intermittent black shadow wedge in races, the
@@ -187,7 +189,56 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   * The visual glitches seen in async runs (whole font atlas drawn, stray
     polygons, flashing scores) were async-only: mis-executed commands and
     the repeated flips. Default mode does not show them.
-  Default (lock-step) mode is unchanged: 4-7 FPS in a race.
+  UPDATE 3: with the sub_0023BA20 wrapper built, async mode boots, runs
+  menus and reaches the race load (SWM ~85/s, param 5 = BlockOnTime, no
+  timeouts; fence advances steadily). It then hit the 43% race-load stall:
+  resource entries 0 and 40 (0x00312AC8, 0x00312D48) stuck in state 8,
+  streamer thread polling in sub_0020DB60 <- sub_0020DF80 <- sub_000CC0A0,
+  I/O worker idle in NtWaitForSingleObjectEx (sub_0017BB30 <- sub_00212030).
+  Ruled out: the 60 Hz service thread sub_00212030 (self-rearming XAPI timer
+  sub_002120B0 -> sub_0021C39D) is alive -- counters 0x39E9D0/D4 advance
+  ~60/s -- and its callback table 0x39E9AC is empty.
+  More on the 43% stall (logs/20261013-162519_stderr.txt is one):
+  * Resource state machine: sub_000E0060 moves a resource to 8 and starts
+    streaming (sub_000DFF70); the loader loop sub_000CC0A0 polls each
+    pending one in sub_000E0490, asking the world streamer (sub_0020B6A0 /
+    sub_0020B750 / sub_0020B6D0) whether it is done. The streamer thread
+    runs sub_0020D370 / sub_0020C290 / sub_0020CAB0 and sleeps
+    (KeDelayExecutionThread) between passes -- it is polling, not stuck.
+  * File reads continue during the stall, but they are audio: the repeated
+    chunk starts "SCHl" (EA streamed-audio block). No world-data read is
+    issued for the two stuck resources; the request is lost before I/O.
+  * EA job workers (sub_00178CD0, request object e.g. 0x8062D440, wait
+    handle at obj+0x88) dequeue the highest-priority job (sub_0017BDA0) and
+    hand back any job whose priority (job+0x11) exceeds the worker's
+    threshold (obj+0xB4) via sub_0017BE60, then sleep. Hypothesis: on the
+    Xbox's single, strictly priority-scheduled CPU a higher-priority thread
+    always picks such a job up at once; our guest lock hands the CPU over
+    in arrival order and ignores thread priorities, so an interleaving the
+    console never produces can leave a job queued with every worker asleep.
+    RULED OUT (RECOMP_JOB_TRACE=1 ring, printed with every thread dump;
+    wrappers on sub_0017BE60 insert / sub_0017BDA0 pop in ssx3_overrides.c):
+    at a stall the queues are healthy -- pool 0x0039E6C4 -> worker queue
+    0x8062D454 -> popped within the same ms by the file worker; users are the
+    main thread (one job / ~2 s), the file worker and the audio thread. The
+    world streamer does not go through these queues; the lost request is
+    inside the streamer itself (sub_0020D370 / sub_0020C290 / sub_0020CAB0 on
+    the loader thread). Next: trace the streamer's own request state
+    (object +0xAC / +0xC0 / +0xC8 in sub_0020DB60) across a stall.
+  UPDATE 4 -- ASYNC IS NOW THE DEFAULT (main.c). Last fixes:
+  * Progressive GET: nv2a_pb_run writes DMA_GET at every command boundary
+    (D3D decides from GET whether it may patch a wake-up NOP in ahead of the
+    GPU).
+  * Idle wake (xbox_Nv2aIdleWake): when the executor sits at PUT for 30 ms,
+    deliver NO_OPERATION(5) (D3D's handler 0x0023B933 = KeSetEvent on
+    dev+0x1DBC) -- the executor can still overtake the patch position in the
+    check->patch window; idle at PUT means every kicked fence is reached.
+    Gated on the GPU ISR being connected and non-blocking (posting it during
+    boot hung the boot).
+  * Reliability: async race_test 5/6 (the only failure the 43% loader
+    stall, which default mode also has); visuals clean in menus, briefing
+    and race. tools\race_test.ps1 now dumps threads on a FAIL before it
+    kills the run; logs are kept in logs\ (tools\archive_logs.ps1).
   Real speed needs hardware rendering
   (vertex-program titles into the D3D11 pgraph translator) or batch-parallel
   rasterising.

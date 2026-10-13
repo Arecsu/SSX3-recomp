@@ -373,6 +373,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
      *     8, waiting on the streamer, sub_0020Bxxx) or crashed on a garbage
      *     pointer in the world streamer (0x0020D26A). */
     if (!getenv("RECOMP_GUEST_LOCK"))    _putenv_s("RECOMP_GUEST_LOCK", "1");
+    /*   RECOMP_NV2A_ACK_THREAD: the GPU executor runs asynchronously, as the
+     *   NV2A does, instead of the title waiting for every batch to be drawn
+     *   -- ~2x the frame rate in a race (9-12 vs 4-7 FPS). =0 for the old
+     *   lock-step mode. */
+    if (!getenv("RECOMP_NV2A_ACK_THREAD")) _putenv_s("RECOMP_NV2A_ACK_THREAD", "1");
 
     printf("=== SSX 3 - Static Recompilation ===\n");
     printf("Loading XBE...\n");

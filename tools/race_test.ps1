@@ -17,6 +17,12 @@ for ($i = 1; $i -le $Runs; $i++) {
               elseif ($crash) { "CRASH $crash" }
               else { "FAIL $out" }
     "run ${i}: $result"
+    if ($result -like "FAIL*") {
+        # A stall: dump every thread (and the RECOMP_JOB_TRACE ring) before
+        # the run is killed; the log is kept in logs\ by the next start.
+        & $live dump | Out-Null
+        Start-Sleep -Seconds 4
+    }
     & $live stop | Out-Null
     Start-Sleep -Seconds 3
 }

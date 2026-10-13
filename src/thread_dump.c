@@ -134,6 +134,12 @@ static void td_dump(const char *why)
     int count = 0, i, j;
 
     td_reg_offsets();
+    {
+        /* EA job-queue ring (RECOMP_JOB_TRACE, ssx3_overrides.c). Printed
+         * before any thread is suspended: it takes the CRT's stderr lock. */
+        extern void ssx3_JobTraceDump(void);
+        ssx3_JobTraceDump();
+    }
 
     snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
     if (snap == INVALID_HANDLE_VALUE)

@@ -23,7 +23,8 @@ function Get-Game {
 
 switch ($Cmd) {
     "start" {
-        $g = Get-Game; if ($g) { Stop-Process -Id $g.Id -Force }
+        $g = Get-Game; if ($g) { Stop-Process -Id $g.Id -Force; Start-Sleep -Milliseconds 500 }
+        . "$PSScriptRoot\archive_logs.ps1"; Save-PreviousLogs $root
         Set-Content -Path $pad -Value $null
         $env:RECOMP_PAD_LIVE = $pad
         $env:RECOMP_THREAD_DUMP_TRIGGER = (Join-Path $root "dump.trigger")
