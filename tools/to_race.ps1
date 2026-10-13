@@ -34,5 +34,5 @@ while ((Get-Date) -lt $deadline) {
     }
     Start-Sleep -Seconds 2
 }
-"timed out"
+"timed out (last screen: $draws draws)"
 exit 1

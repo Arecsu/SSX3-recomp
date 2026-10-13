@@ -21,7 +21,8 @@ for ($i = 1; $i -le $Runs; $i++) {
         # A stall: dump every thread (and the RECOMP_JOB_TRACE ring) before
         # the run is killed; the log is kept in logs\ by the next start.
         & $live dump | Out-Null
-        Start-Sleep -Seconds 4
+        # The dump (threads + the 4096-entry job ring) takes a while to write.
+        Start-Sleep -Seconds 20
     }
     & $live stop | Out-Null
     Start-Sleep -Seconds 3

@@ -149,7 +149,7 @@ index cd69e57..86d2428 100644
      idx = g_xa2_next_buf;
      copy_samples = (num_samples > XA2_BUF_SAMPLES) ? XA2_BUF_SAMPLES : num_samples;
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
-index c65ba43..69d4e36 100644
+index c65ba43..6521b95 100644
 --- a/src/kernel/kernel_bridge.c
 +++ b/src/kernel/kernel_bridge.c
 @@ -2028,6 +2028,21 @@ static int kernel_run_dpc(uint32_t dpc_va, uint32_t arg1, uint32_t arg2)
@@ -452,7 +452,7 @@ index c65ba43..69d4e36 100644
  }
  
  #undef BRIDGE_MAXIMUM_WAIT_OBJECTS
-@@ -9382,6 +9618,26 @@ void guest_cpu_join(void)
+@@ -9382,6 +9618,61 @@ void guest_cpu_join(void)
      }
  }
  
@@ -476,9 +476,70 @@ index c65ba43..69d4e36 100644
 +    }
 +}
 +
++/* Interrupt and DPC context takes the guest CPU too.
++ *
++ * The Xbox has one CPU: an ISR or DPC preempts whatever thread was running
++ * and nothing else runs until it returns, and the kernel and XDK lean on that
++ * -- a uniprocessor spinlock only raises IRQL. Here ISRs (vblank, USB, APU,
++ * GPU software methods) and DPCs run on host threads of their own, and they
++ * ran with no lock at all: truly in parallel with the guest thread they were
++ * supposed to have interrupted. The USB driver's enumeration then stalled in
++ * one boot in a few (11 interrupts instead of 20, no pad on the title
++ * screen). Called from xbox_IrqlEnterInterrupt / xbox_IrqlLeaveInterrupt, so
++ * every delivered ISR and DPC is bracketed; the critical section is
++ * recursive, so a routine delivered on a thread that already holds it nests.
++ * RECOMP_IRQ_LOCK=0 turns it off. */
++void guest_cpu_irq_enter(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char *e = getenv("RECOMP_IRQ_LOCK");
++        on = !(e && e[0] == '0');
++    }
++    if (on && guest_cpu_enabled())
++        EnterCriticalSection(&g_guest_cpu);
++}
++
++void guest_cpu_irq_leave(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char *e = getenv("RECOMP_IRQ_LOCK");
++        on = !(e && e[0] == '0');
++    }
++    if (on && guest_cpu_enabled())
++        LeaveCriticalSection(&g_guest_cpu);
++}
++
  void guest_cpu_part(void)
  {
      if (t_guest_held) {
+diff --git a/src/kernel/kernel_hal.c b/src/kernel/kernel_hal.c
+index 1ad4fff..7deb391 100644
+--- a/src/kernel/kernel_hal.c
++++ b/src/kernel/kernel_hal.c
+@@ -209,9 +209,13 @@ static void irql_track(KIRQL old_level, KIRQL new_level, void *ra)
+  *
+  * They also run the routine at the level it expects -- DISPATCH_LEVEL for a
+  * DPC, the device level for an ISR -- and code checks: see irql_publish. */
++extern void guest_cpu_irq_enter(void);
++extern void guest_cpu_irq_leave(void);
++
+ int xbox_IrqlEnterInterrupt(int level)
+ {
+     int saved = (int)g_current_irql;
++    guest_cpu_irq_enter();             /* one CPU: the routine runs alone */
+     if (g_current_irql != (KIRQL)level) {
+         irql_track(g_current_irql, (KIRQL)level, IRQL_CALLER());
+         g_current_irql = (KIRQL)level;
+@@ -227,6 +231,7 @@ void xbox_IrqlLeaveInterrupt(int saved)
+         g_current_irql = (KIRQL)saved;
+         irql_publish();
+     }
++    guest_cpu_irq_leave();
+ }
+ 
+ /*
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 index c65632c..ae881d4 100644
 --- a/src/kernel/nv2a_pb_exec.c

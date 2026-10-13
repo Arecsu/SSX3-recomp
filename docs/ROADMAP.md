@@ -43,6 +43,7 @@ Fix the known failures before the renderer changes so regressions stay visible.
 - [ ] **43% race-load stall** (~1 in 6): world streamer loses a request (resource 0/40 stuck in state 8). Job queues ruled out (CLAUDE.md). Next: trace the streamer's own request state (`sub_0020DB60` object +0xAC/+0xC0/+0xC8), compare a good and a stalled run.
 - [ ] Loader-worker crash in world streaming (`0x0020D26A`, garbage pointer, intermittent).
 - [ ] Any remaining async-GPU hang (map-select/rules class): soak-test the idle wake; replace it with exact behaviour if a better model of D3D's NOP patching emerges.
+- [x] ISRs and DPCs run under the guest-CPU lock (single-CPU semantics; `RECOMP_IRQ_LOCK=0` to disable). They used to run on host threads in parallel with guest threads; the USB driver's enumeration then stalled in about 1 boot in 6 (no pad on the title screen). After: 6/6 runs enumerated fully.
 - [ ] Guest-thread priority scheduling in the guest lock (Xbox is single-CPU, strict priority) — only if Phase 1 bugs point at ordering.
 - [ ] Gate: 20/20 boot→race on both GPU modes.
 
@@ -126,4 +127,5 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-13 — Interrupt/DPC lock landed; race_test 4/6 (both failures being classified; the dump wait was too short to capture them).
 - 2026-10-13 — Plan created. Baseline: races 9–12 FPS (async executor, software rasteriser), audio working (XAudio2 VP path), boot→race 5/6.
