@@ -226,8 +226,12 @@ extern bool apu_hook_handle_mmio(PCONTEXT ctx, uintptr_t fault_addr,
 #define APU_TRAP_BASE 0xFE800000u
 #define APU_TRAP_END  0xFE880000u
 
+extern int ssx3_WatchHit(PEXCEPTION_POINTERS ep);
+
 static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
 {
+    if (ssx3_WatchHit(ep))
+        return EXCEPTION_CONTINUE_EXECUTION;
     if (ep->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
         uintptr_t fault_addr = ep->ExceptionRecord->ExceptionInformation[1];
 
@@ -240,6 +244,25 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
          */
         if (fault_addr >= 0xFD000000 && fault_addr < 0xFE000000) {
             return EXCEPTION_CONTINUE_SEARCH;
+        }
+
+        /* USB host controllers -> the emulated OHCI (RECOMP_USB).
+         *
+         * xbox_OhciInit makes the two 4 KB register blocks at 0xFED00000 and
+         * 0xFED08000 inaccessible so every access faults here; the model
+         * decodes the instruction, answers it and steps over it. Without this
+         * the template never routes them, so XAPI reads HcRevision out of
+         * zeroed RAM and finds no controller -- no pad, no Start to skip the
+         * intro with. */
+        {
+            extern int xbox_OhciOwnsAddress(uint32_t xbox_va);
+            extern int xbox_OhciHandleMmio(void *ctx, uint32_t xbox_va);
+            uint32_t xbox_va =
+                (uint32_t)(fault_addr - (uintptr_t)g_xbox_mem_offset);
+
+            if (xbox_OhciOwnsAddress(xbox_va)
+                    && xbox_OhciHandleMmio(ep->ContextRecord, xbox_va))
+                return EXCEPTION_CONTINUE_EXECUTION;
         }
 
         /* APU registers -> the emulated APU.
@@ -333,17 +356,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     if (!getenv("RECOMP_TITLE_KEVENTS")) _putenv_s("RECOMP_TITLE_KEVENTS", "1");
     if (!getenv("RECOMP_VBLANK"))        _putenv_s("RECOMP_VBLANK", "1");
     if (!getenv("RECOMP_AC97_READY"))    _putenv_s("RECOMP_AC97_READY", "1");
-    /*   RECOMP_DSP_ACK: DirectSound posts command 3 to the GP DSP at scratch
-     *     +0x810 after downloading its effects image and spins until the DSP
-     *     clears it (guest 0x0025BEE6); the DSP is a stub. The address is
-     *     where the scratch block lands with the current allocation order --
-     *     read off thread #4's guest ebx -- so it moves if allocations change.
+    /*   (The DirectSound DSP command word is registered at run time by the
+     *     sub_0025BD81 wrapper in ssx3_overrides.c; no RECOMP_DSP_ACK.)
      *   RECOMP_FB_WINDOW / RECOMP_PB_EXEC: show the guest framebuffer in a
      *     window and execute the pushbuffer into it, which is the only path
      *     from SSX 3's own D3D to the screen. */
-    if (!getenv("RECOMP_DSP_ACK"))       _putenv_s("RECOMP_DSP_ACK", "0x83818810");
     if (!getenv("RECOMP_FB_WINDOW"))     _putenv_s("RECOMP_FB_WINDOW", "1");
     if (!getenv("RECOMP_PB_EXEC"))       _putenv_s("RECOMP_PB_EXEC", "1");
+    /*   RECOMP_USB: emulated OHCI host + gamepad (toolkit src/usb). XAPI
+     *     enumerates it, reads the XID descriptor and polls reports; input
+     *     comes from a host pad, RECOMP_KEYBOARD or the RECOMP_PAD_* probes. */
+    if (!getenv("RECOMP_USB"))           _putenv_s("RECOMP_USB", "1");
+    /*   RECOMP_GUEST_LOCK: one guest thread runs guest code at a time, as on
+     *     the Xbox's single CPU (threads switch at kernel calls). Without it
+     *     the race load intermittently hung at 43% (resources stuck in state
+     *     8, waiting on the streamer, sub_0020Bxxx) or crashed on a garbage
+     *     pointer in the world streamer (0x0020D26A). */
+    if (!getenv("RECOMP_GUEST_LOCK"))    _putenv_s("RECOMP_GUEST_LOCK", "1");
 
     printf("=== SSX 3 - Static Recompilation ===\n");
     printf("Loading XBE...\n");
@@ -405,6 +434,27 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     printf("Initializing kernel bridge...\n");
     xbox_kernel_bridge_init();
 
+    /* RECOMP_GUARD_NULL=1: make guest page zero inaccessible, so a guest NULL
+     * dereference faults at once (as on the console) instead of silently
+     * reading zeros from the mapped window. A diagnostic: it turned a race
+     * script "executing" a NULL bytecode pointer into a crash at the first
+     * use of the missing object. */
+    if (getenv("RECOMP_GUARD_NULL")) {
+        DWORD old_protect;
+        void *page0 = (void *)(uintptr_t)g_xbox_mem_offset;
+        if (VirtualProtect(page0, 0x1000, PAGE_NOACCESS, &old_protect))
+            fprintf(stderr, "  NULL guard: guest page 0 (native %p) inaccessible\n", page0);
+        else
+            fprintf(stderr, "  NULL guard: VirtualProtect failed (%lu)\n", GetLastError());
+    }
+
+    /* USB host controllers (src/usb/ohci.c): inert unless RECOMP_USB is set.
+     * Needs guest memory mapped, which xbox_MemoryLayoutInit has done. */
+    {
+        extern void xbox_OhciInit(void);
+        xbox_OhciInit();
+    }
+
     /* Step 6: Initialize stack */
     g_esp = XBOX_STACK_TOP;
 
@@ -461,7 +511,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     /* All-thread native stacks after RECOMP_THREAD_DUMP_SECS (src/thread_dump.c). */
     {
         extern void ssx3_ThreadDumpStart(void);
+        extern void ssx3_PeekEveryStart(void);
         ssx3_ThreadDumpStart();
+        ssx3_PeekEveryStart();      /* RECOMP_PEEK_EVERY_MS */
     }
 
     /* Step 7: Call the recompiled entry point */

@@ -1,0 +1,45 @@
+[
+  {
+    "start": "0x00279960",
+    "observed": true,
+    "note": "XPP: reached only by indirect call; runtime logged [ICALL] Failed to resolve. push ebp prologue, clears USB state at 0x39EAF0"
+  },
+  {
+    "start": "0x0027A16F",
+    "observed": true,
+    "note": "XPP: reached only by indirect call; runtime logged [ICALL] Failed to resolve. USB host setup (pool tag 'USBH')"
+  },
+  {
+    "start": "0x00281A82",
+    "note": "static method table in the XPP code section (not scanned for pointers by tools.disasm); XPP USB class-driver table 0x00279920/0x00279938 (XID gamepad / HID): AddDevice. Without it XAPI configures the pad and never asks for its XID descriptor."
+  },
+  {
+    "start": "0x00281463",
+    "note": "static method table in the XPP code section (not scanned for pointers by tools.disasm); XPP USB class-driver table (XID/HID): RemoveDevice"
+  },
+  {
+    "start": "0x0027A9FD",
+    "note": "static method table in the XPP code section (not scanned for pointers by tools.disasm); XPP USB class-driver table 0x002797C8 (memory unit): RemoveDevice"
+  },
+  {
+    "start": "0x0027ECEB",
+    "note": "static method table in the XPP code section (not scanned for pointers by tools.disasm); XPP USB class-driver table 0x0027985C (hub): AddDevice"
+  },
+  {
+    "start": "0x0028101D",
+    "note": "static method table in the XPP code section (not scanned for pointers by tools.disasm); XPP method table at 0x002798D0"
+  },
+  {
+    "start": "0x0028106F",
+    "note": "static method table in the XPP code section (not scanned for pointers by tools.disasm); XPP method table at 0x00279918"
+  },
+  {
+    "start": "0x00159930",
+    "observed": true,
+    "note": "script native function 0x69 (table 0x003319F0 in .data); runtime logged [ICALL] Failed to resolve. Missing, it returned NULL to the race-start script: NULL+8 fault with RECOMP_GUARD_NULL, otherwise the VM ran off into zeroed memory and the race never loaded."
+  },
+  {
+    "start": "0x000267B0",
+    "note": "referenced 3x from .rdata (0x00281F2C, 0x0028246C, 0x002824FC), likely vtable slots; found by scanning .data/.rdata for pointers to undetected code after a ret/padding"
+  }
+]

@@ -18,11 +18,14 @@ XBE="$(realpath "${XBE:-$(dirname "$HERE")/SSX3/default.xbe}")"
 ANALYSIS="$(dirname "$XBE")/default_analysis.json"
 # DOLBY is DSP56300 microcode for the audio chip, not x86: never disassemble it.
 SECTIONS=(--text-only --extra-sections D3D,D3DX,XGRPH,DSOUND,XPP)
+# Entry points only reached through function pointers, measured at runtime
+# ([ICALL] Failed to resolve VA ...). Both disasm and the split need them.
+SEEDS=(--seed-functions "$HERE/analysis/icall_seeds.json")
 
 cd "$TK"
 if [ "${1:-all}" = all ]; then
     "$PY" -m tools.xbe_parser "$XBE" --json "$ANALYSIS" > /dev/null
-    "$PY" -m tools.disasm "$XBE" "${SECTIONS[@]}"
+    "$PY" -m tools.disasm "$XBE" "${SECTIONS[@]}" "${SEEDS[@]}"
     "$PY" -m tools.func_id "$XBE"
     "$PY" -m tools.abi_analysis "$XBE"
     # 143 FidDb names from Ghidra 12.1.4 (analysis/ghidra_names.json), applied
@@ -30,7 +33,7 @@ if [ "${1:-all}" = all ]; then
     # must follow it every time.
     "$PY" tools/ghidra_naming/merge_names.py --names-json "$HERE/analysis/ghidra_names.json" --apply
     # tools.split ignores names in functions.json; split_named.py does not.
-    "$PY" "$HERE/tools/split_named.py" --xboxrecomp "$TK" "$XBE" --out "$HERE/decomp" "${SECTIONS[@]}"
+    "$PY" "$HERE/tools/split_named.py" --xboxrecomp "$TK" "$XBE" --out "$HERE/decomp" "${SECTIONS[@]}" "${SEEDS[@]}"
 fi
 "$PY" -m tools.recomp "$XBE" --all --split 250 --game-name "SSX 3" \
     --gen-dir "$HERE/src/recomp/gen" \

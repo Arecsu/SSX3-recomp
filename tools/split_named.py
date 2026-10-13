@@ -24,6 +24,9 @@ def main():
     p.add_argument("--out", required=True)
     p.add_argument("--text-only", action="store_true")
     p.add_argument("--extra-sections", default="")
+    p.add_argument("--seed-functions", action="append", default=[],
+                   help="seed JSON for tools.disasm (repeatable); must match "
+                        "what tools.disasm was run with")
     p.add_argument("--functions-json",
                    help="named functions.json (default: the toolkit's "
                         "tools/disasm/output/functions.json)")
@@ -32,6 +35,7 @@ def main():
     root = os.path.abspath(args.xboxrecomp)
     sys.path.insert(0, root)
     from tools.disasm.disasm import Disassembler
+    from tools.disasm.__main__ import _load_seed_functions
     from tools.split.splitter import load_abi, split
 
     funcs_json = args.functions_json or os.path.join(
@@ -41,8 +45,12 @@ def main():
                  if not e["name"].startswith("sub_")}
 
     extra = [s.strip() for s in args.extra_sections.split(",") if s.strip()]
+    seeds, observed = [], set()
+    for path in args.seed_functions:
+        seeds.extend(_load_seed_functions(path, observed))
     d = Disassembler(xbe_path=args.xbe_path, text_only=args.text_only,
-                     stats_only=True, force=True, extra_sections=extra)
+                     stats_only=True, force=True, extra_sections=extra,
+                     seed_functions=sorted(set(seeds)), observed_seeds=observed)
     if not d.run():
         return 1
 

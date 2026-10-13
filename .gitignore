@@ -1,5 +1,6 @@
 # Build artifacts
 build/
+build-abi/
 out/
 bin/
 *.obj
@@ -56,3 +57,12 @@ decomp/
 stdout.txt
 stderr.txt
 /shot*.png
+pad_live.txt
+live.pid
+snap*.png
+dump.trigger
+nav.png
+# stray copy of the tree with generated game code -- never commit
+tools/ssx3-recomp/
+play_stdout.txt
+play_stderr.txt
