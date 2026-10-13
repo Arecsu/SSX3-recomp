@@ -11,6 +11,9 @@
 param([int]$TimeoutSec = 600, [switch]$StopAtBriefing, [string]$ShotDir = "")
 
 $live = Join-Path $PSScriptRoot "live.ps1"
+. (Join-Path $PSScriptRoot "game_state.ps1")
+$root = Split-Path -Parent $PSScriptRoot
+$seen = @{}
 $menus = @(339, 984, 382, 275, 367, 413, 329)
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
 $lastPress = Get-Date "2000-01-01"
@@ -21,6 +24,13 @@ while ((Get-Date) -lt $deadline) {
     if ($title -notmatch "draws: (\d+)") { Start-Sleep -Seconds 2; continue }
     $draws = [int]$Matches[1]
     $since = ((Get-Date) - $lastPress).TotalSeconds
+    # Each new screen once, with the game's own state for it -- how the state
+    # names in src/game_state.c are learned (and checked).
+    $gs = Get-GameState $root
+    if ($gs -and -not $seen.ContainsKey("$draws")) {
+        $seen["$draws"] = 1
+        "screen $draws draws = state $($gs.Vt) $($gs.Name)"
+    }
     if ($ShotDir) {
         # Menus have fixed draw counts; the loading screens and the race do
         # not, so only named screens and the first frame of each count.

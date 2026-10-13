@@ -519,6 +519,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         extern void ssx3_PeekEveryStart(void);
         ssx3_ThreadDumpStart();
         ssx3_PeekEveryStart();      /* RECOMP_PEEK_EVERY_MS */
+        {
+            extern void ssx3_GameStateStart(void);
+            ssx3_GameStateStart();  /* [STATE] lines + game_state.txt */
+        }
     }
 
     /* Step 7: Call the recompiled entry point */

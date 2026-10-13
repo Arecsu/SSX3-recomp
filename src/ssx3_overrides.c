@@ -172,6 +172,40 @@ void sub_0017BDA0(void)
 }
 
 /*
+ * D3D BlockOnTime (sub_00234BE0(time, flags), stdcall-ish: args at esp+4/+8),
+ * wrapped for RECOMP_BLOCK_TRACE=1: logs the time waited for against the GPU
+ * fence, the device's current time, its write pointer and PUT/GET -- once
+ * per new time, then every 100th repeat of the same one, so a hang that
+ * waits for a time which never comes shows it. Device at [0x0024B0D8]:
+ * +0 write ptr, +0x2C current time, +0x30 -> fence; PUT/GET at 0xFD800040.
+ */
+extern void sub_00234BE0_gen(void);
+
+void sub_00234BE0(void)
+{
+    static int on = -1;
+    static uint32_t last_t;
+    static unsigned repeats;
+    uint32_t t = MEM32(g_esp + 4), flags = MEM32(g_esp + 8);
+    if (on < 0)
+        on = getenv("RECOMP_BLOCK_TRACE") != NULL;
+    if (on) {
+        uint32_t dev = MEM32(0x0024B0D8u);
+        if (t != last_t || (++repeats % 100) == 0) {
+            if (t != last_t)
+                repeats = 0;
+            fprintf(stderr, "[BLOCK] %lu t%lu time %08X flags %X | fence %08X cur %08X | wr %08X put %08X get %08X | rep %u\n",
+                    (unsigned long)GetTickCount(), (unsigned long)GetCurrentThreadId(), t, flags,
+                    dev ? MEM32(MEM32(dev + 0x30)) : 0, dev ? MEM32(dev + 0x2C) : 0,
+                    dev ? MEM32(dev) : 0, MEM32(0xFD800040u), MEM32(0xFD800044u), repeats);
+            fflush(stderr);
+            last_t = t;
+        }
+    }
+    sub_00234BE0_gen();
+}
+
+/*
  * D3D's PGRAPH interrupt handler (sub_0023BA20, called from its interrupt DPC
  * 0x0023BC60), wrapped so a software-method trap is seen exactly once. The
  * handler acknowledges by writing PGRAPH_INTR back with the value it read --

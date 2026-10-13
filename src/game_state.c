@@ -1,0 +1,110 @@
+/*
+ * Game state from the game itself, for the test scripts.
+ *
+ * SSX 3's app object ([0x003A930C] = 0x00369550) runs a state machine
+ * (sub_001AD880): +4 points at the current state object, +8 at a pending next
+ * state (0 when none), +0x5C is a phase. A state object's first dword is its
+ * vtable, which says what kind of screen it is -- so a screen is identified
+ * by that vtable, not by guessing from draw counts.
+ *
+ * A host thread samples the fields every 100 ms (reads only; a torn read is
+ * corrected on the next sample) and
+ *   - logs every change to stderr:  [STATE] t=12345 vt=002DE1A0 race next=0 phase=0
+ *   - keeps game_state.txt in the working directory current, one line:
+ *         <vtable hex> <name> <ms since process start> <seconds in this state>
+ *         <vtable hex> <name> <ms since start> <seconds in state> <sub>
+ *     which tools\*.ps1 read (tools\game_state.ps1). <sub> is the dword at
+ *     state+0xA8: inside "ingame" it changes with the phase (5 at the
+ *     briefing, then 8 / 0xC during the race; meaning still being mapped).
+ * Names come from the table below; an unknown vtable is reported as "?".
+ * RECOMP_GAME_STATE=0 disables it.
+ */
+#include <windows.h>
+#include "recomp/gen/recomp_types.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+#define APP_PTR_VA 0x003A930Cu
+
+static const struct { uint32_t vt; const char *name; } k_states[] = {
+    /* Learned by watching a run through every screen (tools\to_race.ps1
+     * prints the state for each new screen; CLAUDE.md has the table). */
+    { 0x0029AD1Cu, "boot" },
+    { 0x0029ACD8u, "intro" },        /* EA / intro movies */
+    { 0x00289618u, "frontend" },     /* every menu, title to rules */
+    { 0x0029AD48u, "event_enter" },  /* brief transition into an event */
+    { 0x0029B0DCu, "loading" },      /* race loading screens */
+    { 0x00299D7Cu, "ingame" },       /* briefing, race, results, replay */
+    { 0, NULL }
+};
+
+static const char *state_name(uint32_t vt)
+{
+    int i;
+    for (i = 0; k_states[i].name; i++)
+        if (k_states[i].vt == vt)
+            return k_states[i].name;
+    return "?";
+}
+
+static int guest_ok(uint32_t va)
+{
+    /* Guest heap and image: anything below 64 MB, or the contiguous window. */
+    return va >= 0x10000u && (va < 0x04000000u || (va >= 0x80000000u && va < 0x84000000u));
+}
+
+static DWORD WINAPI game_state_thread(LPVOID unused)
+{
+    uint32_t last_vt = 0xFFFFFFFFu, last_next = 0xFFFFFFFFu, last_sub = 0xFFFFFFFFu;
+    DWORD t0 = GetTickCount(), since = t0;
+    char line[160];
+    (void)unused;
+
+    for (;;) {
+        uint32_t app, cur = 0, next = 0, phase = 0, vt = 0, sub = 0;
+        DWORD now;
+
+        Sleep(100);
+        now = GetTickCount();
+        app = MEM32(APP_PTR_VA);
+        if (guest_ok(app)) {
+            cur   = MEM32(app + 4);
+            next  = MEM32(app + 8);
+            phase = MEM32(app + 0x5C);
+            if (guest_ok(cur)) {
+                vt = MEM32(cur);
+                sub = MEM32(cur + 0xA8);   /* in-game sub-state, see below */
+            }
+        }
+        if (vt != last_vt || next != last_next || sub != last_sub) {
+            if (vt != last_vt || sub != last_sub)
+                since = now;
+            fprintf(stderr, "[STATE] t=%lu vt=%08X %s sub=%u next=%08X phase=%u\n",
+                    (unsigned long)(now - t0), vt, state_name(vt), sub, next, phase);
+            fflush(stderr);
+            last_vt = vt;
+            last_next = next;
+            last_sub = sub;
+        }
+        /* Rewritten every sample so a reader sees a fresh "seconds in state". */
+        {
+            FILE *f;
+            snprintf(line, sizeof line, "%08X %s %lu %lu %u\n", vt, state_name(vt),
+                     (unsigned long)(now - t0), (unsigned long)((now - since) / 1000), sub);
+            f = fopen("game_state.tmp", "w");
+            if (f) {
+                fputs(line, f);
+                fclose(f);
+                MoveFileExA("game_state.tmp", "game_state.txt", MOVEFILE_REPLACE_EXISTING);
+            }
+        }
+    }
+}
+
+void ssx3_GameStateStart(void)
+{
+    const char *e = getenv("RECOMP_GAME_STATE");
+    if (e && e[0] == '0')
+        return;
+    CloseHandle(CreateThread(NULL, 0, game_state_thread, NULL, 0, NULL));
+}

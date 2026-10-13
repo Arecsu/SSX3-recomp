@@ -31,7 +31,8 @@ keyboard/XInput input, boot→race reliability ~5/6. See README and CLAUDE.md.
 
 - [x] `tools/bench.ps1`: boot → race → `-Seconds` of riding (periodic A taps); parses `[FRAMES]`, writes `logs/bench_<ts>.json` with fps avg, median p50, worst p99/max, crashes and the 60 FPS gate. (Executor/guest split: add `-Env @{RECOMP_EXEC_STATS='1'}`.)
 - [x] Frame-time counter in the host: `RECOMP_FRAME_STATS=1` prints `[FRAMES] n fps p50 p99 max` once a second from per-flip QPC timestamps (toolkit `fb_present.c`).
-- [ ] Scripted play: a pad script that rides a whole race (hold accelerate, periodic tricks), reusable for soak tests.
+- [x] Scripted play: periodic A taps ride a whole race (it finishes by itself); `tools/soak.ps1` races back to back via the restart dialog.
+- [x] Game state hook (`src/game_state.c`): the game's own state machine published as `[STATE]` lines and `game_state.txt` (`tools/game_state.ps1`); top-level states named. Next: map the in-race sub-states and switch the scripts from draw counts to it.
 - [ ] `tools/race_test.ps1` extended: all peaks/events (open), configurable run count (done), summary table; failures auto-dump with a 20 s write window (done) and are classified from the last screen -- `[title: no input]`, `[menu hang]`, `[load stall]`, `[other]`, `CRASH` (done).
 - [x] Screenshot suite: `tools/shots.ps1` saves every distinct menu screen (by draw count), the briefing and 4 race shots into `logs/shots_<ts>[_label]/`; first software-path reference set: `logs/shots_20261013-235549_software` (16 shots). Per-peak race spots come with the all-peaks navigator.
 - [x] Baseline numbers recorded here (2026-10-13, default build, Snow Jam race, `tools/bench.ps1 -Seconds 90`):
@@ -44,7 +45,7 @@ keyboard/XInput input, boot→race reliability ~5/6. See README and CLAUDE.md.
 Fix the known failures before the renderer changes so regressions stay visible.
 
 - [ ] **43% race-load stall** (~1 in 6): world streamer loses a request (resource 0/40 stuck in state 8). Job queues ruled out (CLAUDE.md). Next: trace the streamer's own request state (`sub_0020DB60` object +0xAC/+0xC0/+0xC8), compare a good and a stalled run.
-- [ ] Loader-worker crash in world streaming (`0x0020D26A`, garbage pointer, intermittent).
+- [ ] Loader-worker crash in world streaming (intermittent; seen at `0x0020D26A` and `sub_0020CAB0` with a garbage chunk index) -- same streamer object as the 43% stall: one corruption bug (CLAUDE.md, "WORLD STREAMER CORRUPTION").
 - [ ] Any remaining async-GPU hang (map-select/rules class): soak-test the idle wake; replace it with exact behaviour if a better model of D3D's NOP patching emerges.
 - [x] ISRs and DPCs run under the guest-CPU lock (single-CPU semantics; `RECOMP_IRQ_LOCK=0` to disable). They used to run on host threads in parallel with guest threads; the USB driver's enumeration then stalled in about 1 boot in 6 (no pad on the title screen). After: 6/6 runs enumerated fully.
 - [ ] Guest-thread priority scheduling in the guest lock (Xbox is single-CPU, strict priority) — only if Phase 1 bugs point at ordering.
@@ -130,6 +131,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — Game state hook; soak/scripted race; streamer crash + 43% stall traced to one corrupted streamer object; async GPU freeze shown to be a BlockOnTime loop (idle wake reaches it).
 - 2026-10-13 — Baseline measured: 9.9 FPS (software), CPU floor ≈ 10 ms/frame of game logic -> 60 FPS feasible with a GPU path.
 - 2026-10-13 — Interrupt/DPC lock landed; race_test 4/6 (both failures being classified; the dump wait was too short to capture them).
 - 2026-10-13 — Plan created. Baseline: races 9–12 FPS (async executor, software rasteriser), audio working (XAudio2 VP path), boot→race 5/6.

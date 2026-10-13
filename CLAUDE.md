@@ -401,6 +401,49 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   failure theory was ruled out: EA's allocator `sub_001A9BD0` is wrapped
   (`_gen`) to log `[ALLOC] FAILED`, and it never failed.
   Lesson: grep every run for `Failed to resolve` — each is a missed function.
+- GAME STATE HOOK (src/game_state.c, on by default; RECOMP_GAME_STATE=0 off):
+  a host thread samples the app object's state machine every 100 ms --
+  [0x3A930C] -> app (0x00369550), +4 current state object (its vtable names
+  the screen), +8 pending next state, +0x5C phase, state+0xA8 a sub-state --
+  logs every change as `[STATE] t=.. vt=.. name sub=.. next=.. phase=..` and
+  keeps `game_state.txt` (vt name ms seconds-in-state sub) current for the
+  scripts (`tools\game_state.ps1`: `Get-GameState $root`). Top-level states:
+
+  | vtable | name | screens |
+  |---|---|---|
+  | 0029AD1C | boot | before the intro |
+  | 0029ACD8 | intro | EA / intro movies |
+  | 00289618 | frontend | every menu, title screen to rules |
+  | 0029AD48 | event_enter | short transition into an event |
+  | 0029B0DC | loading | race loading screens |
+  | 00299D7C | ingame | briefing, race, results, replay, pause/restart dialogs |
+
+  Inside ingame, state+0xA8 moves with the phase (5 at the briefing, 8 and
+  0xC during a race); the remaining values (finish, results, replay) still
+  have to be mapped -- to_race.ps1 prints the state for every new screen.
+  Draw counts (the old screen detector) are ambiguous during replays: the
+  restart dialog over a replay never shows its fixed count.
+- Diagnostics added 2026-10-14: `RECOMP_BLOCK_TRACE=1` (wrapper on D3D
+  BlockOnTime sub_00234BE0: time waited vs fence / current time / write ptr /
+  PUT / GET), `RECOMP_KEVENT_WATCH=<va>` (every KeSetEvent/wait on one guest
+  event), `RECOMP_SWM_STATS=1` also prints `[SWM-TICK]` deliveries per second,
+  `RECOMP_RASTER_SKIP=1` (no pixel work: CPU-floor measurement),
+  `RECOMP_FRAME_STATS=1` ([FRAMES] p50/p99 per second), tools/bench.ps1,
+  tools/shots.ps1, tools/soak.ps1 (race back to back; restart dialog
+  handling still uses draw counts -> move to the state hook).
+- WORLD STREAMER CORRUPTION (Phase 1, top priority): the 43% load stall and an
+  intermittent crash are one bug. Crash: sub_0020CAB0(i) = "slot i of the
+  streamer object (ecx, e.g. 0x812B4410) is in state 3", called with
+  i = 0x171B2880 -> read of [this + i*24 + 0x3EC] faults. The streamer's
+  chunk list holds garbage. Same object as the stalls (resources 0/40 stuck
+  "streaming", sub_0020DB60 polling). Callers: sub_0020BB10 / BE60 / C120 /
+  C290. Next: find who writes the chunk indices (watchpoint on the list once
+  located) and whether a second thread touches the object.
+- ASYNC GPU FREEZE (map select / rules / loading 31-33%): main thread loops in
+  D3D BlockOnTime: the idle wake does reach it (KeSetEvent on 0x0024CE9C,
+  ~10/s) but the time it waits for never completes; 0x5C bytes are written
+  past PUT and never kicked. RECOMP_BLOCK_TRACE run pending -- the round with
+  it on saw no freeze.
 - Live driving: `tools\live.ps1 start|snap|press -Buttons a|key -Key 0x0D|dump|stop`
   (`key` posts WM_KEYDOWN/UP to the window, exercising the real keyboard
   path; verified 2026-10-13: Enter presses reach the menus with
