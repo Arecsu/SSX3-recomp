@@ -17,6 +17,11 @@ speed (no GPU path), an intermittent black shadow wedge in races, the
 pink-lit start area. Details under "Known open items" below; the toolkit
 changes are all in `patches/xboxrecomp-local.patch` (base 193e299).
 
+**Roadmap:** [docs/ROADMAP.md](docs/ROADMAP.md) is the plan and tracker (phases,
+gates, checkboxes, progress log). Work from it: pick the next unchecked item of
+the earliest open phase, tick it in the commit that lands it, and add a dated
+line to its progress log.
+
 ## Layout
 
 ```

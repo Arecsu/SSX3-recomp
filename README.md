@@ -65,6 +65,11 @@ loading screen, intro movie, menus, first races).
 - `RECOMP_NV2A_ACK_THREAD=0` switches back to the older lock-step GPU mode
   (4–7 FPS) if the default asynchronous mode misbehaves.
 
+## Roadmap
+
+The plan to native 60 FPS on the GPU with full audio and no crashes, and its
+progress, is tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
+
 ## More
 
 The bring-up history, every fix, the debugging workflow and the open

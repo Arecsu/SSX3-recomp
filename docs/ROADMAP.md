@@ -1,0 +1,129 @@
+# SSX 3 native — roadmap
+
+**Goal:** SSX 3 runs natively on Windows, **≥ 60 FPS on the GPU**, with
+**working audio**, the **whole game playable** and **no crashes**.
+
+This file is the plan *and* the tracker: tick a box in the same commit that
+lands the work, and add a dated line to the [log](#progress-log) for every
+milestone change. Gates are measured, not judged by eye — each phase says
+which test proves it.
+
+**Where we are (2026-10-13):** playable races at 9–12 FPS on the software
+rasteriser (asynchronous GPU executor), audio through the emulated APU,
+keyboard/XInput input, boot→race reliability ~5/6. See README and CLAUDE.md.
+
+---
+
+## Definition of done
+
+| Area | Gate |
+|---|---|
+| Speed | Race on every peak: **p99 frame time ≤ 16.7 ms** (60 FPS) for 5 min, measured by `tools/bench.ps1`; menus and cutscenes at 60. |
+| Rendering | GPU output matches the software rasteriser (reference) within tolerance on the screenshot suite; no known artifacts. |
+| Audio | Music, speech, SFX and 3D voices audible and in sync, no gaps/crackle at 60 FPS; effects (reverb) present. |
+| Function | Every mode, peak, event, menu, save/load and option works (coverage checklist in Phase 6). |
+| Stability | 20/20 boot→race runs; 2-hour soak (automated play) with 0 crashes / 0 hangs. |
+| Native | One Windows build from a Windows checkout (no WSL needed), game data path configurable, double-click to play. |
+
+---
+
+## Phase 0 — Measurement harness (first, everything else depends on it)
+
+- [ ] `tools/bench.ps1`: boot → race → N minutes of scripted riding; logs frame times (present-to-present), FPS p50/p99, and the executor/guest split from `RECOMP_EXEC_STATS`; writes `logs/bench_<ts>.json`.
+- [ ] Frame-time counter in the host: per-flip timestamps exported (not just the 1 s window title FPS).
+- [ ] Scripted play: a pad script that rides a whole race (hold accelerate, periodic tricks), reusable for soak tests.
+- [ ] `tools/race_test.ps1` extended: all peaks/events, configurable run count, summary table; failures auto-dump (done) and are classified (loader stall / GPU hang / crash).
+- [ ] Screenshot suite: fixed scenes (title, menus, briefing, 3 race spots per peak) captured by script for visual regression; reference images from the software path.
+- [ ] Baseline numbers recorded here.
+
+## Phase 1 — Stability on the current path
+
+Fix the known failures before the renderer changes so regressions stay visible.
+
+- [ ] **43% race-load stall** (~1 in 6): world streamer loses a request (resource 0/40 stuck in state 8). Job queues ruled out (CLAUDE.md). Next: trace the streamer's own request state (`sub_0020DB60` object +0xAC/+0xC0/+0xC8), compare a good and a stalled run.
+- [ ] Loader-worker crash in world streaming (`0x0020D26A`, garbage pointer, intermittent).
+- [ ] Any remaining async-GPU hang (map-select/rules class): soak-test the idle wake; replace it with exact behaviour if a better model of D3D's NOP patching emerges.
+- [ ] Guest-thread priority scheduling in the guest lock (Xbox is single-CPU, strict priority) — only if Phase 1 bugs point at ordering.
+- [ ] Gate: 20/20 boot→race on both GPU modes.
+
+## Phase 2 — GPU renderer (D3D11), the big one
+
+Approach: keep the executor's pushbuffer walk and state tracking
+(`nv2a_pb_exec.c`, already accurate) and replace the software rasteriser with
+D3D11 draws. Reuse the toolkit's translators: NV2A vertex-program microcode →
+HLSL (`d3d8_vsh_parse` / `d3d8_vsh_generate_hlsl`) and register combiners →
+HLSL pixel shaders (`d3d8_combiners.c`). The software rasteriser stays as the
+reference (`RECOMP_GPU=0`) for differential testing.
+
+- [ ] 2.1 Device and presentation: D3D11 device + swap chain in the game window; flips present the front surface; vsync-paced at 60 Hz.
+- [ ] 2.2 Surfaces: colour/depth render targets as D3D11 textures keyed by guest address and format, including **swizzled RTs** (rider shadow maps) and clear rects; Z24S8/Z16 depth, stencil.
+- [ ] 2.3 Textures: upload from guest memory (swizzled, linear, DXT1/3/5, palettised, cube maps), cached by address + content hash with invalidation on CPU writes; render-target-as-texture without a round trip; sampler state (filter, address modes incl. border colour).
+- [ ] 2.4 Geometry: vertex attributes (all NV2A types incl. stride 0, packed normals, immediate/inline arrays) into dynamic vertex/index buffers; primitive types incl. quads/polygons; near-plane clipping by the GPU.
+- [ ] 2.5 Vertex programs: microcode → HLSL with a cache keyed by program hash; the 192 constants as a constant buffer; fixed-function T&L path for non-program batches.
+- [ ] 2.6 Pixel pipeline: combiners → HLSL (cache by combiner state), texture stage modes (2D/3D/cube/projective, clip planes, bump/dot later), alpha test, fog, blend equations/factors incl. constant colour, colour mask, depth/stencil ops.
+- [ ] 2.7 CPU read-back: surfaces the title reads (screenshots, lock of an RT) copied back to guest memory on demand only.
+- [ ] 2.8 Differential test: per-frame compare GPU vs software output on the screenshot suite; fix until within tolerance.
+- [ ] 2.9 Performance: state-change batching, shader/PSO caches, no per-draw stalls; target executor ≤ 4 ms/frame.
+- [ ] Gate: races render correctly on the GPU; frame rate then limited by the guest CPU, not rendering.
+
+## Phase 3 — CPU side to 60 FPS
+
+With rendering off the CPU, the game itself must fit in 16.7 ms.
+
+- [ ] Profile guest time per frame (sampling profiler + `tools/profile_tally.py`); list the top recompiled functions and kernel calls.
+- [ ] Remove waits: GPU hand-off, guest-lock contention, loop-yield cost, timer/DPC latency; fence waits answered as soon as the GPU reaches them.
+- [ ] Recompiler-level wins: x87 emulation hot paths, memory access helpers, indirect-call dispatch, `RECOMP_LOOP_YIELD` granularity.
+- [ ] Frame pacing: the title's 60 Hz clock (vblank, input ring) matched to the host display; no drift at 60.
+- [ ] Gate: bench p99 ≤ 16.7 ms on every peak.
+
+## Phase 4 — Audio, complete
+
+- [ ] Verify by ear: music (EA Radio), speech, menu SFX, race SFX, 3D voices (`RECOMP_APU_LEVEL=1` shows 48 kHz and real levels today).
+- [ ] waveOut fallback path gets the same VP fix as XAudio2.
+- [ ] GP/EP DSP: real effects (reverb, mixdown) — DSP56300 emulation or HLE of the XDK effect images; replaces the doorbell ack.
+- [ ] A/V sync at 60 FPS, no underruns under load; volume/pan/3D positioning correct.
+- [ ] Intro/cutscene movies with sound.
+- [ ] Gate: a full race and the intro play with all expected sound, no gaps.
+
+## Phase 5 — Visual completeness
+
+- [ ] Shadow wedge (board shadow projected over steep terrain) — resolve on the GPU path (likely matches hardware once depth/clip are exact).
+- [ ] Pink-lit start area and the stage-1 texture holding unrelated bytes — confirm against xemu or real footage.
+- [ ] Particles, snow spray, trails, motion blur, glow, reflections, water; every peak's look.
+- [ ] Optional: 720p/widescreen, higher internal resolution (only after correctness).
+
+## Phase 6 — Full game coverage
+
+Each item is "reached, works, no crash" on the GPU path at speed.
+
+- [ ] Every peak (1–3) and course; Race, Freestyle, Slopestyle, Superpipe, Big Air, Backcountry.
+- [ ] World Tour / Conquer the Mountain progression; unlocks; character select and customisation; shop.
+- [ ] Single Event, Practice, multiplayer split-screen (2 pads).
+- [ ] Save / load (memory unit and hard disk paths under `UDATA`), options, controller settings, rumble.
+- [ ] Credits, all movies, replays, pause menu, quitting back to menus repeatedly (resource leaks).
+
+## Phase 7 — Native Windows product
+
+- [ ] Build from a Windows checkout without WSL (Python pipeline + CMake on Windows; scripts in PowerShell or Python).
+- [ ] Game data location configurable (`game\` next to the exe or a config file); clear message when the rip is missing.
+- [ ] Release build: one exe, no console, logs to `logs\`, crash dump on failure.
+- [ ] Controller and keyboard remapping; fullscreen toggle.
+- [ ] Gate: fresh Windows machine → follow README → playing.
+
+## Phase 8 — Hardening
+
+- [ ] 2-hour automated soak, 20/20 boot→race, every Phase 6 item: 0 crashes, 0 hangs.
+- [ ] Upstream the toolkit fixes in `patches/xboxrecomp-local.patch` where they are general.
+
+---
+
+## Risks and decisions
+
+- **GPU path scope.** Phase 2 is weeks of work; it is the critical path for 60 FPS. The translators exist but were built for the HLE layer (`d3d8_*`) — expect adaptation, not drop-in.
+- **CPU ceiling.** If the recompiled game cannot reach 16.7 ms even with free rendering, Phase 3 needs recompiler work; measure early (Phase 0 bench with rendering disabled gives the CPU floor).
+- **Async correctness.** The idle wake is a workaround for D3D's NOP-patch race; a GPU backend with honest progress reporting may remove the need.
+- **Determinism for debugging.** Keep `RECOMP_NV2A_ACK_THREAD=0` and the software rasteriser as references until the GPU path passes the gates.
+
+## Progress log
+
+- 2026-10-13 — Plan created. Baseline: races 9–12 FPS (async executor, software rasteriser), audio working (XAudio2 VP path), boot→race 5/6.
