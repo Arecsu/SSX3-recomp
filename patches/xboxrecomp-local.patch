@@ -541,7 +541,7 @@ index 1ad4fff..7deb391 100644
  
  /*
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index c65632c..ae881d4 100644
+index c65632c..b9dcf23 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
 @@ -240,10 +240,13 @@ typedef struct {
@@ -1091,7 +1091,26 @@ index c65632c..ae881d4 100644
  static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
                                 const Nv2aVshOutput *vc)
  {
-@@ -2070,6 +2447,11 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
+@@ -1994,10 +2371,17 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
+     const float *a, *b, *c;
+     float area, su = 1.0f, sv = 1.0f;
+     int k;
+-    static int no_rc = -1;
++    static int no_rc = -1, skip = -1;
+ 
+     if (no_rc < 0)
+         no_rc = getenv("RECOMP_NO_COMBINERS") != NULL;
++    /* RECOMP_RASTER_SKIP=1: transform and set up everything, draw no pixels.
++     * Measures the frame rate with rendering free -- the CPU floor a GPU
++     * renderer can at best reach (docs/ROADMAP.md, Phase 0). */
++    if (skip < 0)
++        skip = getenv("RECOMP_RASTER_SKIP") != NULL;
++    if (skip)
++        return;
+     memset(&T, 0, sizeof T);
+     T.mem = (uint8_t *)xbox_GetMemoryOffset();
+     T.bpp = surface_bpp();
+@@ -2070,6 +2454,11 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
      s_gpu.xf_drawn++;
      T.inv_area = 1.0f / area;
  
@@ -1103,7 +1122,7 @@ index c65632c..ae881d4 100644
      xf_rows_parallel(&T, &cnt);
      s_gpu.xf_depth_fail += cnt.depth_fail;
      s_gpu.xf_pixels += cnt.pixels;
-@@ -2088,24 +2470,22 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
+@@ -2088,24 +2477,22 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
   * race frame's triangles went this way.
   *
   * Clipping has to happen in clip space, but the D3D epilogue has already
@@ -1141,7 +1160,7 @@ index c65632c..ae881d4 100644
  static void xf_lerp(const Nv2aVshOutput *a, const Nv2aVshOutput *b, float t,
                      Nv2aVshOutput *out)
  {
-@@ -2116,52 +2496,74 @@ static void xf_lerp(const Nv2aVshOutput *a, const Nv2aVshOutput *b, float t,
+@@ -2116,52 +2503,74 @@ static void xf_lerp(const Nv2aVshOutput *a, const Nv2aVshOutput *b, float t,
          po[i] = pa[i] + (pb[i] - pa[i]) * t;
  }
  
@@ -1249,7 +1268,7 @@ index c65632c..ae881d4 100644
  }
  
  static Nv2aVshOutput s_xf[NV_MAX_INDICES];
-@@ -2171,18 +2573,288 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
+@@ -2171,18 +2580,288 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
      float in[NV2A_VSH_INPUTS][4];
      uint32_t a;
  
@@ -1540,7 +1559,7 @@ index c65632c..ae881d4 100644
      s_gpu.batches_program++;
      s_gpu.verts_program += n;
      if (s_gpu.blend_enable) {
-@@ -2202,8 +2874,11 @@ static void raster_batch_program(void)
+@@ -2202,8 +2881,11 @@ static void raster_batch_program(void)
              left = t ? atoi(t) : 0;
          }
          /* Spread out: one every 20000 program batches, so a run that spends
@@ -1554,7 +1573,7 @@ index c65632c..ae881d4 100644
              float in[4];
              left--;
              fprintf(stderr, "[VTRACE] prim %u n %u idx %u %u %u\n", s_gpu.prim,
-@@ -2814,9 +3489,11 @@ static void tex_stage_method(uint32_t method, uint32_t param)
+@@ -2814,9 +3496,11 @@ static void tex_stage_method(uint32_t method, uint32_t param)
          /* A DMA-object offset like a surface's: physical, reached through
           * the contiguous window when it names contiguous memory. */
          t->offset = dma_resolve(param);
@@ -1566,7 +1585,7 @@ index c65632c..ae881d4 100644
          t->cube = (param >> 2) & 1;
          t->levels = (param >> 16) & 0xF;
          /* A swizzled texture carries its own dimensions here, as log2 in
-@@ -2832,8 +3509,8 @@ static void tex_stage_method(uint32_t method, uint32_t param)
+@@ -2832,8 +3516,8 @@ static void tex_stage_method(uint32_t method, uint32_t param)
          t->palette = dma_resolve(param & ~0x3Fu);
          break;
      case NV097_SET_TEXTURE_ADDRESS:
@@ -1577,7 +1596,7 @@ index c65632c..ae881d4 100644
          t->addr_u =  param        & 0xF;
          t->addr_v = (param >>  8) & 0xF;
          break;
-@@ -2847,6 +3524,9 @@ static void tex_stage_method(uint32_t method, uint32_t param)
+@@ -2847,6 +3531,9 @@ static void tex_stage_method(uint32_t method, uint32_t param)
      case 0x1B14:                                  /* SET_TEXTURE_FILTER */
          t->filter = param;
          break;
@@ -1587,7 +1606,7 @@ index c65632c..ae881d4 100644
      default:
          break;
      }
-@@ -2910,10 +3590,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -2910,10 +3597,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
          return;
      }
      if (subch != 0) {                      /* 3D class lives on subchannel 0 */
@@ -1607,7 +1626,7 @@ index c65632c..ae881d4 100644
      case NV097_SET_SURFACE_CLIP_HORIZONTAL:
          s_gpu.clip_x = param & 0xFFFF;
          s_gpu.clip_w = (param >> 16) & 0xFFFF;
-@@ -2925,6 +3613,14 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -2925,6 +3620,14 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
      case NV097_SET_SURFACE_FORMAT:
          s_gpu.format = param;
          break;
@@ -1622,7 +1641,7 @@ index c65632c..ae881d4 100644
      case NV097_SET_SURFACE_PITCH:
          s_gpu.pitch = param & 0xFFFF;      /* colour pitch; zeta is the top half */
          break;
-@@ -3179,8 +3875,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3179,8 +3882,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
      case 0x030C: s_gpu.depth_test = param; break; /* DEPTH_TEST_ENABLE */
      case 0x0354: s_gpu.depth_func = param; break; /* DEPTH_FUNC */
      case 0x035C: s_gpu.depth_mask = param; break; /* DEPTH_MASK */
@@ -1641,7 +1660,7 @@ index c65632c..ae881d4 100644
  
      default:
          if (method >= 0x0260 && method < 0x0280) {         /* ALPHA_ICW(i) */
-@@ -3220,6 +3926,21 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3220,6 +3933,21 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
              nv2a_vsh_constant_component(58, (method - 0x0AF0) / 4, param);
              break;
          }
@@ -1663,7 +1682,7 @@ index c65632c..ae881d4 100644
          if (method >= 0x0B00 && method < 0x0B80) {    /* TRANSFORM_PROGRAM(i) */
              nv2a_vsh_program_word(param);
              break;
-@@ -3406,6 +4127,7 @@ static void peek_chain(void)
+@@ -3406,6 +4134,7 @@ static void peek_chain(void)
  
  void nv2a_pb_exec_report(void)
  {
@@ -1671,7 +1690,7 @@ index c65632c..ae881d4 100644
      peek_addresses();
      peek_chain();
      if (getenv("RECOMP_FIND_NAN")) {
-@@ -3534,7 +4256,7 @@ void nv2a_pb_exec_report(void)
+@@ -3534,7 +4263,7 @@ void nv2a_pb_exec_report(void)
               * is using. */
              union { uint32_t u; float f; } v;
              v.u = s_unhandled[i].last_param;

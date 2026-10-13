@@ -34,7 +34,10 @@ keyboard/XInput input, boot→race reliability ~5/6. See README and CLAUDE.md.
 - [ ] Scripted play: a pad script that rides a whole race (hold accelerate, periodic tricks), reusable for soak tests.
 - [ ] `tools/race_test.ps1` extended: all peaks/events, configurable run count, summary table; failures auto-dump (done) and are classified (loader stall / GPU hang / crash).
 - [ ] Screenshot suite: fixed scenes (title, menus, briefing, 3 race spots per peak) captured by script for visual regression; reference images from the software path.
-- [ ] Baseline numbers recorded here.
+- [x] Baseline numbers recorded here (2026-10-13, default build, Snow Jam race, `tools/bench.ps1 -Seconds 90`):
+  - **Software rasteriser, async executor:** 9.9 FPS avg, p50 101 ms, p99 267 ms, 0 crashes (`logs/bench_20261013-232858.json`).
+  - **CPU floor** (`RECOMP_RASTER_SKIP=1`: everything but the pixels): 10–35 FPS in the race. Profile: the main thread waits on the GPU most of the time -- D3D fence waits (`KeWaitForSingleObject`, 54% of samples) and polling a GPU visibility-test result (`sub_0022DE70` = D3D query GetData returning D3DERR_TESTINCOMPLETE, 24%); real game logic is ~19% of samples, **≈ 10 ms per frame** -- under the 16.7 ms budget. The executor's time is mostly CPU vertex-program interpretation (`nv2a_vsh_run`), then software-method round trips and the pushbuffer survey's `note()` (pure overhead).
+  - Conclusion: 60 FPS is reachable on the CPU side once vertex programs, pixels and query results come from a GPU; Phase 2 is the right critical path.
 
 ## Phase 1 — Stability on the current path
 
@@ -127,5 +130,6 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-13 — Baseline measured: 9.9 FPS (software), CPU floor ≈ 10 ms/frame of game logic -> 60 FPS feasible with a GPU path.
 - 2026-10-13 — Interrupt/DPC lock landed; race_test 4/6 (both failures being classified; the dump wait was too short to capture them).
 - 2026-10-13 — Plan created. Baseline: races 9–12 FPS (async executor, software rasteriser), audio working (XAudio2 VP path), boot→race 5/6.
