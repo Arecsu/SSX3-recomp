@@ -5,8 +5,10 @@
 #   -> wait; once loading has been seen, the race briefing (>= 600 draws)
 #   -> press A and stop.
 # Start presses get through the intro and title (screens with < 200 draws).
-#   powershell -File tools\to_race.ps1 [-TimeoutSec 600] [-StopAtBriefing]
-param([int]$TimeoutSec = 600, [switch]$StopAtBriefing)
+# -ShotDir <dir>: also save each distinct screen once as it is passed
+# (screen_<draws>.png, and briefing.png) -- the menu half of tools\shots.ps1.
+#   powershell -File tools\to_race.ps1 [-TimeoutSec 600] [-StopAtBriefing] [-ShotDir dir]
+param([int]$TimeoutSec = 600, [switch]$StopAtBriefing, [string]$ShotDir = "")
 
 $live = Join-Path $PSScriptRoot "live.ps1"
 $menus = @(339, 984, 382, 275, 367, 413, 329)
@@ -19,8 +21,17 @@ while ((Get-Date) -lt $deadline) {
     if ($title -notmatch "draws: (\d+)") { Start-Sleep -Seconds 2; continue }
     $draws = [int]$Matches[1]
     $since = ((Get-Date) - $lastPress).TotalSeconds
+    if ($ShotDir) {
+        # Menus have fixed draw counts; the loading screens and the race do
+        # not, so only named screens and the first frame of each count.
+        $shot = Join-Path $ShotDir ("screen_{0}.png" -f $draws)
+        if (($menus -contains $draws -or ($draws -lt 200 -and $draws -gt 0)) -and -not (Test-Path $shot)) {
+            Copy-Item (Join-Path (Split-Path -Parent $PSScriptRoot) "nav.png") $shot -ErrorAction SilentlyContinue
+        }
+    }
     if ($draws -eq 309 -or $draws -eq 22) { $loadingSeen = $true }
     if ($loadingSeen -and $draws -ge 600) {
+        if ($ShotDir) { Copy-Item (Join-Path (Split-Path -Parent $PSScriptRoot) "nav.png") (Join-Path $ShotDir "briefing.png") -ErrorAction SilentlyContinue }
         if ($StopAtBriefing) { "at briefing ($draws draws)"; exit 0 }
         & $live press -Buttons "a:300" | Out-Null
         "briefing ($draws draws): pressed A, racing"

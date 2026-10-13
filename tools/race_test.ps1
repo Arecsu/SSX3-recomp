@@ -13,9 +13,20 @@ for ($i = 1; $i -le $Runs; $i++) {
     $out = & $nav -TimeoutSec $TimeoutSec 2>&1 | Select-Object -Last 1
     $err = Get-Content (Join-Path $root "stderr.txt") -ErrorAction SilentlyContinue
     $crash = ($err | Select-String -SimpleMatch "[CRASH]" | Select-Object -First 1)
+    # Name the failure from the last screen seen: the known classes are a
+    # pad that never enumerated (stuck on the title, < 200 draws), a hang in
+    # the menus, and the race-load stall (309 / 22 = loading screens).
+    $kind = ""
+    if ($out -match "last screen: (\d+) draws") {
+        $d = [int]$Matches[1]
+        $kind = if ($d -eq 309 -or $d -eq 22) { "[load stall] " }
+                elseif ($d -lt 200) { "[title: no input] " }
+                elseif (@(339, 984, 382, 275, 367, 413, 329) -contains $d -or $d -ge 900) { "[menu hang] " }
+                else { "[other] " }
+    }
     $result = if ($out -match "briefing") { "OK   reached the race briefing" }
               elseif ($crash) { "CRASH $crash" }
-              else { "FAIL $out" }
+              else { "FAIL $kind$out" }
     "run ${i}: $result"
     if ($result -like "FAIL*") {
         # A stall: dump every thread (and the RECOMP_JOB_TRACE ring) before
