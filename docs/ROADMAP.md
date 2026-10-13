@@ -29,8 +29,8 @@ keyboard/XInput input, boot→race reliability ~5/6. See README and CLAUDE.md.
 
 ## Phase 0 — Measurement harness (first, everything else depends on it)
 
-- [ ] `tools/bench.ps1`: boot → race → N minutes of scripted riding; logs frame times (present-to-present), FPS p50/p99, and the executor/guest split from `RECOMP_EXEC_STATS`; writes `logs/bench_<ts>.json`.
-- [ ] Frame-time counter in the host: per-flip timestamps exported (not just the 1 s window title FPS).
+- [x] `tools/bench.ps1`: boot → race → `-Seconds` of riding (periodic A taps); parses `[FRAMES]`, writes `logs/bench_<ts>.json` with fps avg, median p50, worst p99/max, crashes and the 60 FPS gate. (Executor/guest split: add `-Env @{RECOMP_EXEC_STATS='1'}`.)
+- [x] Frame-time counter in the host: `RECOMP_FRAME_STATS=1` prints `[FRAMES] n fps p50 p99 max` once a second from per-flip QPC timestamps (toolkit `fb_present.c`).
 - [ ] Scripted play: a pad script that rides a whole race (hold accelerate, periodic tricks), reusable for soak tests.
 - [ ] `tools/race_test.ps1` extended: all peaks/events, configurable run count, summary table; failures auto-dump (done) and are classified (loader stall / GPU hang / crash).
 - [ ] Screenshot suite: fixed scenes (title, menus, briefing, 3 race spots per peak) captured by script for visual regression; reference images from the software path.

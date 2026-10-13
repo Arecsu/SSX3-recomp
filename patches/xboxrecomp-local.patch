@@ -2098,6 +2098,65 @@ index 72d5131..1913972 100644
      if (g_nv2a_ack_thread) {
          fprintf(stderr, "  NV2A busy-bit ack: %zu register(s) acknowledged\n",
                  sizeof(NV2A_ACK) / sizeof(NV2A_ACK[0]));
+diff --git a/src/video/fb_present.c b/src/video/fb_present.c
+index 08bae4b..c7c4a77 100644
+--- a/src/video/fb_present.c
++++ b/src/video/fb_present.c
+@@ -127,10 +127,54 @@ void xbox_FramebufferWindowSetTitle(const uint16_t *name, int max_chars)
+         s_title[i] = 0;
+ }
+ 
++/* RECOMP_FRAME_STATS=1: frame times from the flips themselves, once a second:
++ *   [FRAMES] n 11 fps 10.9 p50 88.1 p99 120.4 max 131.0 ms draws 612
++ * The title-bar FPS is a 1 s average; a 60 FPS target is about the slow
++ * frames, so this reports the distribution (tools/bench.ps1 parses it). */
++static int cmp_double(const void *a, const void *b)
++{
++    double x = *(const double *)a, y = *(const double *)b;
++    return x < y ? -1 : x > y;
++}
++
++static void frame_stats_note(uint32_t draws)
++{
++    static int on = -1;
++    static LARGE_INTEGER freq, last, window;
++    static double dt[2048];
++    static int n;
++    LARGE_INTEGER now;
++
++    if (on < 0) {
++        const char *e = getenv("RECOMP_FRAME_STATS");
++        on = e && *e && *e != '0';
++        QueryPerformanceFrequency(&freq);
++    }
++    if (!on)
++        return;
++    QueryPerformanceCounter(&now);
++    if (last.QuadPart && n < (int)(sizeof dt / sizeof dt[0]))
++        dt[n++] = (double)(now.QuadPart - last.QuadPart) * 1000.0 / (double)freq.QuadPart;
++    last = now;
++    if (!window.QuadPart)
++        window = now;
++    if ((double)(now.QuadPart - window.QuadPart) / (double)freq.QuadPart >= 1.0 && n) {
++        double secs = (double)(now.QuadPart - window.QuadPart) / (double)freq.QuadPart;
++        qsort(dt, (size_t)n, sizeof dt[0], cmp_double);
++        fprintf(stderr, "[FRAMES] n %d fps %.1f p50 %.1f p99 %.1f max %.1f ms draws %u\n",
++                n, n / secs, dt[n / 2], dt[(n * 99) / 100 < n ? (n * 99) / 100 : n - 1],
++                dt[n - 1], draws);
++        fflush(stderr);
++        n = 0;
++        window = now;
++    }
++}
++
+ void xbox_FramebufferWindowFrameStats(uint32_t draws)
+ {
+     InterlockedIncrement(&s_flips);
+     InterlockedExchange(&s_frame_draws, (LONG)draws);
++    frame_stats_note(draws);
+ }
+ 
+ int xbox_FramebufferKeyDown(int vk)
 diff --git a/templates/runtime/recomp_types.h b/templates/runtime/recomp_types.h
 index 8e9325e..cc6b183 100644
 --- a/templates/runtime/recomp_types.h
