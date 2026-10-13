@@ -105,6 +105,26 @@ void sub_0025BD81(void)
 }
 
 /*
+ * D3D's PGRAPH interrupt handler (sub_0023BA20, called from its interrupt DPC
+ * 0x0023BC60), wrapped so a software-method trap is seen exactly once. The
+ * handler acknowledges by writing PGRAPH_INTR back with the value it read --
+ * write-1-to-clear on hardware, a no-op on our RAM-backed registers -- and the
+ * DPC re-runs it for as long as PMC_INTR_0 bit 12 stays set. Every re-run
+ * handled the same trapped NOP again: SSX 3 schedules flips with them, and
+ * one trap became thousands of flips, each pushing the flip target a vblank
+ * further out until display changes waited forever. The toolkit clears the
+ * trap the moment the handler returns.
+ */
+extern void sub_0023BA20_gen(void);
+extern void xbox_Nv2aSwmHandled(void);
+
+void sub_0023BA20(void)
+{
+    sub_0023BA20_gen();
+    xbox_Nv2aSwmHandled();
+}
+
+/*
  * EA's allocator (sub_001A9BD0, ~300 direct callers), wrapped to report
  * failures. The race load (Snow Jam) ends up using a NULL script register
  * array allocated in sub_0016B4F0; this says whether the heap -- a fixed

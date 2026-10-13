@@ -59,6 +59,12 @@ def main():
     for tid, cnt in sorted(per_thread.items(), key=lambda kv: -sum(kv[1].values()))[:6]:
         top = ", ".join(f"{f} {c}" for f, c in cnt.most_common(3))
         print(f"  tid {tid}: {sum(cnt.values())} samples; {top}")
+    print("\nMost running (samples not blocked in the OS):")
+    def running(cnt):
+        return sum(c for f, c in cnt.items() if not f.startswith("[wait]"))
+    for tid, cnt in sorted(per_thread.items(), key=lambda kv: -running(kv[1]))[:8]:
+        top = ", ".join(f"{f} {c}" for f, c in cnt.most_common(6))
+        print(f"  tid {tid}: running {running(cnt)}/{sum(cnt.values())}; {top}")
 
 if __name__ == "__main__":
     main()

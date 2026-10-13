@@ -149,7 +149,7 @@ index cd69e57..86d2428 100644
      idx = g_xa2_next_buf;
      copy_samples = (num_samples > XA2_BUF_SAMPLES) ? XA2_BUF_SAMPLES : num_samples;
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
-index c65ba43..58c76eb 100644
+index c65ba43..f3df735 100644
 --- a/src/kernel/kernel_bridge.c
 +++ b/src/kernel/kernel_bridge.c
 @@ -2028,6 +2028,21 @@ static int kernel_run_dpc(uint32_t dpc_va, uint32_t arg1, uint32_t arg2)
@@ -174,7 +174,188 @@ index c65ba43..58c76eb 100644
      g_esp -= 4; BRIDGE_MEM32(g_esp) = arg2;
      g_esp -= 4; BRIDGE_MEM32(g_esp) = arg1;
      g_esp -= 4; BRIDGE_MEM32(g_esp) = context;
-@@ -2635,6 +2650,23 @@ static void kernel_set_timer(uint32_t timer_va, long long due_100ns,
+@@ -2270,7 +2285,10 @@ static void kernel_vblank_tick(void)
+     if (!xbox_GetConnectedInterrupt(NV2A_VECTOR))
+         return;
+ 
+-    BRIDGE_MEM32(XBOX_NV2A_REG_BASE + NV2A_PCRTC_INTR_0) |= NV2A_PCRTC_INTR_VBLANK;
++    /* Bit 8 is a marker for nv2a_intr_thread (xbox_memory_layout.c): the
++     * DPC acknowledges by writing exactly 1, which is how the write-1-to-
++     * clear is seen without trapping the register. */
++    BRIDGE_MEM32(XBOX_NV2A_REG_BASE + NV2A_PCRTC_INTR_0) |= NV2A_PCRTC_INTR_VBLANK | 0x100u;
+     BRIDGE_MEM32(XBOX_NV2A_REG_BASE + NV2A_PMC_INTR_0)   |= NV2A_PMC_INTR_PCRTC;
+ 
+     {
+@@ -2284,6 +2302,147 @@ static void kernel_vblank_tick(void)
+     }
+ }
+ 
++/* NV097 NO_OPERATION with a non-zero parameter: a software method.
++ *
++ * On hardware (and in xemu) PGRAPH traps it: TRAPPED_ADDR/_DATA say which
++ * method and parameter, NSOURCE says "notification", PGRAPH_INTR raises
++ * ERROR, and the pushbuffer stalls until the ISR has looked. Xbox D3D builds
++ * its blocking fence wait on this: BlockOnTime (SSX 3 guest 0x00234BE0)
++ * patches NO_OPERATION(5) into the pushbuffer at the time it waits for and
++ * sleeps on an event, which the PGRAPH handler (0x0023BA20 -> 0x0023B7B0)
++ * sets when the trapped method is 0x100. Ignored, a title whose GPU runs
++ * asynchronously waits forever the first time it is ahead of the GPU.
++ *
++ * The executor thread posts the request and waits; the timer thread, which
++ * can run guest code, fills the registers, calls the ISR and clears them
++ * again -- the ISR acknowledges by writing the bits back, which against plain
++ * memory would leave them set. */
++static volatile LONG g_nv2a_swm_pending;   /* 1 posted, 2 raised */
++/* Wakes the timer thread at once: D3D emits a few dozen software-method NOPs
++ * a second, and waiting out the 10 ms tick for each kept the executor waiting
++ * the whole time. */
++static HANDLE g_nv2a_swm_event;
++static uint32_t g_nv2a_swm_addr, g_nv2a_swm_data;
++static volatile LONG64 g_nv2a_swm_raised_ms;
++
++static void swm_clear_regs(void);
++
++/* For nv2a_intr_thread: D3D's PGRAPH handler acknowledges by writing back the
++ * value it read, which plain memory cannot tell from no write at all, and its
++ * DPC re-reads PMC_INTR_0 and runs the handler again for as long as bit 12 is
++ * set. So the trap is a pulse: cleared 2 ms after it is raised, by which time
++ * the DPC (run straight after the ISR on the timer thread) has seen it. */
++void xbox_Nv2aSwmPulse(void)
++{
++    /* Backstop only. A short pulse is not enough: every DPC pass inside the
++     * window re-handles the same trap (SSX 3: one flip became thousands).
++     * A title that needs this exact wraps its PGRAPH handler and calls
++     * xbox_Nv2aSwmHandled -- see ssx3_overrides.c. */
++    if (InterlockedCompareExchange(&g_nv2a_swm_pending, 2, 2) == 2
++        && (LONG64)GetTickCount64() - g_nv2a_swm_raised_ms >= 50)
++        swm_clear_regs();
++}
++
++/* Called by a title's wrapper right after its PGRAPH interrupt handler has
++ * run: the trap has been seen once, so it is taken down now. */
++void xbox_Nv2aSwmHandled(void)
++{
++    if (InterlockedCompareExchange(&g_nv2a_swm_pending, 2, 2) == 2)
++        swm_clear_regs();
++}
++
++void xbox_Nv2aSoftwareMethod(uint32_t subch, uint32_t method, uint32_t param)
++{
++    static int async = -1;
++    DWORD t0 = GetTickCount();
++    /* Only with the asynchronous executor (RECOMP_NV2A_ACK_THREAD): in the
++     * default lock-step mode the fence mirror answers D3D's waits before it
++     * ever patches a NOP in, and stalling the executor for a timer tick per
++     * NOP there only costs frames. ponytail: the async mode still sees NOP
++     * parameters that look like unwritten pushbuffer -- not usable yet. */
++    if (async < 0)
++        async = getenv("RECOMP_NV2A_ACK_THREAD") != NULL;
++    if (!async)
++        return;
++    g_nv2a_swm_addr = ((subch & 7u) << 16) | (method & 0x1FFCu);
++    g_nv2a_swm_data = param;
++    InterlockedExchange(&g_nv2a_swm_pending, 1);
++    if (g_nv2a_swm_event)
++        SetEvent(g_nv2a_swm_event);
++    /* The pushbuffer stalls until the ISR has run, as on hardware. Bounded,
++     * so a title with no ISR connected costs a moment, not the process. */
++    while (g_nv2a_swm_pending && GetTickCount() - t0 < 500)
++        Sleep(1);
++    {
++        /* Rate and cost, once a second (RECOMP_SWM_STATS). */
++        static int stats = -1;
++        static unsigned cnt, slow;
++        static DWORD win, wait_ms;
++        DWORD dt = GetTickCount() - t0;
++        if (stats < 0)
++            stats = getenv("RECOMP_SWM_STATS") != NULL;
++        if (stats) {
++            cnt++; wait_ms += dt; if (dt >= 400) slow++;
++            if (GetTickCount() - win >= 1000) {
++                fprintf(stderr, "  [SWM] %u/s, %lu ms waited, %u timeouts, last %u(%u)\n",
++                        cnt, (unsigned long)wait_ms, slow, method, param);
++                cnt = slow = 0; wait_ms = 0; win = GetTickCount();
++            }
++        }
++    }
++    if (InterlockedExchange(&g_nv2a_swm_pending, 0)) {
++        static int said;
++        if (!said++)
++            fprintf(stderr, "  [NV2A] software method 0x%04X(%u): no ISR took it\n",
++                    method, param);
++    }
++}
++
++#define NV2A_PGRAPH_INTR         0x00400100u
++#define NV2A_PGRAPH_NSOURCE      0x00400108u
++#define NV2A_PGRAPH_TRAPPED_ADDR 0x00400704u
++#define NV2A_PGRAPH_TRAPPED_DATA 0x00400708u
++#define NV2A_PGRAPH_INTR_ERROR   0x00100000u
++#define NV2A_PMC_INTR_PGRAPH     0x00001000u
++
++static void kernel_swm_tick(void)
++{
++    static unsigned n;
++    int claimed;
++
++    if (InterlockedCompareExchange(&g_nv2a_swm_pending, 1, 1) != 1)
++        return;
++    BRIDGE_MEM32(0xFD000000u + NV2A_PGRAPH_TRAPPED_ADDR) = g_nv2a_swm_addr;
++    BRIDGE_MEM32(0xFD000000u + NV2A_PGRAPH_TRAPPED_DATA) = g_nv2a_swm_data;
++    BRIDGE_MEM32(0xFD000000u + NV2A_PGRAPH_NSOURCE)      = 1;   /* NOTIFICATION */
++    BRIDGE_MEM32(0xFD000000u + NV2A_PGRAPH_INTR)        |= NV2A_PGRAPH_INTR_ERROR;
++    BRIDGE_MEM32(0xFD000000u + NV2A_PMC_INTR_0)     |= NV2A_PMC_INTR_PGRAPH;
++    g_nv2a_swm_raised_ms = (LONG64)GetTickCount64();
++    InterlockedExchange(&g_nv2a_swm_pending, 2);
++    claimed = kernel_raise_interrupt(NV2A_VECTOR);
++    if (n++ < 3)
++        fprintf(stderr, "  [NV2A] software method 0x%04X(%u) -> ISR %s\n",
++                g_nv2a_swm_addr & 0x1FFCu, g_nv2a_swm_data,
++                claimed < 0 ? "not callable" : claimed ? "claimed it" : "declined it");
++    /* D3D's ISR only queues its DPC (0x0023BC60), which reads the trap
++     * registers; they are cleared by the pulse above, or after the drain. */
++}
++
++static void swm_clear_regs(void)
++{
++    BRIDGE_MEM32(0xFD000000u + NV2A_PGRAPH_INTR)    = 0;
++    BRIDGE_MEM32(0xFD000000u + NV2A_PGRAPH_NSOURCE) = 0;
++    BRIDGE_MEM32(0xFD000000u + NV2A_PMC_INTR_0) &= ~NV2A_PMC_INTR_PGRAPH;
++}
++
++static void kernel_swm_done(void)
++{
++    if (InterlockedCompareExchange(&g_nv2a_swm_pending, 2, 2) != 2)
++        return;
++    swm_clear_regs();
++    InterlockedExchange(&g_nv2a_swm_pending, 0);
++}
++
+ /* Run whatever is queued. Called from the timer thread, which has the guest
+  * stack and TIB that a deferred routine needs. */
+ static void kernel_drain_dpcs(void)
+@@ -2566,13 +2725,19 @@ static DWORD WINAPI kernel_timer_thread(LPVOID unused)
+         g_fs_base = tib;
+     }
+ 
++    if (!g_nv2a_swm_event)
++        g_nv2a_swm_event = CreateEventA(NULL, FALSE, FALSE, NULL);
+     for (;;) {
+         long long now;
+         int i;
+ 
+-        Sleep(10);
++        /* A 10 ms tick, or at once when the executor posts a software
++         * method (kernel_swm_tick below). */
++        WaitForSingleObject(g_nv2a_swm_event, 10);
+         kernel_vblank_tick();  /* the GPU's frame clock */
++        kernel_swm_tick();     /* NOP(n) software methods from the executor */
+         kernel_drain_dpcs();   /* deferred work, before due timers */
++        kernel_swm_done();
+         now = (long long)GetTickCount64();
+ 
+         for (i = 0; i < XBOX_MAX_TIMERS; i++) {
+@@ -2635,6 +2800,23 @@ static void kernel_set_timer(uint32_t timer_va, long long due_100ns,
      }
      LeaveCriticalSection(&g_timer_lock);
  
@@ -198,7 +379,7 @@ index c65ba43..58c76eb 100644
      /* A freshly set timer starts unsignaled, like the real KeSetTimer. */
      {
          HANDLE ev = ke_shadow_lookup(timer_va);
-@@ -4472,15 +4504,49 @@ static void bridge_KeWaitForMultipleObjects(void)
+@@ -4472,15 +4654,49 @@ static void bridge_KeWaitForMultipleObjects(void)
      }
      if (count > BRIDGE_MAXIMUM_WAIT_OBJECTS)
          count = BRIDGE_MAXIMUM_WAIT_OBJECTS;
@@ -251,7 +432,7 @@ index c65ba43..58c76eb 100644
  }
  
  #undef BRIDGE_MAXIMUM_WAIT_OBJECTS
-@@ -9382,6 +9448,26 @@ void guest_cpu_join(void)
+@@ -9382,6 +9598,26 @@ void guest_cpu_join(void)
      }
  }
  
@@ -279,7 +460,7 @@ index c65ba43..58c76eb 100644
  {
      if (t_guest_held) {
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index c65632c..c038adb 100644
+index c65632c..ae881d4 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
 @@ -240,10 +240,13 @@ typedef struct {
@@ -1325,7 +1506,7 @@ index c65632c..c038adb 100644
      default:
          break;
      }
-@@ -2910,7 +3590,7 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -2910,10 +3590,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
          return;
      }
      if (subch != 0) {                      /* 3D class lives on subchannel 0 */
@@ -1334,7 +1515,18 @@ index c65632c..c038adb 100644
          return;
      }
      switch (method) {
-@@ -2925,6 +3605,14 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
++    case 0x0100:                       /* NO_OPERATION */
++        /* Non-zero: a software method the title's ISR must see (D3D's
++         * blocking fence wait); see xbox_Nv2aSoftwareMethod. */
++        if (param) {
++            extern void xbox_Nv2aSoftwareMethod(uint32_t, uint32_t, uint32_t);
++            xbox_Nv2aSoftwareMethod(subch, method, param);
++        }
++        break;
+     case NV097_SET_SURFACE_CLIP_HORIZONTAL:
+         s_gpu.clip_x = param & 0xFFFF;
+         s_gpu.clip_w = (param >> 16) & 0xFFFF;
+@@ -2925,6 +3613,14 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
      case NV097_SET_SURFACE_FORMAT:
          s_gpu.format = param;
          break;
@@ -1349,7 +1541,7 @@ index c65632c..c038adb 100644
      case NV097_SET_SURFACE_PITCH:
          s_gpu.pitch = param & 0xFFFF;      /* colour pitch; zeta is the top half */
          break;
-@@ -3179,8 +3867,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3179,8 +3875,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
      case 0x030C: s_gpu.depth_test = param; break; /* DEPTH_TEST_ENABLE */
      case 0x0354: s_gpu.depth_func = param; break; /* DEPTH_FUNC */
      case 0x035C: s_gpu.depth_mask = param; break; /* DEPTH_MASK */
@@ -1368,7 +1560,7 @@ index c65632c..c038adb 100644
  
      default:
          if (method >= 0x0260 && method < 0x0280) {         /* ALPHA_ICW(i) */
-@@ -3220,6 +3918,21 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3220,6 +3926,21 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
              nv2a_vsh_constant_component(58, (method - 0x0AF0) / 4, param);
              break;
          }
@@ -1390,7 +1582,7 @@ index c65632c..c038adb 100644
          if (method >= 0x0B00 && method < 0x0B80) {    /* TRANSFORM_PROGRAM(i) */
              nv2a_vsh_program_word(param);
              break;
-@@ -3406,6 +4119,7 @@ static void peek_chain(void)
+@@ -3406,6 +4127,7 @@ static void peek_chain(void)
  
  void nv2a_pb_exec_report(void)
  {
@@ -1398,7 +1590,7 @@ index c65632c..c038adb 100644
      peek_addresses();
      peek_chain();
      if (getenv("RECOMP_FIND_NAN")) {
-@@ -3534,7 +4248,7 @@ void nv2a_pb_exec_report(void)
+@@ -3534,7 +4256,7 @@ void nv2a_pb_exec_report(void)
               * is using. */
              union { uint32_t u; float f; } v;
              v.u = s_unhandled[i].last_param;
@@ -1408,7 +1600,7 @@ index c65632c..c038adb 100644
                      v.u, v.f);
          }
 diff --git a/src/kernel/nv2a_pb_scan.c b/src/kernel/nv2a_pb_scan.c
-index 65bbedb..4c2ee48 100644
+index 65bbedb..55a29ac 100644
 --- a/src/kernel/nv2a_pb_scan.c
 +++ b/src/kernel/nv2a_pb_scan.c
 @@ -1,3 +1,4 @@
@@ -1416,10 +1608,95 @@ index 65bbedb..4c2ee48 100644
  /*
   * Read-only survey of the pushbuffer a title submits.
   *
-@@ -222,7 +223,63 @@ static uint32_t pb_walk(uint32_t va, uint32_t end_va, int in_call,
+@@ -222,7 +223,148 @@ static uint32_t pb_walk(uint32_t va, uint32_t end_va, int in_call,
      return words;
  }
  
++/* Execute the main pushbuffer from GET up to PUT the way the GPU's DMA engine
++ * does, and return the new GET.
++ *
++ * nv2a_pb_scan walks a [start, end) range and stops at the first JUMP, which
++ * leaves the caller to guess where the ring wraps (the lowest and highest PUT
++ * it has seen). That holds while the title waits for every batch to be drawn;
++ * once the GPU runs asynchronously (RECOMP_NV2A_ACK_THREAD) the title fills
++ * the ring at its own pace, the guessed end goes stale, and the walk read the
++ * previous lap's leftovers -- NOPs with parameters like 106955041 among them.
++ * Following each JUMP to its target and stopping exactly at PUT needs no
++ * guess. */
++uint32_t nv2a_pb_run(uint32_t get_va, uint32_t put_va)
++{
++    /* The DMA pusher's method state, kept across kicks: D3D may set PUT in
++     * the middle of a method's data, and resuming there as if at a header
++     * read data words as commands -- one of them looked like a JUMP out of
++     * RAM, the walk was resynchronised past ~700 KB of commands, and the
++     * fence semaphores in them never executed. */
++    static uint32_t c_left, c_method, c_subch, c_noninc;
++    const uint8_t *mem = (const uint8_t *)xbox_GetMemoryOffset();
++    uint32_t va = get_va, words = 0, jumps = 0, unknown = 0;
++
++    if (s_exec_enabled < 0)
++        s_exec_enabled = getenv("RECOMP_PB_EXEC") != NULL;
++    while (va != put_va) {
++        uint32_t w;
++        /* Never walk out of RAM or forever: a GET that cannot reach PUT (the
++         * title restarted the ring without a JUMP, or a jump target was not
++         * what it looked like) resynchronises at PUT instead of reading on
++         * through memory until it faults. */
++        if ((va & 0x0FFFFFFFu) >= 0x04000000u || words >= 0x200000u) {
++            static int said;
++            if (said++ < 5)
++                fprintf(stderr, "  [PB] GET 0x%08X cannot reach PUT 0x%08X (%s); resync\n",
++                        va, put_va, words >= 0x200000u ? "too long" : "out of RAM");
++            c_left = 0;
++            return put_va;
++        }
++        if (c_left) {                            /* method data */
++            note(c_subch, c_method);
++            if (s_exec_enabled)
++                nv2a_pb_exec_method(c_subch, c_method,
++                                    *(const uint32_t *)(mem + va));
++            va += 4;
++            words++;
++            if (!c_noninc)
++                c_method += 4;
++            c_left--;
++            continue;
++        }
++        w = *(const uint32_t *)(mem + va);
++        va += 4;
++        words++;
++
++        if ((w & 3u) == 1u || (w & 0xE0000003u) == 0x20000000u) {
++            uint32_t target = (w & 3u) == 1u ? (w & 0xFFFFFFFCu)
++                                             : (w & 0x1FFFFFFCu);
++            jumps++;
++            va = XBOX_CONTIG_BASE | (target & 0x0FFFFFFFu);
++            continue;
++        }
++        if ((w & 0xFFFF0003u) == 0x00020000u)    /* RETURN outside a call */
++            continue;
++        if ((w & 3u) == 2u) {                    /* CALL */
++            uint32_t sub = XBOX_CONTIG_BASE | ((w & 0xFFFFFFFCu) & 0x0FFFFFFFu);
++            s_tot_calls++;
++            words += pb_walk(sub, sub + 0x400000u, 1, &jumps, &unknown);
++            continue;
++        }
++        if ((w & 0x00030003u) == 0u) {
++            c_left   = (w >> 18) & 0x7FFu;
++            c_subch  = (w >> 13) & 7u;
++            c_method =  w & 0x1FFCu;
++            c_noninc = (w & 0xE0000000u) == 0x40000000u;
++            continue;
++        }
++        unknown++;
++    }
++    s_tot_words += words;
++    s_tot_unknown += unknown;
++    s_tot_jumps += jumps;
++    s_tot_segments++;
++    return va;
++}
++
 +static void nv2a_pb_scan_impl(uint32_t start_va, uint32_t end_va);
 +
 +/* RECOMP_EXEC_STATS: how much wall time execution takes. Every 5 s prints the
@@ -1547,9 +1824,23 @@ index 7fae74c..c7a2e88 100644
  {
      static int dump = -1;
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
-index 72d5131..d07abe9 100644
+index 72d5131..27a01c4 100644
 --- a/src/kernel/xbox_memory_layout.c
 +++ b/src/kernel/xbox_memory_layout.c
+@@ -191,11 +191,11 @@ static const struct { uint32_t offset; uint32_t busy_mask; } NV2A_ACK[] = {
+      *
+      * Holding them at zero is correct rather than convenient: nothing here
+      * ever raises a GPU interrupt, so "none pending" is the truth. */
+-    { 0x000100, 0xFFFFFFFFu },  /* PMC_INTR_0    */
+     { 0x001100, 0xFFFFFFFFu },  /* PBUS_INTR_0   */
+     { 0x002100, 0xFFFFFFFFu },  /* PFIFO_INTR_0  */
+     { 0x400100, 0xFFFFFFFFu },  /* PGRAPH_INTR   */
+-    { 0x600100, 0xFFFFFFFFu },  /* PCRTC_INTR_0  */
++    /* PMC_INTR_0 and PCRTC_INTR_0 are not held at zero any more: the vblank
++     * tick raises them and nv2a_intr_thread emulates their acknowledge. */
+ };
+ 
+ /*
 @@ -449,6 +449,23 @@ static void ac97_arm_write_trap(void)
  static uint32_t g_dsp_ack[XBOX_MAX_DSP_ACK];
  static int g_dsp_ack_count = 0;
@@ -1623,7 +1914,7 @@ index 72d5131..d07abe9 100644
      for (int i = 0; i < g_fence_mirror_count; i++) {
          uint32_t dev, get_ptr;
  
-@@ -873,6 +930,50 @@ static void framebuffer_probe_tick(void)
+@@ -873,6 +930,56 @@ static void framebuffer_probe_tick(void)
      fflush(stderr);
  }
  
@@ -1651,11 +1942,17 @@ index 72d5131..d07abe9 100644
 +    unsigned spin = 0;
 +
 +    while (!InterlockedCompareExchange(&g_nv2a_ack_stop, 0, 0)) {
-+        for (size_t i = 0; i < sizeof(NV2A_ACK) / sizeof(NV2A_ACK[0]); i++) {
++        /* Only the PFB flush bit (NV2A_ACK[0]). The interrupt status
++         * registers after it are left to the slow loop: the vblank tick sets
++         * PCRTC_INTR_0 and then calls the title's ISR, and a thread clearing
++         * them in a tight loop wins that race -- the ISR reads "no vblank",
++         * never signals D3D's vblank event, and the title waits on it
++         * forever before its first frame. */
++        {
 +            volatile uint32_t *r =
-+                (volatile uint32_t *)((char *)regs + NV2A_ACK[i].offset);
-+            if (*r & NV2A_ACK[i].busy_mask)
-+                *r &= ~NV2A_ACK[i].busy_mask;
++                (volatile uint32_t *)((char *)regs + NV2A_ACK[0].offset);
++            if (*r & NV2A_ACK[0].busy_mask)
++                *r &= ~NV2A_ACK[0].busy_mask;
 +        }
 +        for (size_t i = 0; i < sizeof(NV2A_IDLE) / sizeof(NV2A_IDLE[0]); i++) {
 +            volatile uint32_t *r =
@@ -1674,7 +1971,70 @@ index 72d5131..d07abe9 100644
  static DWORD WINAPI nv2a_ack_thread(LPVOID param)
  {
      volatile uint32_t *regs = (volatile uint32_t *)param;
-@@ -1069,6 +1170,9 @@ static void xbox_Nv2aAckStart(void)
+@@ -931,6 +1038,21 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+             static uint32_t last_put;
+             DWORD now_ms = GetTickCount();
+             uint32_t put = *(volatile uint32_t *)((char *)regs + NV2A_USER_DMA_PUT);
++            if (nv2a_async()) {
++                /* Asynchronous: the GPU's own walk, GET -> PUT following
++                 * jumps (nv2a_pb_run), with GET reported where it stopped. */
++                extern uint32_t nv2a_pb_run(uint32_t, uint32_t);
++                static uint32_t get_va;
++                uint32_t put_va = XBOX_CONTIG_BASE | (put & 0x0FFFFFFFu);
++                volatile uint32_t *get =
++                    (volatile uint32_t *)((char *)regs + NV2A_USER_DMA_GET);
++                if (!get_va)
++                    get_va = put_va;
++                else if (get_va != put_va)
++                    get_va = nv2a_pb_run(get_va, put_va);
++                *get = get_va & 0x0FFFFFFFu;
++                last_put = put; last_put_ms = now_ms;
++            } else
+             if (put != last_put || (now_ms - last_put_ms) > 2000) {
+                 /* Survey the segment the title just submitted, once. */
+                 {
+@@ -1062,13 +1184,50 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+     return 0;
+ }
+ 
++/* Write-1-to-clear for the vblank interrupt, without trapping MMIO.
++ *
++ * The vblank tick (kernel_bridge.c) raises PCRTC_INTR_0 = 1 | NV2A_VBLANK_MARK
++ * and PMC_INTR_0 bit 24. D3D's vblank DPC (SSX 3 guest 0x0023B540) writes 1
++ * to PCRTC_INTR_0 -- clearing it on hardware -- and spins until PMC bit 24
++ * drops. In plain memory that write changes nothing, so the spin used to end
++ * only when the executor's register loop next zeroed every interrupt
++ * register: up to a whole software-rendered batch later on the default path
++ * (the timer thread, and every timer and DPC behind it, sat in that spin a
++ * third of the time), and never when the executor itself was waiting on a
++ * DPC (asynchronous mode deadlocked). The write of exactly 1 removes the
++ * marker bit, which is what this watches for. */
++#define NV2A_VBLANK_MARK 0x00000100u
++
++static DWORD WINAPI nv2a_intr_thread(LPVOID param)
++{
++    volatile uint32_t *pcrtc = (volatile uint32_t *)((char *)param + 0x600100);
++    volatile uint32_t *pmc   = (volatile uint32_t *)((char *)param + 0x000100);
++
++    while (!InterlockedCompareExchange(&g_nv2a_ack_stop, 0, 0)) {
++        if (*pcrtc == 1u)                       /* acknowledged: marker gone */
++            *pcrtc = 0;
++        if (!(*pcrtc & 1u) && (*pmc & 0x01000000u))
++            *pmc &= ~0x01000000u;
++        {
++            extern void xbox_Nv2aSwmPulse(void);
++            xbox_Nv2aSwmPulse();
++        }
++        Sleep(1);
++    }
++    return 0;
++}
++
+ static void xbox_Nv2aAckStart(void)
+ {
++    CloseHandle(CreateThread(NULL, 0, nv2a_intr_thread, g_nv2a_memory, 0, NULL));
+     dsp_ack_init();
+     poke_init();
      g_nv2a_ack_stop = 0;
      g_nv2a_ack_thread = CreateThread(NULL, 0, nv2a_ack_thread,
                                       g_nv2a_memory, 0, NULL);

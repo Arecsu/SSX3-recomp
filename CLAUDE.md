@@ -137,7 +137,58 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   title stalls in BlockOnTime `sub_00234BE0` waiting for a time whose
   commands were written (dev write ptr past PUT) yet never kicked off — the
   lock-step mirror hid that D3D expects something else to kick them. Next
-  step there: work out sub_00234BE0's kick conditions. Real speed needs hardware rendering
+  step there: work out sub_00234BE0's kick conditions.
+  UPDATE 2026-10-13 (profile: main thread 65% in the kickoff spin
+  sub_00234A10, executor busy only ~30% -- the hand-off, not raw raster
+  speed, is the limit). Async-mode findings, toolkit patch:
+  * The fast ack thread cleared the interrupt-status registers too; it beat
+    the vblank tick to PCRTC_INTR and the title waited forever on its vblank
+    event before the first frame. Now it acks only the PFB flush bit.
+  * BlockOnTime (sub_00234BE0), when the wanted time is >= 0x2400 bytes
+    ahead of the GPU, patches NO_OPERATION(5) (+ 0x40110) into the
+    pushbuffer at that time's position, kicks off, and sleeps on event
+    dev+0x1DBC. NV2A traps a non-zero NOP as a software method (xemu:
+    TRAPPED_ADDR 0x400704 / DATA 0x400708, NSOURCE 0x400108 = 1,
+    PGRAPH_INTR bit 20, PMC bit 12, pushbuffer stalls); D3D's DPC
+    0x0023BC60 -> 0x0023BA20 -> 0x0023B7B0(data) sets the event. Now
+    implemented (xbox_Nv2aSoftwareMethod + kernel_swm_tick/_done on the
+    timer thread; registers cleared only after the DPC drain, since the ISR
+    just queues the DPC) -- async mode only.
+  * Still broken: async mode then sees NOP parameters like 40, 9,
+    106955041 -- the executor appears to read pushbuffer the title has not
+    finished writing (or misparses after a wrap) -- and each such NOP stalls
+    the executor up to the 500 ms timeout: 2.5 s/batch, FPS ~0. Next: check
+    the executor's scan bounds against D3D's write pointer in async mode
+    (it must never read past PUT), then retest.
+  UPDATE 2 (same day, later):
+  * Walker: async mode now runs nv2a_pb_run (nv2a_pb_scan.c) -- GET -> PUT
+    following JUMPs, method state (remaining data words) kept across kicks
+    because D3D sets PUT mid-method; resync guard if GET leaves RAM. This
+    removed the garbage NOPs (they were data words read as headers) and a
+    crash.
+  * NOP software methods are frequent and real: D3D schedules FLIPS with
+    them (sub_0023B7B0: data & 0x1F = opcode, 1 = flip, data >> 5 = surface
+    address | interval), ~55/s. Timer thread now wakes on an event, not its
+    10 ms tick (was 100% executor wait).
+  * Interrupt acknowledge emulation (both modes): nv2a_intr_thread
+    (xbox_memory_layout.c) emulates write-1-to-clear of PCRTC_INTR via a
+    marker bit (0x100) set by the vblank tick; PMC/PCRTC no longer held at
+    zero by the slow loop. Default mode verified unchanged.
+  * The PGRAPH handler acks by writing back what it read (undetectable), and
+    D3D's DPC re-runs it while PMC bit 12 is set: one flip trap became
+    thousands (flip seq hal+0x1CC reached 0x45604; flip targets 280k vblanks
+    ahead; display reset in sub_0022E8C0 waits forever on the flip-pending
+    flag). FIX IN PROGRESS: src/ssx3_overrides.c wraps sub_0023BA20 (_gen)
+    and calls xbox_Nv2aSwmHandled() to clear the trap right after the
+    handler; the timed pulse is now only a 50 ms backstop. Lift regenerated
+    (`scripts/regen.sh lift` done); the FULL REBUILD was interrupted by a
+    reboot -- run `scripts/sync-windows.sh` + `tools\build.bat` again, then
+    test `live.ps1 start -Env @{RECOMP_NV2A_ACK_THREAD='1'; RECOMP_SWM_STATS='1'}`.
+  * The visual glitches seen in async runs (whole font atlas drawn, stray
+    polygons, flashing scores) were async-only: mis-executed commands and
+    the repeated flips. Default mode does not show them.
+  Default (lock-step) mode is unchanged: 4-7 FPS in a race.
+  Real speed needs hardware rendering
   (vertex-program titles into the D3D11 pgraph translator) or batch-parallel
   rasterising.
   DONE (toolkit patch): batch-level parallel rasterising — vertex-program
