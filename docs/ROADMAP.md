@@ -112,6 +112,11 @@ part of the race (docs/screenshots/25).
   200 -> 85 ms/s, still the shadow maps' CPU decode (~125/s). Next: skip
   the decode for maps the GPU could render itself (swizzled targets on the
   GPU, 2.2) and the CPU vertex programs (2.0d).
+  Step 4: post-transform vertex cache per batch (a vertex named twice in a
+  strip/list runs once: ~35% of vertex-program runs saved,
+  RECOMP_VSH_STATS=1 counts) and a parallel vertex-program pool for batches
+  >= 256 vertices (RECOMP_VSH_THREADS; SSX 3's batches are mostly smaller,
+  so it rarely engages). Race 42-45 FPS, p50 ~21 ms.
 - [ ] 2.0d Vertex programs on the GPU (SPIR-V), the next big CPU cost.
 - [ ] 2.1 Device and presentation: D3D11 device + swap chain in the game window; flips present the front surface; vsync-paced at 60 Hz. **Done (opt-in `RECOMP_D3D_PRESENT=1`, toolkit `src/video/gpu_present.c`):** device + DISCARD swap chain on the window, each flipped frame uploaded to the back buffer and presented with vsync (`RECOMP_VSYNC=0` off). Screenshots now come from inside the process (`RECOMP_SNAP_TRIGGER`, used by `live.ps1 snap`), since PrintWindow cannot read a swap chain. Left: make it the default after a visual check; share the device with the renderer (2.2+).
 - [ ] 2.2 Surfaces: colour/depth render targets as D3D11 textures keyed by guest address and format, including **swizzled RTs** (rider shadow maps) and clear rects; Z24S8/Z16 depth, stencil.
@@ -184,6 +189,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — Race 42-45 FPS (post-transform vertex cache).
 - 2026-10-14 — Race 38-43 FPS on Vulkan (shadow-map textures updated in place).
 - 2026-10-14 — Race 22 -> 34-36 FPS on Vulkan: trap waits by event, GPU work submitted in pieces, cached readback memory.
 - 2026-10-14 — Vulkan: target = surface with the clip as scissor, only flipped surfaces drawn on the GPU; black race shapes shown to be shared with software (not fixed). race_test -RaceSec/-NoTaps/-Snap for one-command checks.
