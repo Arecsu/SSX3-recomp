@@ -117,6 +117,12 @@ part of the race (docs/screenshots/25).
   RECOMP_VSH_STATS=1 counts) and a parallel vertex-program pool for batches
   >= 256 vertices (RECOMP_VSH_THREADS; SSX 3's batches are mostly smaller,
   so it rarely engages). Race 42-45 FPS, p50 ~21 ms.
+  Step 5 -- the frame-rate ceiling was the clock: the vblank was scheduled
+  with GetTickCount64 (~15.6 ms steps) as "now + 16", i.e. every 15.6 or
+  31.2 ms, ~43 Hz, and the title paces its frames on vblank. Now a 60 Hz
+  grid from the performance counter; the timer thread waits until the next
+  vblank/timer with 1 ms resolution; kernel timers use the same clock and
+  stay on their period grid. Race 53-58 FPS, p50 17 ms, p99 24-33 ms.
 - [ ] 2.0d Vertex programs on the GPU (SPIR-V), the next big CPU cost.
 - [ ] 2.1 Device and presentation: D3D11 device + swap chain in the game window; flips present the front surface; vsync-paced at 60 Hz. **Done (opt-in `RECOMP_D3D_PRESENT=1`, toolkit `src/video/gpu_present.c`):** device + DISCARD swap chain on the window, each flipped frame uploaded to the back buffer and presented with vsync (`RECOMP_VSYNC=0` off). Screenshots now come from inside the process (`RECOMP_SNAP_TRIGGER`, used by `live.ps1 snap`), since PrintWindow cannot read a swap chain. Left: make it the default after a visual check; share the device with the renderer (2.2+).
 - [ ] 2.2 Surfaces: colour/depth render targets as D3D11 textures keyed by guest address and format, including **swizzled RTs** (rider shadow maps) and clear rects; Z24S8/Z16 depth, stencil.
@@ -136,7 +142,7 @@ With rendering off the CPU, the game itself must fit in 16.7 ms.
 - [ ] Profile guest time per frame (sampling profiler + `tools/profile_tally.py`); list the top recompiled functions and kernel calls.
 - [ ] Remove waits: GPU hand-off, guest-lock contention, loop-yield cost, timer/DPC latency; fence waits answered as soon as the GPU reaches them.
 - [ ] Recompiler-level wins: x87 emulation hot paths, memory access helpers, indirect-call dispatch, `RECOMP_LOOP_YIELD` granularity.
-- [ ] Frame pacing: the title's 60 Hz clock (vblank, input ring) matched to the host display; no drift at 60.
+- [ ] Frame pacing: the title's 60 Hz clock (vblank, input ring) matched to the host display; no drift at 60. **2026-10-14:** vblank and kernel timers on the performance counter (were GetTickCount, ~43 Hz effective vblank); left: sync to the host display's refresh.
 - [ ] Gate: bench p99 ≤ 16.7 ms on every peak.
 
 ## Phase 4 — Audio, complete
@@ -189,6 +195,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — Race 53-58 FPS on Vulkan: vblank/timers on the performance counter (the ~43 FPS ceiling was a ~43 Hz vblank).
 - 2026-10-14 — Race 42-45 FPS (post-transform vertex cache).
 - 2026-10-14 — Race 38-43 FPS on Vulkan (shadow-map textures updated in place).
 - 2026-10-14 — Race 22 -> 34-36 FPS on Vulkan: trap waits by event, GPU work submitted in pieces, cached readback memory.

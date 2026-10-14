@@ -234,7 +234,7 @@ index a91edbe..a18661a 100644
  }
  
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
-index c65ba43..9cb39d8 100644
+index c65ba43..b2a1ae9 100644
 --- a/src/kernel/kernel_bridge.c
 +++ b/src/kernel/kernel_bridge.c
 @@ -1514,6 +1514,31 @@ static HANDLE bridge_resolve_handle(uint32_t token);
@@ -336,7 +336,51 @@ index c65ba43..9cb39d8 100644
      g_esp -= 4; BRIDGE_MEM32(g_esp) = arg2;
      g_esp -= 4; BRIDGE_MEM32(g_esp) = arg1;
      g_esp -= 4; BRIDGE_MEM32(g_esp) = context;
-@@ -2270,7 +2328,10 @@ static void kernel_vblank_tick(void)
+@@ -2251,26 +2309,49 @@ static int kernel_raise_interrupt(uint32_t vector)
+ #define NV2A_PCRTC_INTR_VBLANK (1u << 0)
+ #define NV2A_VECTOR            3u
+ 
++/* Milliseconds from the performance counter. GetTickCount64 moves in
++ * ~15.6 ms steps: a "16 ms" vblank scheduled with it fired every 15.6 or
++ * 31.2 ms, ~43 Hz on average -- and the title paces its frames on vblank,
++ * so that was its frame-rate ceiling. The kernel timers use it too. */
++static double qpc_now_ms(void)
++{
++    static LARGE_INTEGER f;
++    LARGE_INTEGER c;
++    if (!f.QuadPart)
++        QueryPerformanceFrequency(&f);
++    QueryPerformanceCounter(&c);
++    return (double)c.QuadPart * 1000.0 / (double)f.QuadPart;
++}
++
++static double g_next_vblank_ms;            /* for the timer thread's wait */
++
+ static void kernel_vblank_tick(void)
+ {
+     static int enabled = -1;
+-    static long long next_ms;
+-    long long now;
++    double now;
+ 
+     if (enabled < 0)
+         enabled = getenv("RECOMP_VBLANK") != NULL;
+     if (!enabled)
+         return;
+ 
+-    now = (long long)GetTickCount64();
+-    if (now < next_ms)
++    now = qpc_now_ms();
++    if (now < g_next_vblank_ms)
+         return;
+-    next_ms = now + 16;                       /* ~60 Hz */
++    /* A steady 60 Hz grid; after a stall of more than 50 ms start afresh
++     * rather than delivering the missed ones back to back. */
++    if (!g_next_vblank_ms || now - g_next_vblank_ms > 50.0)
++        g_next_vblank_ms = now + 1000.0 / 60.0;
++    else
++        g_next_vblank_ms += 1000.0 / 60.0;
+ 
      if (!xbox_GetConnectedInterrupt(NV2A_VECTOR))
          return;
  
@@ -348,7 +392,7 @@ index c65ba43..9cb39d8 100644
      BRIDGE_MEM32(XBOX_NV2A_REG_BASE + NV2A_PMC_INTR_0)   |= NV2A_PMC_INTR_PCRTC;
  
      {
-@@ -2284,6 +2345,224 @@ static void kernel_vblank_tick(void)
+@@ -2284,6 +2365,224 @@ static void kernel_vblank_tick(void)
      }
  }
  
@@ -573,7 +617,22 @@ index c65ba43..9cb39d8 100644
  /* Run whatever is queued. Called from the timer thread, which has the guest
   * stack and TIB that a deferred routine needs. */
  static void kernel_drain_dpcs(void)
-@@ -2566,13 +2845,19 @@ static DWORD WINAPI kernel_timer_thread(LPVOID unused)
+@@ -2541,6 +2840,14 @@ static int g_timer_started;
+ 
+ static DWORD WINAPI kernel_timer_thread(LPVOID unused)
+ {
++    /* 1 ms waits (the vblank grid, timers) instead of the 15.6 ms default. */
++    {
++        typedef UINT (WINAPI *tbp_t)(UINT);
++        HMODULE w = LoadLibraryA("winmm.dll");
++        tbp_t tbp = w ? (tbp_t)GetProcAddress(w, "timeBeginPeriod") : NULL;
++        if (tbp)
++            tbp(1);
++    }
+     int slot = xbox_worker_stack_alloc();
+ 
+     (void)unused;
+@@ -2566,14 +2873,32 @@ static DWORD WINAPI kernel_timer_thread(LPVOID unused)
          g_fs_base = tib;
      }
  
@@ -584,17 +643,50 @@ index c65ba43..9cb39d8 100644
          int i;
  
 -        Sleep(10);
-+        /* A 10 ms tick, or at once when the executor posts a software
-+         * method (kernel_swm_tick below). */
-+        WaitForSingleObject(g_nv2a_swm_event, 10);
++        /* Until the next vblank or timer is due (at most 10 ms), or at once
++         * when the executor posts a software method (kernel_swm_tick). */
++        {
++            double t = qpc_now_ms(), until = t + 10.0;
++            DWORD wait;
++            if (g_next_vblank_ms && g_next_vblank_ms < until)
++                until = g_next_vblank_ms;
++            EnterCriticalSection(&g_timer_lock);
++            for (i = 0; i < XBOX_MAX_TIMERS; i++)
++                if (g_timers[i].timer_va && (double)g_timers[i].due_ms < until)
++                    until = (double)g_timers[i].due_ms;
++            LeaveCriticalSection(&g_timer_lock);
++            wait = until > t ? (DWORD)(until - t + 0.5) : 0;
++            WaitForSingleObject(g_nv2a_swm_event, wait);
++        }
          kernel_vblank_tick();  /* the GPU's frame clock */
 +        kernel_swm_tick();     /* NOP(n) software methods from the executor */
          kernel_drain_dpcs();   /* deferred work, before due timers */
+-        now = (long long)GetTickCount64();
 +        kernel_swm_done();
-         now = (long long)GetTickCount64();
++        now = (long long)qpc_now_ms();
  
          for (i = 0; i < XBOX_MAX_TIMERS; i++) {
-@@ -2635,6 +2920,23 @@ static void kernel_set_timer(uint32_t timer_va, long long due_100ns,
+             uint32_t dpc, fired_va;
+@@ -2585,8 +2910,10 @@ static DWORD WINAPI kernel_timer_thread(LPVOID unused)
+             }
+             fired_va = g_timers[i].timer_va;
+             dpc = g_timers[i].dpc_va;
+-            if (g_timers[i].period_ms > 0)
+-                g_timers[i].due_ms = now + g_timers[i].period_ms;
++            if (g_timers[i].period_ms > 0)          /* on the grid, no drift */
++                g_timers[i].due_ms = now - g_timers[i].due_ms > g_timers[i].period_ms
++                                   ? now + g_timers[i].period_ms
++                                   : g_timers[i].due_ms + g_timers[i].period_ms;
+             else
+                 g_timers[i].timer_va = 0;      /* one-shot, done */
+             LeaveCriticalSection(&g_timer_lock);
+@@ -2630,11 +2957,28 @@ static void kernel_set_timer(uint32_t timer_va, long long due_100ns,
+     if (free_slot >= 0) {
+         g_timers[free_slot].timer_va  = timer_va;
+         g_timers[free_slot].dpc_va    = dpc_va;
+-        g_timers[free_slot].due_ms    = (long long)GetTickCount64() + delay_ms;
++        g_timers[free_slot].due_ms    = (long long)qpc_now_ms() + delay_ms;
+         g_timers[free_slot].period_ms = period_ms;
      }
      LeaveCriticalSection(&g_timer_lock);
  
@@ -618,7 +710,7 @@ index c65ba43..9cb39d8 100644
      /* A freshly set timer starts unsignaled, like the real KeSetTimer. */
      {
          HANDLE ev = ke_shadow_lookup(timer_va);
-@@ -2966,6 +3268,7 @@ static NTSTATUS bridge_create_file_impl(
+@@ -2966,6 +3310,7 @@ static NTSTATUS bridge_create_file_impl(
          bridge_write_handle(handle_va, h);
          bridge_write_iostatus(iostatus_va, ios.Status, (uint32_t)ios.Information);
      } else {
@@ -626,7 +718,7 @@ index c65ba43..9cb39d8 100644
          bridge_write_iostatus(iostatus_va, st, 0);
      }
      return st;
-@@ -3159,6 +3462,16 @@ static void bridge_NtOpenFile(void)
+@@ -3159,6 +3504,16 @@ static void bridge_NtOpenFile(void)
   */
  recomp_func_t recomp_lookup_kernel(uint32_t xbox_va);
  
@@ -643,7 +735,7 @@ index c65ba43..9cb39d8 100644
  static void deliver_one_apc(uint32_t apc_routine, uint32_t apc_context,
                              uint32_t iostatus)
  {
-@@ -3175,7 +3488,11 @@ static void deliver_one_apc(uint32_t apc_routine, uint32_t apc_context,
+@@ -3175,7 +3530,11 @@ static void deliver_one_apc(uint32_t apc_routine, uint32_t apc_context,
          g_esp -= 4; BRIDGE_MEM32(g_esp) = iostatus;
          g_esp -= 4; BRIDGE_MEM32(g_esp) = apc_context;
          g_esp -= 4; BRIDGE_MEM32(g_esp) = 0;   /* dummy return address */
@@ -656,7 +748,7 @@ index c65ba43..9cb39d8 100644
          g_esp += 12;
      } else {
          uint32_t ord = 0;
-@@ -3399,6 +3716,20 @@ static int bridge_async_io_enabled(void)
+@@ -3399,6 +3758,20 @@ static int bridge_async_io_enabled(void)
      return on;
  }
  
@@ -677,7 +769,7 @@ index c65ba43..9cb39d8 100644
  /* ── NtReadFile (ordinal 219, 8 args = 32 bytes) ──────── */
  static void bridge_NtReadFile(void)
  {
-@@ -3436,7 +3767,9 @@ static void bridge_NtReadFile(void)
+@@ -3436,7 +3809,9 @@ static void bridge_NtReadFile(void)
           * whatever precedes the file it actually wants, and a read that stops
           * early looks identical to one that never started -- until you can
           * see where each one landed. */
@@ -688,7 +780,7 @@ index c65ba43..9cb39d8 100644
              fprintf(stderr, "  [READ] from=0x%08X ev=%08X apc=%08X @%lld want=%u got=%u st=0x%08X  %02X %02X %02X %02X\n",
                      g_xbox_kernel_caller, STACK_ARG(1), STACK_ARG(2),
                      (long long)off.QuadPart, length, got,
-@@ -4155,8 +4488,31 @@ static void bridge_KeQueryBasePriorityThread(void)
+@@ -4155,8 +4530,31 @@ static void bridge_KeQueryBasePriorityThread(void)
          XBOX_TO_NATIVE(STACK_ARG(0)));
  }
  
@@ -720,7 +812,7 @@ index c65ba43..9cb39d8 100644
      g_eax = (uint32_t)xbox_KeSetBasePriorityThread(
          XBOX_TO_NATIVE(STACK_ARG(0)), (LONG)STACK_ARG(1));
  }
-@@ -4472,15 +4828,49 @@ static void bridge_KeWaitForMultipleObjects(void)
+@@ -4472,15 +4870,49 @@ static void bridge_KeWaitForMultipleObjects(void)
      }
      if (count > BRIDGE_MAXIMUM_WAIT_OBJECTS)
          count = BRIDGE_MAXIMUM_WAIT_OBJECTS;
@@ -773,7 +865,7 @@ index c65ba43..9cb39d8 100644
  }
  
  #undef BRIDGE_MAXIMUM_WAIT_OBJECTS
-@@ -7349,8 +7739,7 @@ static void bridge_KeSetPriorityProcess(void)
+@@ -7349,8 +7781,7 @@ static void bridge_KeSetPriorityProcess(void)
  /* --- KeSetPriorityThread (ordinal 148, 2 args = 8 bytes) --- */
  static void bridge_KeSetPriorityThread(void)
  {
@@ -783,7 +875,7 @@ index c65ba43..9cb39d8 100644
      g_eax = 0;
  }
  
-@@ -9371,14 +9760,218 @@ static int guest_cpu_enabled(void)
+@@ -9371,14 +9802,218 @@ static int guest_cpu_enabled(void)
      return g_guest_cpu_on;
  }
  
@@ -1002,7 +1094,7 @@ index c65ba43..9cb39d8 100644
      }
  }
  
-@@ -9391,11 +9984,78 @@ void guest_cpu_part(void)
+@@ -9391,11 +10026,78 @@ void guest_cpu_part(void)
      t_guest_thread = 0;
  }
  
@@ -1082,7 +1174,7 @@ index c65ba43..9cb39d8 100644
      if (held) {                        /* let other guest threads run meanwhile */
          t_guest_held = 0;
          LeaveCriticalSection(&g_guest_cpu);
-@@ -9403,11 +10063,16 @@ static void kernel_thunk_dispatch(void)
+@@ -9403,11 +10105,16 @@ static void kernel_thunk_dispatch(void)
      t_dispatch_depth++;
      kernel_thunk_dispatch_body();
      t_dispatch_depth--;
@@ -1100,7 +1192,7 @@ index c65ba43..9cb39d8 100644
          t_guest_held = 1;
      }
      (void)held;
-@@ -9449,7 +10114,7 @@ static void kernel_thunk_dispatch_body(void)
+@@ -9449,7 +10156,7 @@ static void kernel_thunk_dispatch_body(void)
          static DWORD last_summary_tick = 0;
          DWORD now = GetTickCount();
          if (last_summary_tick == 0) last_summary_tick = now;
