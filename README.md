@@ -4,12 +4,14 @@ Static recompilation of **SSX 3** (original Xbox, PAL) to a native Windows
 executable with [xboxrecomp](https://github.com/sp00nznet/xboxrecomp), plus a
 byte-exact per-function disassembly for hand decompilation.
 
-**Current state: playable.** It boots through the intro, title and menus,
-loads Snow Jam and runs full races with HUD, rider shadows and audio, at
-about **9–12 FPS** on the toolkit's software GPU (no hardware rendering yet).
-A keyboard or an XInput controller works as player 1.
+**Current state: playable.** It boots straight to the title (intro movies
+skipped by default), runs the menus, loads Snow Jam and plays full races
+with HUD, rider shadows and audio at **53–58 FPS** on the GPU (Vulkan
+renderer, the default; the software rasteriser runs at ~12). A keyboard or
+an XInput controller works as player 1. The Linux port and the Vulkan
+renderer are by Corné Dorrestijn (docs/LINUX.md, docs/VULKAN.html).
 
-![race at 11 FPS](docs/screenshots/21-race-async-11fps.png)
+![race at 57 FPS on Vulkan](docs/screenshots/27-vulkan-race-57fps.png)
 
 No game data or game code is in this repository. You need your own rip of the
 disc (`default.xbe` + `data/`) next to this repo in `../SSX3/`; everything
@@ -24,7 +26,9 @@ scripts/sync-windows.sh --game   # copy to C:\Code\Xbox for the MSVC build
 cmd.exe /c 'C:\Code\Xbox\ssx3-recomp\tools\build.bat'   # MSVC + Ninja, ~18 min the first time
 ```
 
-Windows needs Visual Studio 2022 with the C++ workload. The toolkit is pinned
+Windows needs Visual Studio 2022 with the C++ workload and the Vulkan SDK
+(`winget install KhronosGroup.VulkanSDK`; `tools\build.bat` finds it). The
+toolkit is pinned
 at v0.13.1 (`193e299`) with this project's fixes in
 `patches/xboxrecomp-local.patch`.
 
@@ -40,7 +44,8 @@ Run `tools\play.bat` on Windows. Keyboard (the game window must have focus):
 | Numpad 8/4/2/6 | Left stick | I J K L | Right stick |
 
 An Xbox/XInput controller needs no setting. Each run's log is kept in
-`logs\` (newest 40).
+`logs\` (newest 40). `RECOMP_GPU=sw` uses the software rasteriser instead of
+Vulkan; `RECOMP_SKIP_INTRO=0` plays the intro movies.
 
 ## Screenshots
 
@@ -56,12 +61,10 @@ loading screen, intro movie, menus, first races).
 
 ## Known issues
 
-- **Intermittent stall at 43% on the race load** (about 1 run in 6): the
-  world streamer loses a request. Restart and it usually loads.
-- **Black wedges in races** now and then: a rider's board shadow projected
-  over the terrain.
-  ![shadow wedge](docs/screenshots/22-race-shadow-wedge-known-issue.png)
-- **Speed**: rendering is a software rasteriser; real speed needs a GPU path.
+- **Black shapes in races** at some camera positions (e.g. over the first
+  jump), with both renderers -- being investigated.
+  ![black shapes](docs/screenshots/25-vulkan-race-black-sky-known-issue.png)
+- **Speed**: 53–58 FPS in races, not yet a locked 60 (p99 frame 24–33 ms).
 - `RECOMP_NV2A_ACK_THREAD=0` switches back to the older lock-step GPU mode
   (4–7 FPS) if the default asynchronous mode misbehaves.
 

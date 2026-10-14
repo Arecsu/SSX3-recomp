@@ -17,11 +17,13 @@ speed (no GPU path), an intermittent black shadow wedge in races, the
 pink-lit start area. Details under "Known open items" below; the toolkit
 changes are all in `patches/xboxrecomp-local.patch` (base 193e299).
 
-**Vulkan renderer (2026-10-14):** `RECOMP_GPU=vk` replaces the software
+**Vulkan renderer (2026-10-14, the default; `RECOMP_GPU=sw` = software):** replaces the software
 rasteriser with `src/vk/` (from the `linux` branch, docs/VULKAN.html, Linux
 notes in docs/LINUX.md). Windows needs the Vulkan SDK (`winget install
-KhronosGroup.VulkanSDK`; `tools\build.bat` finds it). Race 22-28 FPS on
-Windows vs 9-12 in software.
+KhronosGroup.VulkanSDK`; `tools\build.bat` finds it). Race 53-58 FPS on
+Windows (p50 17 ms) vs ~12 in software -- see ROADMAP 2.0c for the steps
+(readback memory, trap waits, piecewise submits, render-target textures in
+place, vertex cache, and the vblank clock that capped it at ~43).
 
 **Roadmap:** [docs/ROADMAP.md](docs/ROADMAP.md) is the plan and tracker (phases,
 gates, checkboxes, progress log). Work from it: pick the next unchecked item of

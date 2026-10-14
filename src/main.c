@@ -682,8 +682,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
 #ifdef SSX3_VULKAN
     {
+        /* The Vulkan renderer is the default (race 53-58 FPS vs ~12 in
+         * software); RECOMP_GPU=sw (or 0) keeps the software rasteriser,
+         * which is also the fallback when no Vulkan device can be opened. */
         const char *gpu = getenv("RECOMP_GPU");
-        if (gpu && !strcmp(gpu, "vk") && !vkr_backend_install())
+        int want = !(gpu && (!strcmp(gpu, "sw") || !strcmp(gpu, "0")));
+        if (want && !vkr_backend_install())
             fprintf(stderr, "[VKR] unavailable, software rasteriser stays\n");
     }
 #endif

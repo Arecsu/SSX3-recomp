@@ -76,8 +76,9 @@ Per second in a race: renderer draws ~80 ms, flip readback ~240 ms; the rest
 is guest code and CPU vertex programs. Known: black polygons in the sky in
 part of the race (docs/screenshots/25).
 
-- [ ] 2.0 Vulkan by default on Windows once a parallel reliability batch and
-  the screenshot suite match software (today opt-in: `RECOMP_GPU=vk`).
+- [x] 2.0 Vulkan by default (2026-10-14; `RECOMP_GPU=sw` = software, also the
+  fallback without a Vulkan device): race_par 6x2 with Vulkan 12/12 OK in
+  1.9 min; title, menus, briefing and races checked by screenshot.
 - [ ] 2.0b Black shapes in races (docs/screenshots/25): NOT Vulkan-specific --
   the software path shows them too (user report), so the cause is in the
   shared executor. Reproducible: `tools\race_test.ps1 -Runs 1 -RaceSec 22
@@ -195,6 +196,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — Vulkan is the default renderer (6x2 batch 12/12).
 - 2026-10-14 — Race 53-58 FPS on Vulkan: vblank/timers on the performance counter (the ~43 FPS ceiling was a ~43 Hz vblank).
 - 2026-10-14 — Race 42-45 FPS (post-transform vertex cache).
 - 2026-10-14 — Race 38-43 FPS on Vulkan (shadow-map textures updated in place).
