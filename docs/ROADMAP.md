@@ -35,6 +35,8 @@ keyboard/XInput input, boot→race reliability ~5/6. See README and CLAUDE.md.
 - [x] Game state hook (`src/game_state.c`): the game's own state machine published as `[STATE]` lines and `game_state.txt` (`tools/game_state.ps1`); top-level states named. Next: map the in-race sub-states and switch the scripts from draw counts to it.
 - [ ] `tools/race_test.ps1` extended: all peaks/events (open), configurable run count (done), summary table; failures auto-dump with a 20 s write window (done) and are classified from the last screen -- `[title: no input]`, `[menu hang]`, `[load stall]`, `[other]`, `CRASH` (done).
 - [x] Parallel test runs (2026-10-14): `tools/race_par.ps1 -Instances N -Runs M [-Env @{...}]` runs N game instances at once, each in its own directory `work\i<k>` (junction `game` -> the shared rip; own pad file, pid, logs, triggers, `game_state.txt`; `live.ps1` / `to_race.ps1` / `race_test.ps1` take `-Dir`), with `RECOMP_RASTER_THREADS` = cores / N each. Summary printed and saved to `logs/race_par_<ts>.txt`. 2 instances = 2 runs in the time of one; use 6-10 for the ~1-in-10 bugs (63 GB RAM / 32 cores here). Default for reliability work from now on.
+- [x] Watchdog in `to_race.ps1` (2026-10-14, default on, `-NoWatchdog` off): a run ends early with `stuck: [<class>]` when Start presses go unread for 45 s (`[no pad]`), FPS is 0 for 15 s in the menus/loading/race (`[freeze]`), or a game state outlives its budget (boot 60 s, intro 120 s, frontend 180 s, event_enter 30 s, loading 90 s: `[<state> stall]`); `race_test.ps1` reports that class and still dumps threads first. A stuck run costs 20-50 s instead of the 5-8 min timeout: race_par 8x2 went from 22 to 4.6 min.
+- [ ] Watchdog: also keep a screenshot of every stuck run (`live.ps1 snap` before the dump) as a record of what it looked like.
 - [ ] Use parallel runs everywhere: `bench.ps1` / `shots.ps1` / `soak.ps1` take `-Dir` too, so measurements can run beside a reliability batch (note: concurrent instances share the CPU, so benchmarks must run alone).
 - [x] Screenshot suite: `tools/shots.ps1` saves every distinct menu screen (by draw count), the briefing and 4 race shots into `logs/shots_<ts>[_label]/`; first software-path reference set: `logs/shots_20261013-235549_software` (16 shots). Per-peak race spots come with the all-peaks navigator.
 - [x] Baseline numbers recorded here (2026-10-13, default build, Snow Jam race, `tools/bench.ps1 -Seconds 90`):
@@ -51,7 +53,8 @@ Fix the known failures before the renderer changes so regressions stay visible.
 - [ ] Any remaining async-GPU hang (map-select/rules class): soak-test the idle wake; replace it with exact behaviour if a better model of D3D's NOP patching emerges. **2026-10-14:** caught one (fence already past the waited time, wake lost); watchdog `[BLOCK-RESCUE]` delivers the owed wake (default on) -- 10 runs, 2 rescues, both raced. Root cause of the lost wake still open.
 - [x] ISRs and DPCs run under the guest-CPU lock (single-CPU semantics; `RECOMP_IRQ_LOCK=0` to disable). They used to run on host threads in parallel with guest threads; the USB driver's enumeration then stalled in about 1 boot in 6 (no pad on the title screen). After: 6/6 runs enumerated fully.
 - [ ] Guest-thread priority scheduling in the guest lock (Xbox is single-CPU, strict priority) — only if Phase 1 bugs point at ordering.
-- [ ] USB enumeration under heavy host load (8 parallel instances: ~25% stay on the title screen without a pad; CLAUDE.md "USB ENUMERATION UNDER LOAD").
+- [ ] USB enumeration under heavy host load (8 parallel instances: ~25% stay on the title screen without a pad; CLAUDE.md "USB ENUMERATION UNDER LOAD"). With the watchdog it shows as `[no pad]` or `[freeze]` (title screen at 1-2 draws, FPS 0: the frontend itself stops, not only the input) -- 5 of 16 runs at 8 instances.
+- [ ] Crash in EA movie/stream code on the main thread (2026-10-14, 1 in 16 parallel runs): read fault at 0xE0220705, guest stack 0x00173B36 <- 0x00173C05 <- 0x001731CD <- 0x001740C4; log kept as `logs/crash_20261014_i8_stderr.txt` (Windows build dir).
 - [ ] Gate: 20/20 boot→race on both GPU modes.
 
 ## Phase 2 — GPU renderer (D3D11), the big one
@@ -134,6 +137,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — Watchdog in to_race.ps1 ([no pad] / [freeze] / [<state> stall]); race_par 8x2 in 4.6 min (was 22).
 - 2026-10-14 — 43% stall FIXED (guest CPU kept across uncontended critical sections): race_par 8x3 = 18 OK, 0 load stalls, 6 title/no-pad (USB under load, new item).
 - 2026-10-14 — Parallel test runs: tools/race_par.ps1 (N instances in work\i<k>); 2x1 trial OK in 1.5 min.
 - 2026-10-14 — 43% stall traced to EA's STRM manager reading the next request at the old file position (skipped seek after a 'CEND'); [EAREAD]/[STRM] logging built, next: catch a stall with it (resume note in CLAUDE.md).

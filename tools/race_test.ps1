@@ -19,7 +19,9 @@ for ($i = 1; $i -le $Runs; $i++) {
     # pad that never enumerated (stuck on the title, < 200 draws), a hang in
     # the menus, and the race-load stall (309 / 22 = loading screens).
     $kind = ""
-    if ($out -match "last screen: (\d+) draws") {
+    if ($out -match "^stuck: (\[[^\]]+\])") {
+        $kind = "$($Matches[1]) "                 # the watchdog's own verdict
+    } elseif ($out -match "last screen: (\d+) draws") {
         $d = [int]$Matches[1]
         $kind = if ($d -eq 309 -or $d -eq 22) { "[load stall] " }
                 elseif ($d -lt 200) { "[title: no input] " }

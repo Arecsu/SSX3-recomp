@@ -43,7 +43,7 @@ In this repo:
 | `tools/build.bat` | MSVC + Ninja release build (Windows), `[jobs]` arg, default 16. |
 | `tools/run.ps1` | Run with stdout/stderr capture, timeout kill, `-Watchdog N`, `-ThreadDump N`, `-Env @{...}`. |
 | `tools/shot.ps1` | Run, screenshot the game window after `-After N` s, kill. |
-| `tools/race_test.ps1` / `tools/race_par.ps1` | Boot→race reliability runs; `race_par.ps1 -Instances 8 -Runs 2 -Env @{...}` runs 8 instances at once in `work\i<k>\` (logs in `work\i<k>\logs\` and `work\i<k>\stderr.txt`; summary in `logs\race_par_*.txt`). `live.ps1`/`to_race.ps1`/`race_test.ps1` take `-Dir <instance dir>`. |
+| `tools/race_test.ps1` / `tools/race_par.ps1` | Boot→race reliability runs; `race_par.ps1 -Instances 8 -Runs 2 -Env @{...}` runs 8 instances at once in `work\i<k>\` (logs in `work\i<k>\logs\` and `work\i<k>\stderr.txt`; summary in `logs\race_par_*.txt`). `live.ps1`/`to_race.ps1`/`race_test.ps1` take `-Dir <instance dir>`. `to_race.ps1` has a watchdog (ends a run with `stuck: [no pad]` / `[freeze]` / `[<state> stall]`, see its header). |
 | `tools/play.bat` | **Play it**: starts the build with `RECOMP_KEYBOARD=1` (keyboard = player 1, merged with any XInput pad); key map in the file; logs to `play_std*.txt`. |
 | `tools/split_named.py` | `tools.split` with Ghidra names kept (upstream drops them). |
 | `scripts/setup.sh` | Clone toolkit at the base commit, apply the local patch, make the venv. |
@@ -553,7 +553,12 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   0x06) instead of 20; the pad never appears, so RECOMP_PAD_LIVE presses go
   nowhere. Not the OHCI 200-deliveries give-up; the OHCI loop is
   level-triggered. Suspect a transfer timeout in the XAPI USB stack when
-  the host is busy. Next: RECOMP_USB_TRACE on a stuck run.
+  the host is busy. With the watchdog these runs show as [no pad] or
+  [freeze]: the title screen sits at 1-2 draws with FPS 0, so the frontend
+  itself stops (likely waiting on the device), not just the input. Traced
+  logs (RECOMP_USB_TRACE=1): race_par batch of 13:0x on 2026-10-14, stuck
+  runs i2 #2, i3 #2, i5 #1, i6 #2 in work\i<k>\logs\. Next: compare
+  their USB traces with a good run's.
 - ASYNC GPU FREEZE (map select / rules / loading 31-33%): main thread loops in
   D3D BlockOnTime: the idle wake does reach it (KeSetEvent on 0x0024CE9C,
   ~10/s) but the time it waits for never completes; 0x5C bytes are written
