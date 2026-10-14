@@ -581,6 +581,11 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   `RECOMP_PAD_LIVE`, `RECOMP_KEYBOARD`; traces `RECOMP_USB_TRACE`,
   `RECOMP_USB_STATS`, `RECOMP_DPC_TRACE=<n>`, `RECOMP_TIMER_TRACE` (ours).
 - Intro movie data/movies/Intro_DJ.mad is 155 MB (minutes long); skip with Start.
+  The EA logo and THX movies cannot be skipped (~11 s). 0x3083B8 is the
+  intro's mask of movies still to play (bit 0 eabig, 1 thx, 2 intro_dj;
+  initial 7; table of names at 0x3083BC; sub_00080730 plays them).
+  `RECOMP_POKE=0x3083B8:0` plays none (a missing .mad file hangs instead).
+  `scripts/race_loop.sh` uses it: boot -> race in ~15 s on Linux/Vulkan.
 - Untranslated instructions reached (no-ops): `wbinvd`, `out`/`in`, `ldmxcsr`.
 - Upstream candidates: the toolkit fixes in `patches/`; `tools.split`
   ignoring applied names (docs/DECOMP.md says otherwise); template
