@@ -2,7 +2,8 @@
 # (vtable of the current app state object, its name, ms since start, seconds
 # in this state). Dot-source and call:
 #   . "$PSScriptRoot\game_state.ps1"; $s = Get-GameState $root
-#   $s.Name, $s.Vt, $s.Seconds, $s.Sub, $s.Draws (total GPU draws)
+#   $s.Name, $s.Vt, $s.Seconds, $s.Sub, $s.Draws (total GPU draws),
+#   $s.Screen ("<vtable>:<id>" of the active frontend screen, the menu page)
 #   ($null if the game is not publishing yet)
 # Names: boot, intro, frontend (all menus), event_enter, loading, ingame.
 function Get-GameState([string]$Root) {
@@ -14,5 +15,6 @@ function Get-GameState([string]$Root) {
     [pscustomobject]@{ Vt = $parts[0]; Name = $parts[1];
                        Ms = [long]$parts[2]; Seconds = [long]$parts[3];
                        Sub = $(if ($parts.Count -ge 5) { [long]$parts[4] } else { 0 });
-                       Draws = $(if ($parts.Count -ge 6) { [long]$parts[5] } else { -1 }) }
+                       Draws = $(if ($parts.Count -ge 6) { [long]$parts[5] } else { -1 });
+                       Screen = $(if ($parts.Count -ge 8) { "$($parts[6]):$($parts[7])" } else { "" }) }
 }

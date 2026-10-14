@@ -260,6 +260,33 @@ void sub_00205D40(void)
     sub_00205D40_gen();
 }
 
+/* Every frontend screen's state change ends in sub_00202460 (ecx = the
+ * screen; it passes the change to the screen's children). The state is
+ * bits 8-13 of the screen's word +0x1C; 5 = active. With RECOMP_UI_TRACE,
+ * log each screen that becomes active: vtable and id (+0xC) name the page,
+ * which the menu scripts navigate by. Also published as game_state.txt's
+ * screen fields (game_state.c). (A wrapper on the screen manager's branch
+ * sub_00204400 never ran: it is a jump target inside its parent.) */
+extern void sub_00202460_gen(void);
+volatile uint32_t g_ssx3_ui_screen_vt, g_ssx3_ui_screen_id;
+
+void sub_00202460(void)
+{
+    uint32_t scr = g_ecx;
+    if (scr && ((MEM16(scr + 0x1C) >> 8) & 0x3F) == 5) {
+        uint32_t vt = MEM32(scr), id = MEM32(scr + 0xC);
+        if (vt != g_ssx3_ui_screen_vt || id != g_ssx3_ui_screen_id) {
+            g_ssx3_ui_screen_vt = vt;
+            g_ssx3_ui_screen_id = id;
+            if (ui_trace_on()) {
+                fprintf(stderr, "[UI] active screen %08X vt %08X id %d\n", scr, vt, (int)id);
+                fflush(stderr);
+            }
+        }
+    }
+    sub_00202460_gen();
+}
+
 void sub_0008C540(void)
 {
     if (ui_trace_on()) {

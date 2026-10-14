@@ -4,7 +4,7 @@
 #     [-Env @{...}] [-Dir instance] [-Keep]
 # Steps are RECOMP_PAD_SCRIPT buttons (up/down/left/right/a/b/start/...), one
 # press per step, -WaitSec apart; "wait" sleeps one step. The main menu is
-# reached by pressing Start until the main menu opens (RECOMP_UI_TRACE's screen log).
+# reached by pressing Start on the title until game_state.txt shows the main menu (screen id 2).
 # -Keep leaves the game running (stop it with tools\live.ps1 stop).
 param([string]$Steps = "", [string]$ShotDir = "shots\menu", [double]$WaitSec = 2,
       [hashtable]$Env = @{}, [string]$Dir = "", [switch]$Keep, [int]$TimeoutSec = 120)
@@ -19,8 +19,6 @@ function Snap([string]$name) {
     & $live snap -Out (Join-Path $ShotDir "$name.png") -Dir $Dir | Out-Null
 }
 
-$Env = $Env.Clone()
-if (-not $Env.ContainsKey("RECOMP_UI_TRACE")) { $Env["RECOMP_UI_TRACE"] = "1" }
 & $live start -Env $Env -Dir $Dir | Out-Null
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
 $front = $null
@@ -31,17 +29,19 @@ while ((Get-Date) -lt $deadline) {
 }
 if (-not $front) { "no frontend after $TimeoutSec s"; if (-not $Keep) { & $live stop -Dir $Dir | Out-Null }; exit 1 }
 # The title ignores input for a while after it appears, for a varying time:
-# press Start until the main menu (screen id 0, logged by RECOMP_UI_TRACE)
-# has opened.
-$err = Join-Path $root "stderr.txt"
+# press Start on the title (screen id 0, game_state.txt's screen field)
+# every 3 s until the main menu (id 2) is up.
 $t0 = Get-Date
+$lastPress = Get-Date "2000-01-01"
 do {
-    Start-Sleep -Seconds 3
-    & $live press -Buttons "start" -Dir $Dir | Out-Null
-    Start-Sleep -Seconds 2
-    $main = Select-String -Path $err -Pattern '\[UI\] screen \S+ vt \S+ id 0 ' -List -ErrorAction SilentlyContinue
-} while (-not $main -and ((Get-Date) - $t0).TotalSeconds -lt 60)
-if (-not $main) { "main menu not reached"; if (-not $Keep) { & $live stop -Dir $Dir | Out-Null }; exit 1 }
+    Start-Sleep -Milliseconds 500
+    $gs = Get-GameState $root
+    if ($gs -and $gs.Screen -notlike "*:2" -and ((Get-Date) - $lastPress).TotalSeconds -ge 3) {
+        & $live press -Buttons "start" -Dir $Dir | Out-Null
+        $lastPress = Get-Date
+    }
+} while (-not ($gs -and $gs.Screen -like "*:2") -and ((Get-Date) - $t0).TotalSeconds -lt 60)
+if (-not ($gs -and $gs.Screen -like "*:2")) { "main menu not reached"; if (-not $Keep) { & $live stop -Dir $Dir | Out-Null }; exit 1 }
 Start-Sleep -Seconds 4
 Snap "00-main"
 $k = 0
@@ -52,7 +52,7 @@ foreach ($s in ($Steps -split "," | Where-Object { $_ })) {
     if (Crashed) { "step ${k} ($s): CRASH"; break }
     Snap ("{0:D2}-{1}" -f $k, $s)
     $gs = Get-GameState $root
-    "step ${k} ($s): state $($gs.Name) sub $($gs.Sub)"
+    "step ${k} ($s): state $($gs.Name) sub $($gs.Sub) screen $($gs.Screen)"
 }
 $c = Crashed
 if ($c) { "CRASH $c" } else { "no crash" }

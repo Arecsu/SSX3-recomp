@@ -443,6 +443,14 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   changing fields of the frontend state object (no per-menu page field in
   its first 4 KB). Intro movies are skipped by default (main.c holds the
   movie mask 0x3083B8 at 0; RECOMP_SKIP_INTRO=0 plays them).
+  Frontend screens (2026-10-14): a _gen wrapper on sub_00202460 (every
+  screen state change; state 5 = active, bits 8-13 of screen+0x1C) records
+  the active screen's vtable and id (+0xC) as game_state.txt fields 7/8
+  ($gs.Screen "vt:id"; RECOMP_UI_TRACE=1 logs [UI] active screen). Ids: 0
+  title, 1 hard-disk check, 2 main menu, 9 Select Character, 12 Setup
+  Character, 19 Select Peak/Mode/Event (one screen, three pages), 20 My
+  Rules, 24 Options. to_race.ps1/race_test.ps1 -Rider/-Mode/-Event use them;
+  menu_test.ps1 waits for id 2.
   Inside ingame, state+0xA8 moves with the phase (5 at the briefing, 8 and
   0xC during a race); the remaining values (finish, results, replay) still
   have to be mapped -- to_race.ps1 prints the state for every new screen.

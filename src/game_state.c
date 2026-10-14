@@ -145,9 +145,12 @@ static DWORD WINAPI game_state_thread(LPVOID unused)
         {
             FILE *f;
             extern uint32_t xbox_Nv2aDrawCount(void);
-            snprintf(line, sizeof line, "%08X %s %lu %lu %u %u\n", vt, state_name(vt),
+            /* 7th/8th fields: the active frontend screen (vtable and id,
+             * ssx3_overrides.c sub_00204400) -- which menu page is up. */
+            extern volatile uint32_t g_ssx3_ui_screen_vt, g_ssx3_ui_screen_id;
+            snprintf(line, sizeof line, "%08X %s %lu %lu %u %u %08X %d\n", vt, state_name(vt),
                      (unsigned long)(now - t0), (unsigned long)((now - since) / 1000), sub,
-                     xbox_Nv2aDrawCount());
+                     xbox_Nv2aDrawCount(), g_ssx3_ui_screen_vt, (int)g_ssx3_ui_screen_id);
             f = fopen("game_state.tmp", "w");
             if (f) {
                 fputs(line, f);

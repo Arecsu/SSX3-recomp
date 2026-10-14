@@ -34,7 +34,7 @@ keyboard/XInput input, boot→race reliability ~5/6. See README and CLAUDE.md.
 - [x] Scripted play: periodic A taps ride a whole race (it finishes by itself); `tools/soak.ps1` races back to back via the restart dialog.
 - [x] Navigation from game state only (2026-10-14): `tools/to_race.ps1` reads `game_state.txt` (state, sub-state, GPU draw count) and nothing else -- frontend: Start, then A every 2 s; event_enter/loading: wait; ingame after a load: the briefing. Works on every renderer and with the window covered. Freeze = draw count still for 15 s. Intro movies skipped by default (`RECOMP_SKIP_INTRO`, mask 0x3083B8, found by Corné): boot -> title 3.4 s, boot -> race briefing ~25 s.
 - [x] Game state hook (`src/game_state.c`): the game's own state machine published as `[STATE]` lines and `game_state.txt` (`tools/game_state.ps1`); top-level states named. Next: map the in-race sub-states and switch the scripts from draw counts to it.
-- [ ] `tools/race_test.ps1` extended: all peaks/events (open), configurable run count (done), summary table; failures auto-dump with a 20 s write window (done) and are classified from the last screen -- `[title: no input]`, `[menu hang]`, `[load stall]`, `[other]`, `CRASH` (done).
+- [ ] `tools/race_test.ps1` extended: all peaks/events (2026-10-14: `-Rider N -Mode N -Event N` pick the rider, mode and Peak 1 event by the frontend screen id in game_state.txt; Peaks 2/3 are locked on a fresh save -- needs unlock progress or a save file), configurable run count (done), summary table; failures auto-dump with a 20 s write window (done) and are classified from the last screen -- `[title: no input]`, `[menu hang]`, `[load stall]`, `[other]`, `CRASH` (done).
 - [x] Parallel test runs (2026-10-14): `tools/race_par.ps1 -Instances N -Runs M [-Env @{...}]` runs N game instances at once, each in its own directory `work\i<k>` (junction `game` -> the shared rip; own pad file, pid, logs, triggers, `game_state.txt`; `live.ps1` / `to_race.ps1` / `race_test.ps1` take `-Dir`), with `RECOMP_RASTER_THREADS` = cores / N each. Summary printed and saved to `logs/race_par_<ts>.txt`. 2 instances = 2 runs in the time of one; use 6-10 for the ~1-in-10 bugs (63 GB RAM / 32 cores here). Default for reliability work from now on.
 - [x] Watchdog in `to_race.ps1` (2026-10-14, default on, `-NoWatchdog` off): a run ends early with `stuck: [<class>]` when Start presses go unread for 45 s (`[no pad]`), FPS is 0 for 15 s in the menus/loading/race (`[freeze]`), or a game state outlives its budget (boot 60 s, intro 120 s, frontend 180 s, event_enter 30 s, loading 90 s: `[<state> stall]`); `race_test.ps1` reports that class and still dumps threads first. A stuck run costs 20-50 s instead of the 5-8 min timeout: race_par 8x2 went from 22 to 4.6 min.
 - [ ] Watchdog: also keep a screenshot of every stuck run (`live.ps1 snap` before the dump) as a record of what it looked like.
@@ -191,7 +191,7 @@ With rendering off the CPU, the game itself must fit in 16.7 ms.
 
 Each item is "reached, works, no crash" on the GPU path at speed.
 
-- [ ] Every peak (1–3) and course; Race, Freestyle, Slopestyle, Superpipe, Big Air, Backcountry.
+- [ ] Every peak (1–3) and course; Race, Freestyle, Slopestyle, Superpipe, Big Air, Backcountry. **2026-10-14:** Peak 1 races Snow Jam, Metro-City, Happiness and the first Freestyle event load and run at 60 FPS (p99 19-20 ms), screenshots checked; riders Zoe, Moby, Psymon.
 - [ ] World Tour / Conquer the Mountain progression; unlocks; character select and customisation; shop.
 - [ ] Single Event, Practice, multiplayer split-screen (2 pads).
 - [ ] Save / load (memory unit and hard disk paths under `UDATA`), options, controller settings, rumble.
@@ -221,6 +221,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — Frontend screens identified (game_state.txt screen field); race_test -Rider/-Mode/-Event: Metro-City, Happiness and Freestyle verified at 60 FPS.
 - 2026-10-14 — 32/32 boot→race at 8 parallel instances, no watchdog rescues: title-movie freeze closed. Phase 2 gate passed; D3D11-era items folded into the Vulkan status.
 - 2026-10-14 — D3D11 vsync presentation is the default (GDI presented at ~59 Hz with tearing); 8 parallel instances 16/16 OK, no watchdog rescues.
 - 2026-10-14 — Vertex programs on the GPU (2.0d): race at a steady 60 FPS (p99 20 ms), CPU 1.63 cores.
