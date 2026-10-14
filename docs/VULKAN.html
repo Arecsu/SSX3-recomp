@@ -53,6 +53,8 @@
   <tr><td>2026-10-14</td><td>Frontend menus on Vulkan look right (Select Mode screen). Menu frame rate: Vulkan 43&ndash;50 FPS (p50 18&ndash;23 ms) vs software 5&ndash;8 FPS. Race not tried yet (needs combiners, shadow-map RTs, fog).</td></tr>
   <tr><td>2026-10-14</td><td>Black menu backgrounds: stage 0 disabled (<code>stage_program&amp;0x1F == 0</code>) but a stale texture was still sampled. Fixed; backgrounds and panels now draw. Still to compare with software: ~10 px black strip at the left/right screen edge. <code>RECOMP_VKR_TRACE=&lt;flagfile&gt;</code> logs large draws while the file exists.</td></tr>
   <tr><td>2026-10-14</td><td>Select Character: rider was transparent because the placeholder shader used <code>d0.a</code>; the vertex-program lighting puts junk there and the combiners produce the real alpha. Combiner GLSL port fixed it.</td></tr>
+  <tr><td>2026-10-14</td><td>Character screen 12 FPS: <code>RECOMP_VKR_STATS=1</code> showed 700 of 1000 ms/s in texture lookup, i.e. hashing every bound texture's bytes on every draw (984 draws &times; up to 4 stages). Hash now memoised per texture per flipped frame: 47 FPS (p50 21 ms). Remaining per frame: flip readback ~3 ms (GPU sync + copy to guest memory), vkr_draw ~1 ms; the rest is guest code + CPU vertex programs. A texture rewritten mid-frame is only seen at the next flip.</td></tr>
+  <tr><td>2026-10-14</td><td>Worktree now has its own generated sources (lifted with this branch's overrides via the private <code>tk/</code>); the symlink to the main tree's <code>gen/</code> broke when the other session regenerated.</td></tr>
   <tr><td>2026-10-14</td><td>Found the shared toolkit clone diverges from the patch; plan a private clone for the backend hook.</td></tr>
 </table>
 </body>
