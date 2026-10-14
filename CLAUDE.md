@@ -592,6 +592,14 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   thread held it). [GUESTCPU] in every thread dump now names the holder,
   how long it has held it and how many wait. Thread dumps end with
   [THREADS-END]; race_test waits for it (<= 90 s) before killing a run.
+  CORRECTION (later): with the dump reordered (snapshot first, traces
+  after -- printing first let threads move on and block on the stderr lock)
+  the remaining title freezes show NO guest-CPU holder and no waiter: the
+  main thread is in D3D BlockOnTime (fence time not reached, [BLOCK-STUCK],
+  GET 0x9F0 bytes behind PUT) and the GPU executor is busy rasterising one
+  draw (nv2a_pb_run -> draw_primitive -> raster_batch_program -> rc_texel)
+  that does not finish -- the title screen's "1 draws" frame. Next: how big
+  that draw is (RECOMP_EXEC_STATS=1).
 - ASYNC GPU FREEZE (map select / rules / loading 31-33%): main thread loops in
   D3D BlockOnTime: the idle wake does reach it (KeSetEvent on 0x0024CE9C,
   ~10/s) but the time it waits for never completes; 0x5C bytes are written

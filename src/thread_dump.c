@@ -123,6 +123,9 @@ static int td_walk(CONTEXT *ctx, DWORD64 *out)
 
 static char s_mem_spec[512];  /* from the trigger file, if it had content */
 
+static unsigned long g_cpu_tid, g_cpu_ms;
+static long g_cpu_waiting;
+
 static void td_dump(const char *why)
 {
     static ThreadStack stacks[TD_MAX_THREADS];
@@ -134,24 +137,13 @@ static void td_dump(const char *why)
     int count = 0, i, j;
 
     td_reg_offsets();
+    /* Who holds the guest CPU, read first; the traces below are printed only
+     * after the thread snapshot -- printing ~2000 lines first let the other
+     * threads run on meanwhile (and block on the stderr lock the printing
+     * holds), so the stacks no longer showed the hang. */
     {
-        /* EA job-queue ring (RECOMP_JOB_TRACE, ssx3_overrides.c). Printed
-         * before any thread is suspended: it takes the CRT's stderr lock. */
-        extern void ssx3_JobTraceDump(void);
-        extern void ssx3_StreamDump(void);
-        {
-            extern void xbox_GuestCpuInfo(unsigned long *, unsigned long *, long *);
-            unsigned long tid, ms;
-            long w;
-            xbox_GuestCpuInfo(&tid, &ms, &w);
-            fprintf(stderr, "[GUESTCPU] held by thread %lu for %lu ms, %ld waiting\n", tid, ms, w);
-        }
-        ssx3_JobTraceDump();
-        ssx3_StreamDump();
-        {
-            extern void ssx3_StrmTraceDump(void);
-            ssx3_StrmTraceDump();
-        }
+        extern void xbox_GuestCpuInfo(unsigned long *, unsigned long *, long *);
+        xbox_GuestCpuInfo(&g_cpu_tid, &g_cpu_ms, &g_cpu_waiting);
     }
 
     snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
@@ -237,6 +229,18 @@ static void td_dump(const char *why)
         for (j = 0; j < stacks[i].n; j++)
             fprintf(stderr, "    #%-2d 0x%llX\n", j,
                     (unsigned long long)td_rebase(stacks[i].rip[j]));
+    }
+    fprintf(stderr, "[GUESTCPU] held by thread %lu for %lu ms, %ld waiting (at the start of the dump)\n",
+            g_cpu_tid, g_cpu_ms, g_cpu_waiting);
+    {
+        /* EA job-queue ring (RECOMP_JOB_TRACE), streamer and STRM traces
+         * (ssx3_overrides.c). After the snapshot: they take the stderr lock. */
+        extern void ssx3_JobTraceDump(void);
+        extern void ssx3_StreamDump(void);
+        extern void ssx3_StrmTraceDump(void);
+        ssx3_JobTraceDump();
+        ssx3_StreamDump();
+        ssx3_StrmTraceDump();
     }
     fprintf(stderr, "[THREADS-END]\n");   /* tools/race_test.ps1 waits for this */
     fflush(stderr);
