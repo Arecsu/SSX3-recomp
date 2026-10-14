@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "nv2a_backend.h"
 #include "vkr.h"
@@ -126,7 +127,8 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
         VkrTex *tex = NULL;
         memset(&st, 0, sizeof st);
         fill_state(t, &st);
-        if (nv2a_exec_tex_info(0, &ti)) {
+        /* stage_program 0 = stage 0 off: the bound texture is stale. */
+        if (nv2a_exec_tex_info(0, &ti) && (ti.stage_program & 0x1F)) {
             tex = vkr_tex_find(s_vk, ti.hash);
             if (!tex) {
                 uint32_t *px = (uint32_t *)malloc((size_t)ti.width * ti.height * 4);
@@ -137,6 +139,34 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
             st.addr_u = ti.addr_u; st.addr_v = ti.addr_v; st.linear = ti.linear_filter;
             st.tex_scale[0] = ti.normalised ? 1.0f : 1.0f / (float)ti.width;
             st.tex_scale[1] = ti.normalised ? 1.0f : 1.0f / (float)ti.height;
+        }
+        {
+            static const char *flag = (const char *)-1;
+            static int left;
+            if (flag == (const char *)-1) flag = getenv("RECOMP_VKR_TRACE");
+            /* RECOMP_VKR_TRACE=<file>: while it exists, log 500 draws, then delete it. */
+            if (flag && !left && access(flag, F_OK) == 0)
+                left = 4000;
+            if (flag && left > 0) {
+                if (--left == 0)
+                    unlink(flag);
+                float mnx = 1e30f, mny = 1e30f, mxx = -1e30f, mxy = -1e30f;
+                uint32_t q;
+                for (q = 0; q < n; q++) {
+                    if (v[q].pos[0] < mnx) mnx = v[q].pos[0];
+                    if (v[q].pos[0] > mxx) mxx = v[q].pos[0];
+                    if (v[q].pos[1] < mny) mny = v[q].pos[1];
+                    if (v[q].pos[1] > mxy) mxy = v[q].pos[1];
+                }
+                if ((mxx - mnx) * (mxy - mny) > 60000.0f)
+                fprintf(stderr, "[VKRDRAW] box %.0f,%.0f-%.0f,%.0f prim %u n %u tex %s %ux%u fmt %02X prog %05X addr %u/%u"
+                        " | blend %d %X/%X | at %u f %X r %02X | depth %d/%d f %X | cmask %08X"
+                        " | d0 %.2f %.2f %.2f %.2f\n",
+                        mnx, mny, mxx, mxy, prim, n, tex ? "Y" : "-", ti.width, ti.height, ti.format, ti.stage_program,
+                        ti.addr_u, ti.addr_v, st.blend_enable, st.blend_src, st.blend_dst,
+                        t->alpha_test, st.alpha_func, st.alpha_ref, st.depth_test, st.depth_write,
+                        st.depth_func, t->color_mask, v[0].d0[0], v[0].d0[1], v[0].d0[2], v[0].d0[3]);
+            }
         }
         vkr_draw(s_vk, (const VkrVertex *)v, n, idx, k, &st, tex);
     }
