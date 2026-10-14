@@ -247,6 +247,10 @@ static void bind_textures(VkrDrawState *st)
  * region is drawn with. s_trace: 0 off/done, 1 armed, 2 this frame. */
 static int s_trace = -1;
 static double s_trace_at, s_t0;
+/* RECOMP_VKR_TRACE_EVERY=<ms>: re-arm after each traced frame, so a run
+ * traces one frame per period (vkr_trace_<k>.bmp, log lines tagged k). */
+static double s_trace_every;
+static unsigned s_trace_no;
 
 static void trace_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, uint32_t n,
                        const VkrDrawState *st)
@@ -282,6 +286,75 @@ static void trace_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *
             st->blend_dst, st->alpha_func, st->alpha_ref, st->write_mask, st->depth_test, st->depth_write,
             st->depth_func);
     (void)t;
+}
+
+/* RECOMP_VKR_TRACE_BLACK=<n> (with RECOMP_VKR_TRACE_AT): in the traced frame,
+ * read the target back after each of the first n draws and log how many
+ * pixels are pure black after it, with the draw's vertices -- which draw
+ * paints, or fails to cover, a black region. A readback per draw; n < 0
+ * logs the first -n draws without reading back. */
+static int s_tblack, s_tblack_init;
+static unsigned s_draw_no;
+static FILE *s_tbf;
+
+static long count_black(void)
+{
+    long nb = 0;
+    uint32_t i;
+    for (i = 0; i < s_w * s_h; i++)
+        if (!(((const uint32_t *)s_px)[i] & 0xFFFFFF))
+            nb++;
+    return nb;
+}
+
+static void trace_black(uint32_t prim, const Nv2aVshOutput *v, uint32_t n, const VkrDrawState *st)
+{
+    uint32_t i;
+    if (!s_tblack_init) {
+        const char *e = getenv("RECOMP_VKR_TRACE_BLACK");
+        s_tblack_init = 1;
+        s_tblack = e ? atoi(e) : 0;
+        /* Its own buffered file: thousands of lines through stderr took
+         * seconds per draw. */
+        if (s_tblack && !(s_tbf = fopen("vkr_black.txt", "w")))
+            s_tblack = 0;
+    }
+    if (s_tblack == 0)
+        return;
+    /* A negative n: no readbacks, every draw's vertices (black count -1). */
+    if (++s_draw_no > (unsigned)abs(s_tblack))
+        return;
+    if (s_tblack > 0 && !vkr_read_back(s_vk, s_px))
+        return;
+    fprintf(s_tbf, "[VKRBLACK] %u draw #%u black %ld prim %u n %u stages %05X final %08X %08X"
+            " blend %d %X/%X alpha %X/%u depth %d/%d %X fog %u\n", s_trace_no, s_draw_no,
+            s_tblack > 0 ? count_black() : -1L,
+            prim, n, st->u.stage_program, st->u.final0, st->u.final1, st->blend_enable, st->blend_src,
+            st->blend_dst, st->alpha_func, st->alpha_ref, st->depth_test, st->depth_write,
+            st->depth_func, st->u.fog_enable);
+    {
+        Nv2aTexInfo ti;
+        if ((st->u.stage_program & 0x1F) && nv2a_exec_tex_info(0, &ti))
+            fprintf(s_tbf, "[VKRBLACK]   t0 %08X fmt %X %ux%u addr %u/%u\n", ti.offset, ti.format,
+                    ti.width, ti.height, ti.addr_u, ti.addr_v);
+    }
+    {
+        /* RECOMP_VKR_TRACE_VSH=<a>-<b>: draws a..b of the traced frame also
+         * log their program, constants and vertex inputs. */
+        static int lo = -1, hi;
+        if (lo < 0) {
+            const char *e = getenv("RECOMP_VKR_TRACE_VSH");
+            lo = hi = 0;
+            if (e) sscanf(e, "%d-%d", &lo, &hi);
+        }
+        if ((int)s_draw_no >= lo && (int)s_draw_no <= hi)
+            nv2a_exec_dump_batch(s_tbf, 64);
+    }
+    for (i = 0; i < n && i < 512; i++)
+        fprintf(s_tbf, "[VKRBLACK]   v%u pos %g %g %g %g d0 %.2f %.2f %.2f %.2f fog %g t0 %g %g %g %g\n",
+                i, v[i].pos[0], v[i].pos[1], v[i].pos[2], v[i].pos[3], v[i].d0[0], v[i].d0[1],
+                v[i].d0[2], v[i].d0[3], v[i].fog[0], v[i].tex[0][0], v[i].tex[0][1],
+                v[i].tex[0][2], v[i].tex[0][3]);
 }
 
 static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, uint32_t n)
@@ -355,6 +428,8 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
         t2 = s_stats ? now_ms() : 0;
         vkr_draw(s_vk, (const VkrVertex *)v, n, idx, k, &st);
         if (s_stats) { s_t[3] += now_ms() - t2; s_n[0]++; }
+        if (s_trace == 2)
+            trace_black(prim, v, n, &st);
     }
     s_dirty = 1;
     if (s_stats) s_t[0] += now_ms() - td;
@@ -386,18 +461,27 @@ static void be_flip(const Nv2aTarget *t)
 {
     uint8_t *mem = (uint8_t *)xbox_GetMemoryOffset();
     uint32_t y;
+    int shot = 0;
     if (s_trace < 0) {
         const char *e = getenv("RECOMP_VKR_TRACE_AT");
         s_trace = e ? 1 : 0;
         s_trace_at = e ? atof(e) : 0;
+        e = getenv("RECOMP_VKR_TRACE_EVERY");
+        s_trace_every = e ? atof(e) : 0;
         s_t0 = now_ms();
     }
     if (s_trace == 2) {
-        s_trace = 0;
-        fprintf(stderr, "[VKRTRACE] end of frame\n");
+        s_trace = s_trace_every > 0 ? 1 : 0;
+        s_trace_at += s_trace_every;
+        shot = 1;
+        fprintf(stderr, "[VKRTRACE] end of frame %u\n", s_trace_no);
+        if (s_tbf)
+            fflush(s_tbf);
     } else if (s_trace == 1 && now_ms() - s_t0 >= s_trace_at) {
         s_trace = 2;
-        fprintf(stderr, "[VKRTRACE] frame at %.0f ms\n", now_ms() - s_t0);
+        s_draw_no = 0;
+        s_trace_no++;
+        fprintf(stderr, "[VKRTRACE] frame %u at %.0f ms\n", s_trace_no, now_ms() - s_t0);
     }
     {
         int i;
@@ -416,6 +500,30 @@ static void be_flip(const Nv2aTarget *t)
         if (s_stats) { s_t[4] += now_ms() - tf; s_n[2]++; }
         if (!ok)
             return;
+    }
+    if (shot) {
+        /* The traced frame as the target holds it: vkr_trace_<k>.bmp. */
+        char name[32];
+        FILE *f;
+        snprintf(name, sizeof name, "vkr_trace_%u.bmp", s_trace_no);
+        f = fopen(name, "wb");
+        if (f) {
+            uint32_t row = s_w * 4;
+            fwrite("BM", 1, 2, f);
+            {
+                uint8_t h[52] = {0};
+                uint32_t v;
+                v = 54 + row * s_h; memcpy(h + 0, &v, 4);
+                v = 54; memcpy(h + 8, &v, 4);
+                v = 40; memcpy(h + 12, &v, 4);
+                v = s_w; memcpy(h + 16, &v, 4);
+                v = (uint32_t)-(int32_t)s_h; memcpy(h + 20, &v, 4);
+                h[24] = 1; h[26] = 32;
+                fwrite(h, 1, 52, f);
+            }
+            fwrite(s_px, 1, (size_t)row * s_h, f);
+            fclose(f);
+        }
     }
     for (y = 0; y < s_h; y++)              /* the target is the surface from its origin */
         memcpy(mem + t->color_offset + (size_t)y * t->pitch,
