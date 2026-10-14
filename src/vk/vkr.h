@@ -31,6 +31,7 @@ typedef struct {
 typedef struct {
     int      depth_test, depth_write;
     uint32_t depth_func;            /* 0x200 NEVER .. 0x207 ALWAYS */
+    int      w_buffer;              /* depth = clip w (W-buffering), not z */
     int      blend_enable;
     uint32_t blend_src, blend_dst;  /* GL blend factors */
     uint32_t blend_eq;              /* 0x8006 ADD, 0x800A SUB, 0x800B RSUB, 0x8007 MIN, 0x8008 MAX */
@@ -68,5 +69,14 @@ uint32_t vkr_height(const VkrContext *c);
 /* Submit, wait, and copy the colour target to out (w*h*4 bytes, B8G8R8A8,
  * i.e. the Xbox's little-endian A8R8G8B8). */
 int vkr_read_back(VkrContext *c, uint8_t *out);
+
+/* The same without waiting: end the frame and submit it with a copy of the
+ * colour target, and go on recording the next. Returns the frame's slot (-1
+ * on failure). vkr_frame_pixels waits for it and returns the copy (w*h*4);
+ * vkr_frame_release hands the slot back -- recording blocks until it is. Any
+ * thread may wait for and release a slot. */
+int vkr_flip_submit(VkrContext *c);
+const uint8_t *vkr_frame_pixels(VkrContext *c, int slot);
+void vkr_frame_release(VkrContext *c, int slot);
 
 #endif

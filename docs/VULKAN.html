@@ -42,7 +42,10 @@
 <h2>Notes</h2>
 <ul>
   <li>The shared <code>../xboxrecomp</code> clone has uncommitted edits that differ from <code>patches/xboxrecomp-local.patch</code> (e.g. <code>RECOMP_LOOP_QUANTUM</code>); the main tree's session is using it. Do not edit it from this worktree: use a separate toolkit clone (<code>XBOXRECOMP_DIR</code>) at base 193e299 + this worktree's patch, and regenerate the patch from there.</li>
-  <li>Not covered yet: render targets sampled as textures or read by the game (rider shadow maps) &mdash; arrives with surface tracking.</li>
+  <li>Not covered yet: render targets sampled as textures or read by the game (rider shadow maps) &mdash; arrives with surface tracking. They are drawn by the software rasteriser and re-decoded as textures each frame: the biggest remaining executor cost after vertex programs.</li>
+  <li>Frames are pipelined: <code>vkr_flip_submit</code> submits a frame and recording continues in the other of two frame slots; a backend thread waits for it and copies it into the flipped surface a few ms after the flip.</li>
+  <li>Lens flare: the main view is not rasterised in software, so visibility tests report 0 pixels and the flare is hidden (as before). With Vulkan installed, LensFX's test poll does not wait (<code>sub_001F8760</code> wrapper, same 0.0 answer). Showing the flare needs Vulkan occlusion queries.</li>
+  <li>Depth: with CONTROL0 Z_PERSPECTIVE (the race sets it) the depth test uses w, written as <code>gl_FragDepth</code> = w / zmax. The race's z is hyperbolic and sits within 1% of the far end, too coarse in the distance. The software rasteriser still uses z.</li>
 </ul>
 
 <h2>Log</h2>
@@ -57,6 +60,8 @@
   <tr><td>2026-10-14</td><td>perf (6 s, character screen): <code>note()</code> (pushbuffer survey, linear scan per word) 33%, <code>read_src</code> 16% + <code>nv2a_vsh_run</code> 11% (CPU vertex programs), <code>sched_yield</code> 11%, Vulkan driver ~3%. <code>note()</code> made O(1). Frame stays ~19&ndash;20 ms: menus of any size cap at ~50 FPS, so that screen is probably at the game's own frame pacing (PAL?) &mdash; unconfirmed. Next speed target is races; CPU vertex programs (&rarr; SPIR-V) are the biggest known cost.</td></tr>
   <tr><td>2026-10-14</td><td>Worktree now has its own generated sources (lifted with this branch's overrides via the private <code>tk/</code>); the symlink to the main tree's <code>gen/</code> broke when the other session regenerated.</td></tr>
   <tr><td>2026-10-14</td><td>Found the shared toolkit clone diverges from the patch; plan a private clone for the backend hook.</td></tr>
+  <tr><td>2026-10-14</td><td>Race (Snow Jam) 23.6 &rarr; 52&ndash;54 FPS (p50 18 ms), from perf profiles: per-batch post-transform vertex cache (<code>RECOMP_VSH_CACHE=0</code> off; 24 &rarr; 30); vertex programs pre-decoded once per upload and big batches run on the raster pool; raster pool enabled on POSIX (was <code>_WIN32</code> only), batch flush threshold 1024 px, texture decode on the pool; LensFX visibility poll no longer blocks; software-method hand-off signalled by an event instead of a 1 ms poll (200 &rarr; 20 ms/s executor stall; 30 &rarr; 42); flip readback asynchronous, two frames in flight (5 ms/flip executor stall gone; 42 &rarr; 53). Near the game's ~50 Hz pacing now.</td></tr>
+  <tr><td>2026-10-14</td><td>Magenta HUD in races: <code>vkr_set_target</code> (the race intro changes the clip height 468&ndash;480) dropped the recorded command buffer, texture uploads included; those textures stayed cached empty until the 768 MB cache drop. Now submitted first. Palette address and contents are part of the texture key (P8 textures). W-buffering (CONTROL0 bit 16) emulated in the fragment shader, for trails seen through distant hills.</td></tr>
 </table>
 </body>
 </html>

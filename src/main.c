@@ -667,8 +667,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 #ifdef SSX3_VULKAN
     {
         const char *gpu = getenv("RECOMP_GPU");
-        if (gpu && !strcmp(gpu, "vk") && !vkr_backend_install())
-            fprintf(stderr, "[VKR] unavailable, software rasteriser stays\n");
+        extern int ssx3_lensfx_nowait;
+        if (gpu && !strcmp(gpu, "vk")) {
+            if (vkr_backend_install())
+                ssx3_lensfx_nowait = 1;
+            else
+                fprintf(stderr, "[VKR] unavailable, software rasteriser stays\n");
+        }
     }
 #endif
 

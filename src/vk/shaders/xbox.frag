@@ -29,6 +29,7 @@ layout(set = 0, binding = 4, std140) uniform RC {
 layout(push_constant) uniform PC {
     layout(offset = 32) uint alpha_func;  /* 0 = test off, else GL func 0x200..0x207 */
     uint alpha_ref;                       /* 0..255 */
+    float w_scale;                        /* W-buffering: depth = w * this; 0 = off */
 } pc;
 
 uint U(uvec4 a[2], uint i) { return a[i >> 2][i & 3u]; }
@@ -199,4 +200,9 @@ void main()
             discard;
     }
     out_color = col;
+    /* CONTROL0 Z_PERSPECTIVE: the depth test compares w, which is linear in
+     * distance, instead of z, whose precision is spent near the camera (the
+     * race's terrain has z within 1% of the far end). */
+    gl_FragDepth = pc.w_scale > 0.0 ? clamp(pc.w_scale / gl_FragCoord.w, 0.0, 1.0)
+                                    : gl_FragCoord.z;
 }
