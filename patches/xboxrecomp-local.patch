@@ -2474,7 +2474,7 @@ index c65632c..1b79ac7 100644
 +    return 1;
 +}
 diff --git a/src/kernel/nv2a_pb_scan.c b/src/kernel/nv2a_pb_scan.c
-index 65bbedb..a12871f 100644
+index 65bbedb..7cc37c7 100644
 --- a/src/kernel/nv2a_pb_scan.c
 +++ b/src/kernel/nv2a_pb_scan.c
 @@ -1,3 +1,4 @@
@@ -2482,7 +2482,38 @@ index 65bbedb..a12871f 100644
  /*
   * Read-only survey of the pushbuffer a title submits.
   *
-@@ -222,7 +223,156 @@ static uint32_t pb_walk(uint32_t va, uint32_t end_va, int in_call,
+@@ -50,13 +51,17 @@ extern void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+ extern void nv2a_pb_exec_report(void);
+ static int s_exec_enabled = -1;
+ 
++/* (subchannel, method) -> index into s_seen + 1, so counting a word is O(1):
++ * the linear scan this replaced was a third of the executor's time. Methods
++ * are 13 bits, word aligned; subchannels 3 bits. */
++static uint16_t s_seen_idx[8 * 2048];
++
+ static void note(uint32_t subch, uint32_t method)
+ {
+-    for (int i = 0; i < s_seen_count; i++) {
+-        if (s_seen[i].method == method && s_seen[i].subch == subch) {
+-            s_seen[i].count++;
+-            return;
+-        }
++    uint16_t *slot = &s_seen_idx[((subch & 7u) << 11) | ((method >> 2) & 0x7FFu)];
++    if (*slot && s_seen[*slot - 1].method == method && s_seen[*slot - 1].subch == subch) {
++        s_seen[*slot - 1].count++;
++        return;
+     }
+     if (s_seen_count >= PB_MAX_METHODS) {
+         /* Silently dropping past the cap is how a truncated inventory reads as
+@@ -74,6 +79,7 @@ static void note(uint32_t subch, uint32_t method)
+         s_seen[s_seen_count].subch  = subch;
+         s_seen[s_seen_count].count  = 1;
+         s_seen_count++;
++        *slot = (uint16_t)s_seen_count;
+     }
+ }
+ 
+@@ -222,7 +228,156 @@ static uint32_t pb_walk(uint32_t va, uint32_t end_va, int in_call,
      return words;
  }
  
