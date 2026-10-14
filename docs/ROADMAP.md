@@ -51,10 +51,10 @@ Fix the known failures before the renderer changes so regressions stay visible.
 
 - [x] **43% race-load stall** (~1 in 6) -- FIXED 2026-10-14: guest CPU kept across uncontended RtlEnter/LeaveCriticalSection (toolkit `kernel_thunk_dispatch`, `RECOMP_CS_KEEP_CPU`); EA's STRM end-tag scan had been interleaved by the extra preemption points. 0 stalls in 24 parallel runs. Was: world streamer loses a request (resource 0/40 stuck in state 8). Job queues ruled out (CLAUDE.md). Next: trace the streamer's own request state (`sub_0020DB60` object +0xAC/+0xC0/+0xC8), compare a good and a stalled run.
 - [ ] Loader-worker crash in world streaming (intermittent; seen at `0x0020D26A` and `sub_0020CAB0` with a garbage chunk index) -- same streamer object as the 43% stall: one corruption bug (CLAUDE.md, "WORLD STREAMER CORRUPTION"). **2026-10-14:** the two-thread race on the streamer is ruled out (all entries wrapped, 16 runs, no overlap); thread dumps now carry `[STREAMDUMP]` (request list, slot records, resource table, fence wait). Two failure classes look alike at "43%": streamer stall (loading screen keeps drawing) vs async GPU freeze (draws stop, main thread in BlockOnTime).
-- [ ] Any remaining async-GPU hang (map-select/rules class): soak-test the idle wake; replace it with exact behaviour if a better model of D3D's NOP patching emerges. **2026-10-14:** caught one (fence already past the waited time, wake lost); watchdog `[BLOCK-RESCUE]` delivers the owed wake (default on) -- 10 runs, 2 rescues, both raced. Root cause of the lost wake still open.
+- [ ] Any remaining async-GPU hang (map-select/rules class): soak-test the idle wake; replace it with exact behaviour if a better model of D3D's NOP patching emerges. **2026-10-14:** caught one (fence already past the waited time, wake lost); watchdog `[BLOCK-RESCUE]` delivers the owed wake (default on) -- 10 runs, 2 rescues, both raced. Root cause of the lost wake still open. **Later 2026-10-14:** no rescue in 32 runs at 8 parallel instances after the clock fixes.
 - [x] ISRs and DPCs run under the guest-CPU lock (single-CPU semantics; `RECOMP_IRQ_LOCK=0` to disable). They used to run on host threads in parallel with guest threads; the USB driver's enumeration then stalled in about 1 boot in 6 (no pad on the title screen). After: 6/6 runs enumerated fully.
 - [ ] Guest-thread priority scheduling in the guest lock (Xbox is single-CPU, strict priority) — only if Phase 1 bugs point at ordering.
-- [ ] Title-screen movie freeze (was filed as "USB enumeration under load": the pad is fine, the frontend's background movie stream stops -- EA STRM ring, CLAUDE.md "TITLE-SCREEN MOVIE FREEZE"); the only failure class left at 8 parallel instances (~1 in 6). Same code as the main-thread crash at 0x00173B36.
+- [x] Title-screen movie freeze (was filed as "USB enumeration under load": the pad is fine, the frontend's background movie stream stops -- EA STRM ring, CLAUDE.md "TITLE-SCREEN MOVIE FREEZE"); was ~1 in 6 at 8 parallel instances. **2026-10-14: gone** -- 32/32 at 8 parallel instances (two 8x2 batches) since KeTickCount runs at 1 ms (the movie player and the fair handover's waits timed themselves with the stale ~16 ms clock).
 - [ ] Crash in EA movie/stream code on the main thread (2026-10-14, 1 in 16 parallel runs): read fault at 0xE0220705, guest stack 0x00173B36 <- 0x00173C05 <- 0x001731CD <- 0x001740C4; log kept as `logs/crash_20261014_i8_stderr.txt` (Windows build dir).
 - [x] Gate: 20/20 boot→race (2026-10-14: race_par 4x5 on Vulkan, 20/20 in 3.4 min). Vulkan only by
   decision: the software renderer stays as the fallback, the reference and for the surfaces Vulkan
@@ -146,15 +146,20 @@ is guest code and CPU vertex programs. The black polygons in the sky
   rules); clipping by the GPU; draws into software surfaces (shadow maps) keep
   the CPU path.
 - [ ] 2.1 Device and presentation: D3D11 device + swap chain in the game window; flips present the front surface; vsync-paced at 60 Hz. **Done (opt-in `RECOMP_D3D_PRESENT=1`, toolkit `src/video/gpu_present.c`):** device + DISCARD swap chain on the window, each flipped frame uploaded to the back buffer and presented with vsync (`RECOMP_VSYNC=0` off). Screenshots now come from inside the process (`RECOMP_SNAP_TRIGGER`, used by `live.ps1 snap`), since PrintWindow cannot read a swap chain. **2026-10-14: default** (main.c; =0 for GDI, whose Sleep(16) loop presented at ~59 Hz against the game's 60 with tearing) -- user visual check pending. Left: share the device with the renderer.
-- [ ] 2.2 Surfaces: colour/depth render targets as D3D11 textures keyed by guest address and format, including **swizzled RTs** (rider shadow maps) and clear rects; Z24S8/Z16 depth, stencil.
-- [ ] 2.3 Textures: upload from guest memory (swizzled, linear, DXT1/3/5, palettised, cube maps), cached by address + content hash with invalidation on CPU writes; render-target-as-texture without a round trip; sampler state (filter, address modes incl. border colour).
-- [ ] 2.4 Geometry: vertex attributes (all NV2A types incl. stride 0, packed normals, immediate/inline arrays) into dynamic vertex/index buffers; primitive types incl. quads/polygons; near-plane clipping by the GPU.
-- [ ] 2.5 Vertex programs: microcode → HLSL with a cache keyed by program hash; the 192 constants as a constant buffer; fixed-function T&L path for non-program batches.
-- [ ] 2.6 Pixel pipeline: combiners → HLSL (cache by combiner state), texture stage modes (2D/3D/cube/projective, clip planes, bump/dot later), alpha test, fog, blend equations/factors incl. constant colour, colour mask, depth/stencil ops.
-- [ ] 2.7 CPU read-back: surfaces the title reads (screenshots, lock of an RT) copied back to guest memory on demand only.
-- [ ] 2.8 Differential test: per-frame compare GPU vs software output on the screenshot suite; fix until within tolerance.
-- [ ] 2.9 Performance: state-change batching, shader/PSO caches, no per-draw stalls; target executor ≤ 4 ms/frame.
-- [ ] Gate: races render correctly on the GPU; frame rate then limited by the guest CPU, not rendering.
+The original D3D11 items below (2.2-2.9) are superseded by the Vulkan path
+above; what is still open from them, in Vulkan terms:
+- [ ] 2.2 Shadow maps (swizzled render targets) and offscreen surfaces on the
+  GPU -- today drawn in software and uploaded as textures (~300/s); worth
+  ~2 FPS only (RECOMP_VKR_SKIP_RT measurement), so low priority.
+- [x] 2.3 Textures: swizzled/linear/DXT/palettised, cube maps (2026-10-14),
+  content-hash cache, render targets updated in place.
+- [x] 2.4/2.5 Geometry and vertex programs on the GPU (2.0d); clipping by the GPU.
+- [x] 2.6 Pixel pipeline: combiners interpreted in GLSL, stage modes 2D/3D/cube/
+  passthrough, alpha test, fog, blend, colour mask, depth (bump/dot modes and
+  stencil still open, not used by SSX 3 so far).
+- [ ] 2.7 Present without the readback (2.0c).
+- [ ] 2.8 Differential test GPU vs software on the screenshot suite.
+- [x] Gate: races render correctly on the GPU; frame rate then limited by the guest CPU, not rendering (2026-10-14: steady 60 FPS, executor no longer the bottleneck).
 
 ## Phase 3 — CPU side to 60 FPS
 
@@ -216,6 +221,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — 32/32 boot→race at 8 parallel instances, no watchdog rescues: title-movie freeze closed. Phase 2 gate passed; D3D11-era items folded into the Vulkan status.
 - 2026-10-14 — D3D11 vsync presentation is the default (GDI presented at ~59 Hz with tearing); 8 parallel instances 16/16 OK, no watchdog rescues.
 - 2026-10-14 — Vertex programs on the GPU (2.0d): race at a steady 60 FPS (p99 20 ms), CPU 1.63 cores.
 - 2026-10-14 — Frame timer steady (KeTickCount at 1 ms from QPC on its own thread; it was GetTickCount between executor passes): timer intervals 14-19 ms (were 3-30), race ~57.5 FPS p99 ~27 ms. Test runs muted (RECOMP_MUTE).
