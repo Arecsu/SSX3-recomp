@@ -672,10 +672,35 @@ void sub_00178280(void)
 
 extern void sub_00177760_gen(void);
 
+/*
+ * Chunk parser, on EA's file worker after each read. It publishes a chunk
+ * under the lock, unlocks (0x001778A2), and only then re-reads the chunk's
+ * tag from the ring (0x001778B2) to see whether it was the request's end
+ * chunk ('CEND'). If the loader pulls and releases that chunk in between, the
+ * release has overwritten the tag with -2 (0x00178575): the end is missed and
+ * the worker keeps reading the bytes that follow on disk as if they belonged
+ * to the request -- garbage assets, the 43% load stall. On the console the
+ * worker keeps the CPU through an uncontended unlock; keep the guest CPU here
+ * too. The parser does not poll, so this cannot livelock. Blocking lock waits
+ * still release the CPU. RECOMP_STRM_PARSE_ATOMIC=0 turns it off.
+ */
+static int strm_parse_atomic(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RECOMP_STRM_PARSE_ATOMIC");
+        on = !(e && *e == '0');
+    }
+    return on;
+}
+
 void sub_00177760(void)
 {
+    int a = strm_parse_atomic();
     int ov = ovl_enter(0x177760);
+    if (a) xbox_NoPreemptEnter();
     sub_00177760_gen();
+    if (a) xbox_NoPreemptLeave();
     ovl_leave(ov);
 }
 
@@ -688,9 +713,24 @@ void sub_00177E10(void)
 
 extern void sub_00177F80_gen(void);
 
+/* [CEND-RACE] (RECOMP_STREAM_CHECK=1): the loader pulls the current
+ * request's end chunk while the parser (sub_00177760) is still inside on
+ * another thread -- the window in which the end is missed. */
 void sub_00177F80(void)
 {
+    uint32_t h = MEM32(g_esp + 4), M = h ? MEM32(h) : 0;
     sub_00177F80_gen();   /* polls for the I/O thread: must stay preemptible */
+    if (strm_check_on() && g_eax && M) {
+        uint32_t req = MEM32(M + 0x70), tid = (uint32_t)GetCurrentThreadId();
+        int k;
+        if (req && MEM32(g_eax) == MEM32(req + 0x11C))
+            for (k = 0; k < 8; k++) {
+                uint64_t o = ovl_inflight[k];
+                if (o && (uint32_t)(o >> 32) == 0x177760 && (uint32_t)o != tid)
+                    fprintf(stderr, "[CEND-RACE] t=%lu t%u pulled end chunk %08X of req %08X while t%u parses\n",
+                            (unsigned long)GetTickCount(), tid, g_eax, req, (uint32_t)o);
+            }
+    }
 }
 
 void sub_00177990(void)

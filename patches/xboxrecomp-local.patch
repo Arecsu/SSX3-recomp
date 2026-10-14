@@ -234,7 +234,7 @@ index a91edbe..a18661a 100644
  }
  
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
-index c65ba43..bc5f7eb 100644
+index c65ba43..5a43aaf 100644
 --- a/src/kernel/kernel_bridge.c
 +++ b/src/kernel/kernel_bridge.c
 @@ -1514,6 +1514,31 @@ static HANDLE bridge_resolve_handle(uint32_t token);
@@ -911,7 +911,7 @@ index c65ba43..bc5f7eb 100644
      }
  }
  
-@@ -9396,6 +9914,22 @@ void guest_cpu_part(void)
+@@ -9396,6 +9914,24 @@ void guest_cpu_part(void)
  static void kernel_thunk_dispatch(void)
  {
      int held = t_guest_held;
@@ -920,6 +920,8 @@ index c65ba43..bc5f7eb 100644
 +            && g_kernel_dispatch_slot < XBOX_KERNEL_THUNK_TABLE_SIZE) {
 +        switch (g_slot_ordinals[g_kernel_dispatch_slot]) {
 +        case 99: case 158: case 159: case 233: case 234: case 235: case 238:
++        case 277: case 278:            /* RtlEnterCriticalSection(AndRegion): the
++                                        * owner needs the CPU to leave it */
 +            break;                     /* blocking: must let others run */
 +        default:
 +            keep = 1;
@@ -934,7 +936,7 @@ index c65ba43..bc5f7eb 100644
      if (held) {                        /* let other guest threads run meanwhile */
          t_guest_held = 0;
          LeaveCriticalSection(&g_guest_cpu);
-@@ -9407,7 +9941,7 @@ static void kernel_thunk_dispatch(void)
+@@ -9407,7 +9943,7 @@ static void kernel_thunk_dispatch(void)
       * a guest callback a bridge runs (an APC) returns into the bridge, not to
       * the thread's own code -- and only if the thread still exists as one. */
      if (t_guest_thread && t_dispatch_depth == 0 && guest_cpu_enabled()) {
