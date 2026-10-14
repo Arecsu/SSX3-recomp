@@ -822,22 +822,72 @@ index 1ad4fff..7deb391 100644
  
  /*
 diff --git a/src/kernel/kernel_path.c b/src/kernel/kernel_path.c
-index caf6390..dc5e1f6 100644
+index caf6390..a2d1345 100644
 --- a/src/kernel/kernel_path.c
 +++ b/src/kernel/kernel_path.c
-@@ -485,6 +485,8 @@ translate:
+@@ -485,6 +485,10 @@ translate:
  #include <sys/stat.h>
  #include <sys/types.h>
  #include <errno.h>
 +#include <fcntl.h>
 +#include <stdint.h>
++#include <dirent.h>
++#include <strings.h>
  
  static char s_game_dir[MAX_PATH];
  static char s_save_dir[MAX_PATH];
-@@ -553,6 +555,68 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
+@@ -553,6 +557,116 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
               s_game_dir, s_save_dir);
  }
  
++/* Xbox paths are case-insensitive, the host's are not. If `path` does not
++ * exist, walk it component by component and substitute the on-disk spelling
++ * of any component that only differs in case. Leaves `path` alone when no
++ * match exists (a create, for instance). */
++static void fix_path_case(char *path)
++{
++    char out[MAX_PATH];
++    char *comp, *save = NULL, tmp[MAX_PATH];
++    size_t n = 0;
++
++    if (access(path, F_OK) == 0)
++        return;
++    snprintf(tmp, sizeof(tmp), "%s", path);
++    if (tmp[0] == '/')
++        out[n++] = '/';
++    out[n] = '\0';
++
++    for (comp = strtok_r(tmp, "/", &save); comp; comp = strtok_r(NULL, "/", &save)) {
++        char probe[MAX_PATH];
++        size_t base = n;
++
++        if (base && out[base - 1] != '/')
++            out[base++] = '/';
++        snprintf(probe, sizeof(probe), "%.*s%s", (int)base, out, comp);
++        if (access(probe, F_OK) != 0) {
++            DIR *d;
++            struct dirent *e;
++            char dir[MAX_PATH];
++
++            snprintf(dir, sizeof(dir), "%.*s", (int)base, out);
++            d = opendir(base ? dir : ".");
++            if (d) {
++                while ((e = readdir(d)) != NULL) {
++                    if (strcasecmp(e->d_name, comp) == 0) {
++                        snprintf(probe, sizeof(probe), "%.*s%s", (int)base, out, e->d_name);
++                        break;
++                    }
++                }
++                closedir(d);
++            }
++        }
++        snprintf(out, sizeof(out), "%s", probe);
++        n = strlen(out);
++    }
++    if (access(out, F_OK) == 0)
++        snprintf(path, MAX_PATH, "%s", out);
++}
++
 +/* Raw disk device: Partition0.img carries the partition table at 0x800
 + * (see the Windows branch above for why a title reads it). */
 +static void xbox_write_partition_table(const char *path)
@@ -903,7 +953,7 @@ index caf6390..dc5e1f6 100644
  BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, DWORD buf_size)
  {
      const char* remainder = NULL;
-@@ -566,6 +630,9 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+@@ -566,6 +680,9 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
      if (!s_initialized)
          xbox_path_init(NULL, NULL);
  
@@ -913,6 +963,14 @@ index caf6390..dc5e1f6 100644
      {
          char linked[512];
          if (resolve_symlink(xbox_path, linked, sizeof(linked)))
+@@ -616,6 +733,7 @@ translate:
+                 host_path_buf[--n] = '\0';
+         }
+ 
++        fix_path_case(host_path_buf);
+         XBOX_TRACE(XBOX_LOG_PATH, "%s -> %s", xbox_path, host_path_buf);
+         return TRUE;
+     }
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
 index c65632c..4ab1deb 100644
 --- a/src/kernel/nv2a_pb_exec.c
@@ -2305,7 +2363,7 @@ index 7fae74c..c7a2e88 100644
  {
      static int dump = -1;
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
-index 72d5131..d593f74 100644
+index 72d5131..ff9d026 100644
 --- a/src/kernel/xbox_memory_layout.c
 +++ b/src/kernel/xbox_memory_layout.c
 @@ -15,6 +15,10 @@
@@ -2562,19 +2620,76 @@ index 72d5131..d593f74 100644
      if (g_nv2a_ack_thread) {
          fprintf(stderr, "  NV2A busy-bit ack: %zu register(s) acknowledged\n",
                  sizeof(NV2A_ACK) / sizeof(NV2A_ACK[0]));
+@@ -1790,7 +1979,14 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+          * this on Windows needs placeholder reservations (VirtualAlloc2). */
+ #ifndef _WIN32
+         g_span_size = g_memory_size * (size_t)(1 + XBOX_NUM_MIRRORS);
+-        g_span_base = VirtualAlloc(NULL, g_span_size, MEM_RESERVE, PAGE_NOACCESS);
++        /* The device apertures sit at base + 0xFD000000 and up, so base + 4 GB
++         * must stay inside the host address space. An OS-chosen reservation is
++         * placed at the top of it (0xFFFF........ on arm64 Linux) and every
++         * aperture then fails; ask for a low-ish address first. */
++        g_span_base = VirtualAlloc((LPVOID)(uintptr_t)0x100000000000ULL,
++                                   g_span_size, MEM_RESERVE, PAGE_NOACCESS);
++        if (!g_span_base)
++            g_span_base = VirtualAlloc(NULL, g_span_size, MEM_RESERVE, PAGE_NOACCESS);
+         if (g_span_base) {
+             VirtualFree(g_span_base, g_memory_size, MEM_RELEASE);
+             g_memory_base = MapViewOfFileEx(g_mapping_handle,
+diff --git a/src/usb/ohci.c b/src/usb/ohci.c
+index 641a94d..159126e 100644
+--- a/src/usb/ohci.c
++++ b/src/usb/ohci.c
+@@ -1340,6 +1340,21 @@ int xbox_OhciOwnsAddress(uint32_t xbox_va)
+     return hc_for(xbox_va) != NULL;
+ }
+ 
++/* Host-independent access: the caller has already decoded the instruction.
++ * Returns 0 if xbox_va is not an OHCI register. */
++int xbox_OhciMmioAccess(uint32_t xbox_va, int is_write, uint64_t *val, int size)
++{
++    OhciController *hc = hc_for(xbox_va);
++
++    if (!hc)
++        return 0;
++    if (is_write)
++        ohci_write(hc, xbox_va - hc->base, *val, size);
++    else
++        *val = ohci_read(hc, xbox_va - hc->base, size);
++    return 1;
++}
++
+ int xbox_OhciHandleMmio(void *ctx, uint32_t xbox_va)
+ {
+ #if defined(_WIN32)
+diff --git a/src/usb/ohci.h b/src/usb/ohci.h
+index 94ff7b2..2a01b28 100644
+--- a/src/usb/ohci.h
++++ b/src/usb/ohci.h
+@@ -40,6 +40,7 @@ int  xbox_OhciOwnsAddress(uint32_t xbox_va);
+ /* Service a trapped access. Returns 1 if the faulting instruction was decoded
+  * and stepped over. `ctx` is a PCONTEXT; void * keeps windows.h out of here. */
+ int  xbox_OhciHandleMmio(void *ctx, uint32_t xbox_va);
++int  xbox_OhciMmioAccess(uint32_t xbox_va, int is_write, uint64_t *val, int size);
+ 
+ /* Report counts at exit, so a run says whether the driver ever looked. */
+ void xbox_OhciReport(void);
 diff --git a/src/video/CMakeLists.txt b/src/video/CMakeLists.txt
-index 2189a3b..6a5edfb 100644
+index 2189a3b..7f1ee5e 100644
 --- a/src/video/CMakeLists.txt
 +++ b/src/video/CMakeLists.txt
-@@ -3,6 +3,7 @@ add_library(xbox_video STATIC
+@@ -3,12 +3,16 @@ add_library(xbox_video STATIC
      video_player.c
      video_pump.c
      fb_present.c
 +    gpu_present.c
  )
++if(NOT WIN32)
++    target_sources(xbox_video PRIVATE fb_present_sdl.c)
++endif()
  target_include_directories(xbox_video PUBLIC
      ${CMAKE_CURRENT_SOURCE_DIR}
-@@ -10,5 +11,5 @@ target_include_directories(xbox_video PUBLIC
+     ${CMAKE_CURRENT_SOURCE_DIR}/..
  )
  target_link_libraries(xbox_video PUBLIC xbox_d3d8)
  if(WIN32)
@@ -2582,7 +2697,7 @@ index 2189a3b..6a5edfb 100644
 +    target_link_libraries(xbox_video PUBLIC mfplat mfreadwrite mfuuid mf ole32 d3d11 dxgi)
  endif()
 diff --git a/src/video/fb_present.c b/src/video/fb_present.c
-index 08bae4b..76c81ec 100644
+index 08bae4b..a0e55ee 100644
 --- a/src/video/fb_present.c
 +++ b/src/video/fb_present.c
 @@ -21,6 +21,7 @@
@@ -2760,6 +2875,18 @@ index 08bae4b..76c81ec 100644
      ReleaseDC(hwnd, hdc);
      DestroyWindow(hwnd);
      free(s_rgb);
+@@ -390,11 +483,4 @@ void xbox_FramebufferWindowStart(void)
+         InterlockedExchange(&s_fb_running, 0);
+ }
+ 
+-#else
+-void xbox_FramebufferWindowSet(uint32_t fb_va, uint32_t pitch) { (void)fb_va; (void)pitch; }
+-void xbox_FramebufferWindowPresent(uint32_t fb_va, uint32_t pitch) { (void)fb_va; (void)pitch; }
+-void xbox_FramebufferWindowStart(void) {}
+-int xbox_FramebufferKeyDown(int vk) { (void)vk; return 0; }
+-void xbox_FramebufferWindowSetTitle(const uint16_t *n, int m) { (void)n; (void)m; }
+-void xbox_FramebufferWindowFrameStats(uint32_t draws) { (void)draws; }
+ #endif
 diff --git a/templates/runtime/recomp_types.h b/templates/runtime/recomp_types.h
 index 8e9325e..cc6b183 100644
 --- a/templates/runtime/recomp_types.h

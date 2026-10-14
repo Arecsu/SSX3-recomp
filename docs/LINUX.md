@@ -12,25 +12,26 @@ Tested on aarch64 (Asahi) with GCC 16.
 
 ## Status (2026-10-14)
 
-Builds, links, boots through XAPI init and D3D init, reads game data. Dies at
-the first APU register access (guest 0x00263DDE, `test byte [0xFE801100]`).
+Boots through intro to the menus on aarch64 (Asahi, M2) with a window (SDL2,
+`RECOMP_FB_WINDOW`, default in main.c). Not yet checked: playing, audio, input,
+speed. Run with `timeout -s KILL` (plain `timeout` leaves the process behind).
 
-## Blocker: no MMIO trap on POSIX
+What makes it work on POSIX:
 
-NV2A / APU / OHCI registers are unmapped guest pages; the Windows build catches
-the fault in a VEH, decodes the **x86** instruction (`mmio_decode.h`, the
-device hooks) and steps over it. `AddVectoredExceptionHandler` is a no-op in
-`win32_compat.c`, and on an aarch64 host the faulting instruction is aarch64
-anyway. `main.c` only installs a crash reporter (`segv_handler`).
-
-Needed: SIGSEGV handler that decodes the host load/store (size, direction,
-register), calls device read/write callbacks, writes the result back and
-advances pc. The device hooks (`apu_hook_handle_mmio`, `xbox_OhciHandleMmio`,
-NV2A in `xbox_memory_layout.c`) take a Windows `PCONTEXT` and decode x86
-themselves; they need to move to the callback form `mmio_decode.h` already uses.
+- `src/mmio_posix.c`: SIGSEGV handler decodes the host aarch64 load/store for
+  APU / OHCI registers (device callbacks, `xbox_OhciMmioAccess`); no x86
+  decoding. LDP/STP, SIMD, exclusives are declined and reported.
+- AC'97 bus-master reset (RR bit) trap: page made read-only, writes emulated in
+  `main.c` (`ac97_arm`).
+- Hardware TSO (`PR_SET_MEM_MODEL`, Apple cores) for the guest's x86 ordering.
+- Guest memory reserved at 0x100000000000 so the 0xFD000000+ apertures fit.
+- Case-insensitive path resolution (`fix_path_case`), Partition0 image.
+- `video/fb_present_sdl.c`: framebuffer window, BMP dump, `RECOMP_SNAP_TRIGGER`.
+- Thread dump (`RECOMP_THREAD_DUMP_SECS`, SIGUSR2) and `RECOMP_PEEK_EVERY_MS`.
 
 ## Not ported
 
-- `src/thread_dump.c` (Toolhelp/CONTEXT/debug registers): stubs.
-- Video/audio/input backends: not looked at (SDL2/GL in the toolkit).
+- `RECOMP_WATCH` (hardware watchpoints), Toolhelp-based dumps.
+- Audio output, gamepad/keyboard: untested.
 - SEH (`RtlUnwind`, `RaiseException`) is a shim in `win32_compat.c`.
+- x86-64 hosts: `mmio_posix_step` only decodes aarch64.

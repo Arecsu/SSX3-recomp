@@ -138,7 +138,7 @@ typedef struct MCPXAPUState MCPXAPUState;
 extern MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr);
 extern MCPXAPUState *g_apu_state;
 
-static void print_guest_stack(void);
+void print_guest_stack(void);
 
 #ifdef _WIN32
 static void print_guest_context(void *rip)
@@ -159,7 +159,7 @@ static void print_guest_context(void *rip)
 }
 #endif /* _WIN32 */
 
-static void print_guest_stack(void)
+void print_guest_stack(void)
 {
     if (g_xbox_mem_offset && g_esp) {
         const uint32_t *sp =
@@ -346,9 +346,96 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
 #include <ucontext.h>
 #include <execinfo.h>
 #include <unistd.h>
+#include <sys/prctl.h>
+#include <sys/mman.h>
 
-/* Crash report only. The POSIX shim has no VEH, so nothing here can step over
- * a trapped MMIO access (NV2A/APU/OHCI registers) -- see docs/LINUX.md. */
+#include "mmio_posix.h"
+
+extern uint64_t mcpx_apu_mmio_read(MCPXAPUState *d, uint64_t addr, unsigned int size);
+extern void mcpx_apu_mmio_write(MCPXAPUState *d, uint64_t addr, uint64_t val, unsigned int size);
+extern int xbox_OhciMmioAccess(uint32_t xbox_va, int is_write, uint64_t *val, int size);
+
+#define APU_MMIO_BASE 0xFE800000u
+#define APU_MMIO_END  0xFE880000u
+
+static uint32_t mmio_va(uintptr_t host)
+{
+    return (uint32_t)(host - (uintptr_t)g_xbox_mem_offset);
+}
+
+static uint64_t mmio_read(uintptr_t host, int size)
+{
+    uint32_t va = mmio_va(host);
+    uint64_t v = 0;
+
+    if (va >= APU_MMIO_BASE && va < APU_MMIO_END)
+        return mcpx_apu_mmio_read(g_apu_state, va - APU_MMIO_BASE, size);
+    xbox_OhciMmioAccess(va, 0, &v, size);
+    return v;
+}
+
+static void mmio_write(uintptr_t host, uint64_t val, int size)
+{
+    uint32_t va = mmio_va(host);
+
+    if (va >= APU_MMIO_BASE && va < APU_MMIO_END)
+        mcpx_apu_mmio_write(g_apu_state, va - APU_MMIO_BASE, val, size);
+    else
+        xbox_OhciMmioAccess(va, 1, &val, size);
+}
+
+static int mmio_owned(uint32_t va)
+{
+    extern int xbox_OhciOwnsAddress(uint32_t xbox_va);
+
+    return (g_apu_state && va >= APU_MMIO_BASE && va < APU_MMIO_END)
+        || xbox_OhciOwnsAddress(va);
+}
+
+/* AC'97 bus-master reset bit (RR): the XDK sets it and waits for the controller
+ * to clear it, reading the register once (see ac97_arm_write_trap in the
+ * toolkit's xbox_memory_layout.c). The page is read-only; a write faults, is
+ * emulated here, and every control byte's RR is cleared before the page is
+ * closed again. */
+#define AC97_BASE 0xFEC00000u
+static size_t ac97_len;
+
+static void ac97_arm(void)
+{
+    long pg = sysconf(_SC_PAGESIZE);
+    void *p = (void *)((uintptr_t)g_xbox_mem_offset + AC97_BASE);
+
+    ac97_len = pg > 0x1000 ? (size_t)pg : 0x1000;
+    if (mprotect(p, ac97_len, PROT_READ) != 0) {
+        fprintf(stderr, "  AC97: mprotect failed; a channel reset will spin\n");
+        ac97_len = 0;
+    }
+}
+
+static void ac97_wr(uintptr_t addr, uint64_t val, int size)
+{
+    memcpy((void *)addr, &val, (size_t)size);
+}
+
+static int ac97_write(void *uc, uintptr_t fault, uint32_t *insn)
+{
+    void *page = (void *)((uintptr_t)g_xbox_mem_offset + AC97_BASE);
+    uint32_t off;
+    int ok;
+
+    mprotect(page, ac97_len, PROT_READ | PROT_WRITE);
+    ok = mmio_posix_step(uc, fault, NULL, ac97_wr, insn);
+    for (off = 0x10B; off < 0x180; off += 0x10) {
+        volatile uint8_t *r = (volatile uint8_t *)((char *)page + off);
+        if (*r & 0x02)
+            *r = (uint8_t)(*r & ~0x02);
+    }
+    mprotect(page, ac97_len, PROT_READ);
+    return ok;
+}
+
+/* Trapped device registers are serviced here (src/mmio_posix.c); anything else
+ * is a crash and gets reported. */
 static void segv_handler(int sig, siginfo_t *si, void *uc_)
 {
     ucontext_t *uc = (ucontext_t *)uc_;
@@ -361,8 +448,18 @@ static void segv_handler(int sig, siginfo_t *si, void *uc_)
     uintptr_t pc = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
 #endif
 
-    fprintf(stderr, "[CRASH] signal %d at pc=%p, fault addr=%p\n",
-            sig, (void *)pc, (void *)fault);
+    uint32_t insn = 0;
+
+    if (sig == SIGSEGV && ac97_len && g_xbox_mem_offset
+            && mmio_va(fault) >= AC97_BASE && mmio_va(fault) < AC97_BASE + ac97_len
+            && ac97_write(uc, fault, &insn))
+        return;
+    if (sig == SIGSEGV && g_xbox_mem_offset && mmio_owned(mmio_va(fault))
+            && mmio_posix_step(uc, fault, mmio_read, mmio_write, &insn))
+        return;
+
+    fprintf(stderr, "[CRASH] signal %d at pc=%p, fault addr=%p, insn %08X\n",
+            sig, (void *)pc, (void *)fault, insn);
     fprintf(stderr, "  Xbox regs: eax=0x%08X ecx=0x%08X edx=0x%08X esp=0x%08X\n",
             g_eax, g_ecx, g_edx, g_esp);
     fprintf(stderr, "  Xbox regs: ebx=0x%08X esi=0x%08X edi=0x%08X\n",
@@ -449,6 +546,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
      *   lock-step mode. */
     if (!getenv("RECOMP_NV2A_ACK_THREAD")) _putenv_s("RECOMP_NV2A_ACK_THREAD", "1");
 
+#if defined(__linux__) && defined(__aarch64__)
+    /* The guest is x86: its lock-free code, and the pushbuffer / PUT hand-off
+     * to the GPU threads, assume total store order. Apple cores (Asahi) can
+     * run a thread in hardware TSO; inherited by every thread created later. */
+    {
+        extern int prctl(int, ...);
+#ifndef PR_SET_MEM_MODEL
+#define PR_SET_MEM_MODEL 0x4d4d444c
+#define PR_SET_MEM_MODEL_TSO 1
+#endif
+        if (prctl(PR_SET_MEM_MODEL, PR_SET_MEM_MODEL_TSO, 0, 0, 0) != 0)
+            fprintf(stderr, "[BOOT] hardware TSO unavailable; expect ordering bugs\n");
+        else
+            fprintf(stderr, "[BOOT] hardware TSO on\n");
+    }
+#endif
+
     printf("=== SSX 3 - Static Recompilation ===\n");
     printf("Loading XBE...\n");
 
@@ -497,6 +611,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         g_apu_state = mcpx_apu_init_standalone((uint8_t *)xbox_GetMemoryBase());
         fprintf(stderr, "[BOOT] emulated APU %s\n",
                 g_apu_state ? "up" : "FAILED to initialise");
+#ifndef _WIN32
+        ac97_arm();
+#endif
     }
 
     /* Step 3: Initialize Xbox kernel */
