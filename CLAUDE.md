@@ -523,12 +523,37 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   archive base) seeks only when it thinks the position differs; for a file
   inside an archive (base != 0) it compares base - cached with the wanted
   position, so for position 0 the seek is skipped whenever cached == base --
-  suspect a stale cached position. RESUME HERE: [EAREAD] (sub_0017A5A0
+  (superseded: see ROOT CAUSE AND FIX below) [EAREAD] (sub_0017A5A0
   wrapper: fd, pos, len, cached, base, result) and [STRM] (sub_00177990
   request start: request, pos, tag, open file) are built and log with
   RECOMP_STREAM_CHECK=1; run `tools\race_par.ps1 -Instances 8 -Runs 2 -Env
   @{RECOMP_STREAM_CHECK='1'}` until a stall (~1 in 10) and compare its
   EAREAD/STRM sequence around the ASKY CEND with a good run's.
+  ROOT CAUSE AND FIX (2026-10-14, race_par 8x2 with [EAREAD]/[STRM]): in
+  the good run the STRM manager sees the 'CEND' block, marks the request done
+  and starts the next ([STRM] start ... state 3, next read at the archive
+  base); in the stall it never does and reads on (0x13C0680 .. 0x13D0680)
+  until the ring is full. The end-tag scan sub_00177760 (from the read
+  completion sub_001781B0, itself reached from both the I/O completion and
+  the reader's chunk release sub_00178540 -> sub_00178280 -- two threads)
+  reads and rewrites block headers and the scan pointer partly OUTSIDE the
+  manager's lock. On the Xbox an uncontended RtlEnter/LeaveCriticalSection
+  never switches threads; the toolkit let go of the guest CPU on every
+  kernel call, so each lock call (sub_0017B210/B220 -> ordinals 277/294)
+  was a preemption point and the two scans interleaved. FIX (toolkit,
+  kernel_thunk_dispatch, default on, RECOMP_CS_KEEP_CPU=0 off): Leave never
+  lets go; Enter keeps the guest CPU when the lock is free (try-enter held
+  across the bridge's own Enter) and lets go only to wait. Result: race_par
+  8x3 -> 0 load stalls in 24 runs (before: 2 in 16). The [EAREAD] wrapper's
+  pos/len columns are actually len/garbage -- the args are (fd, buf, pos,
+  len); the cached-position columns are right.
+- USB ENUMERATION UNDER LOAD (open, 2026-10-14): with 8 instances in
+  parallel ~25% of runs stay on the title screen ("[title: no input]",
+  1 draws): enumeration stops after ~11 OHCI interrupts (one with WDH|SF
+  0x06) instead of 20; the pad never appears, so RECOMP_PAD_LIVE presses go
+  nowhere. Not the OHCI 200-deliveries give-up; the OHCI loop is
+  level-triggered. Suspect a transfer timeout in the XAPI USB stack when
+  the host is busy. Next: RECOMP_USB_TRACE on a stuck run.
 - ASYNC GPU FREEZE (map select / rules / loading 31-33%): main thread loops in
   D3D BlockOnTime: the idle wake does reach it (KeSetEvent on 0x0024CE9C,
   ~10/s) but the time it waits for never completes; 0x5C bytes are written
