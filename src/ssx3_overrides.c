@@ -500,11 +500,52 @@ extern void sub_00177990_gen(void);
 
 void sub_0017A5A0(void)
 {
-    uint32_t fd = ~MEM32(g_esp + 4), pos = MEM32(g_esp + 16), len = MEM32(g_esp + 20);
+    uint32_t fd = ~MEM32(g_esp + 4), pos = MEM32(g_esp + 12), len = MEM32(g_esp + 16);
     uint32_t tab = MEM32(0x0039E884u), ent = tab + fd * 20;
     uint32_t cached = tab ? MEM32(ent + 4) : 0, base = tab ? MEM32(ent + 12) : 0;
     int log = strm_check_on() && tab && fd < 64;
-    sub_0017A5A0_gen();
+    int slot = -1;
+    /* Always seek. EA caches each descriptor's file position and skips the
+     * seek when it matches the wanted one, but several descriptors can share
+     * one OS handle (BAM.big is fd 22 and the BAM.xsb inside it fd 23): a read
+     * through one moves the handle's position under the other's cache, and the
+     * next "sequential" read comes from the wrong place -- the world-stream
+     * stall. Make the cached value never equal the wanted one so the seek is
+     * always issued. RECOMP_EA_FORCE_SEEK=0 turns it off. */
+    {
+        static int force = -1;
+        if (force < 0) {
+            const char *e = getenv("RECOMP_EA_FORCE_SEEK");
+            force = !(e && *e == '0');
+        }
+        if (force && tab && fd < MEM32(0x0039E880u) && MEM32(ent) != 0) {
+            uint32_t want = MEM32(g_esp + 12);
+            MEM32(ent + 4) = (base ? base - want : want) ^ 1;
+        }
+    }
+    if (log) {
+        /* Two threads inside the file layer on one OS handle: its seek and
+         * read are separate kernel calls with no lock, so the second thread's
+         * seek can land between the first's seek and read. */
+        static volatile uint64_t inflight[16];   /* handle << 32 | tid, 0 = free */
+        uint32_t handle = MEM32(ent), tid = (uint32_t)GetCurrentThreadId();
+        uint64_t mine = ((uint64_t)handle << 32) | tid;
+        int k;
+        for (k = 0; k < 16; k++) {
+            uint64_t o = inflight[k];
+            if (o && (uint32_t)(o >> 32) == handle && (uint32_t)o != tid)
+                fprintf(stderr, "[EAOVERLAP] t=%lu handle %08X: thread %u enters (fd %u pos 0x%X) while thread %u is inside\n",
+                        (unsigned long)GetTickCount(), handle, tid, fd, pos, (uint32_t)o);
+        }
+        for (k = 0; k < 16; k++)
+            if (!inflight[k] && __sync_bool_compare_and_swap(&inflight[k], 0, mine)) { slot = k; break; }
+        sub_0017A5A0_gen();
+        if (slot >= 0)
+            inflight[slot] = 0;
+    } else {
+        sub_0017A5A0_gen();
+    }
+
     if (log) {
         static volatile LONG n;
         if (InterlockedIncrement(&n) <= 20000) {
@@ -514,6 +555,142 @@ void sub_0017A5A0(void)
             fflush(stderr);
         }
     }
+}
+
+
+/*
+ * EA's STRM stream manager: hand-off between its I/O thread and the loader
+ * thread. The console runs these without a thread switch in practice; here
+ * every kernel call and loop head is a switch point, and in ~1 of 3 loads the
+ * end of the world's first request (BAM.xsb, ASKY) is handed over with the
+ * I/O side already reading on -- the load never completes. These entry points
+ * keep the guest CPU (blocking waits still release it). OFF by default,
+ * RECOMP_STRM_ATOMIC=1 enables: sub_00178280 calls the polling pull
+ * (sub_00177F80), so wrapping it livelocks the load (stack seen in a stall).
+ */
+extern void xbox_NoPreemptEnter(void);
+extern void xbox_NoPreemptLeave(void);
+static int strm_atomic(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RECOMP_STRM_ATOMIC");
+        on = e && *e && *e != '0';      /* opt-in: livelocks, see below */
+    }
+    return on;
+}
+
+
+/* [OVL] two guest threads inside the stream manager's entry points at once
+ * (RECOMP_STREAM_CHECK=1). With the guest-CPU lock that only happens when a
+ * switch lands inside one of them. */
+static volatile uint64_t ovl_inflight[8];   /* func << 32 | tid, 0 = free */
+
+static int ovl_enter(uint32_t func)
+{
+    uint32_t tid = (uint32_t)GetCurrentThreadId();
+    int k, slot = -1;
+    if (!strm_check_on())
+        return -1;
+    for (k = 0; k < 8; k++) {
+        uint64_t o = ovl_inflight[k];
+        if (o && (uint32_t)o != tid)
+            fprintf(stderr, "[OVL] t=%lu thread %u enters %06X while thread %u is inside %06X\n",
+                    (unsigned long)GetTickCount(), tid, func, (uint32_t)o, (uint32_t)(o >> 32));
+    }
+    for (k = 0; k < 8; k++)
+        if (!ovl_inflight[k] && __sync_bool_compare_and_swap(&ovl_inflight[k], 0, ((uint64_t)func << 32) | tid)) { slot = k; break; }
+    return slot;
+}
+
+static void ovl_leave(int slot)
+{
+    if (slot >= 0)
+        ovl_inflight[slot] = 0;
+}
+
+extern void sub_001781B0_gen(void);
+
+/* [SM] request state transitions (RECOMP_STREAM_CHECK=1): the I/O completion
+ * callback (sub_001781B0) and the consumer's close/cancel (sub_001785D0). */
+static void sm_name(uint32_t req, char *out)
+{
+    int c;
+    for (c = 0; c < 23; c++) { uint8_t x = req ? MEM8(req + 0x14 + c) : 0; if (!x) break; out[c] = (char)x; }
+    out[c] = 0;
+}
+
+void sub_001781B0(void)
+{
+    int a = strm_atomic();
+    int log = strm_check_on();
+    uint32_t M = MEM32(g_esp + 8), req = MEM32(M + 0x70), before = req ? MEM32(req + 4) : 0xFF;
+    uint32_t pos0 = MEM32(M + 0x180);
+    int ov = ovl_enter(0x1781B0);
+    if (a) xbox_NoPreemptEnter();
+    sub_001781B0_gen();
+    if (a) xbox_NoPreemptLeave();
+    ovl_leave(ov);
+    if (log && req) {
+        uint32_t after = MEM32(req + 4);
+        char nm[24];
+        sm_name(req, nm);
+        fprintf(stderr, "[SM] t=%lu t%lu cb   req %08X state %u->%u cur %08X pos 0x%X->0x%X '%s'\n",
+                (unsigned long)GetTickCount(), (unsigned long)GetCurrentThreadId(), req, before, after,
+                MEM32(M + 0x70), pos0, MEM32(M + 0x180), nm);
+    }
+}
+
+extern void sub_001785D0_gen(void);
+
+void sub_001785D0(void)
+{
+    uint32_t h = MEM32(g_esp + 4), id = MEM32(g_esp + 8), M = h ? MEM32(h) : 0;
+    uint32_t req = M ? MEM32(M + 0x24) + (id & 0xFF) * 0x124 : 0;
+    uint32_t before = req ? MEM32(req + 4) : 0xFF;
+    char nm[24];
+    int log = strm_check_on() && req;
+    if (log) sm_name(req, nm);
+    sub_001785D0_gen();
+    if (log)
+        fprintf(stderr, "[SM] t=%lu t%lu close req %08X state %u->%u cur %08X '%s'\n",
+                (unsigned long)GetTickCount(), (unsigned long)GetCurrentThreadId(), req, before,
+                MEM32(req + 4), MEM32(M + 0x70), nm);
+}
+
+extern void sub_00178280_gen(void);
+
+void sub_00178280(void)
+{
+    int a = strm_atomic();
+    int ov = ovl_enter(0x178280);
+    if (a) xbox_NoPreemptEnter();
+    sub_00178280_gen();
+    if (a) xbox_NoPreemptLeave();
+    ovl_leave(ov);
+}
+
+extern void sub_00177760_gen(void);
+
+void sub_00177760(void)
+{
+    int ov = ovl_enter(0x177760);
+    sub_00177760_gen();
+    ovl_leave(ov);
+}
+
+extern void sub_00177E10_gen(void);
+
+void sub_00177E10(void)
+{
+    sub_00177E10_gen();   /* polls for the I/O thread: must stay preemptible */
+}
+
+extern void sub_00177F80_gen(void);
+
+void sub_00177F80(void)
+{
+    sub_00177F80_gen();   /* polls for the I/O thread: must stay preemptible */
 }
 
 void sub_00177990(void)
@@ -526,13 +703,18 @@ void sub_00177990(void)
         a[c] = 0;
         for (c = 0; c < 39; c++) { uint8_t x = MEM8(M + 0x7C + c); if (!x) break; b[c] = (char)x; }
         b[c] = 0;
-        fprintf(stderr, "[STRM] t=%lu start: M %08X busy %u req %08X state %u pos 0x%X tag %08X '%s'"
-                " | open fd %08X '%s' pos 0x%X\n", (unsigned long)GetTickCount(), M, MEM32(M + 0x48),
+        fprintf(stderr, "[STRM] t=%lu t%lu ret %08X start: M %08X busy %u req %08X state %u pos 0x%X tag %08X '%s'"
+                " | open fd %08X '%s' pos 0x%X\n", (unsigned long)GetTickCount(), (unsigned long)GetCurrentThreadId(), MEM32(g_esp), M, MEM32(M + 0x48),
                 req, req ? MEM32(req + 4) : 0, req ? MEM32(req + 0x118) : 0, req ? MEM32(req + 0x11C) : 0,
                 a, MEM32(M + 0x17C), b, MEM32(M + 0x180));
         fflush(stderr);
     }
-    sub_00177990_gen();
+    {
+        int a = strm_atomic();
+        if (a) xbox_NoPreemptEnter();
+        sub_00177990_gen();
+        if (a) xbox_NoPreemptLeave();
+    }
 }
 
 static volatile uint32_t s_block_t;     /* BlockOnTime: time being waited for */

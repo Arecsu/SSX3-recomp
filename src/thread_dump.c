@@ -50,15 +50,18 @@ static void dump_handler(int sig)
     s_dump_done = 1;
 }
 
-static void *dump_thread(void *arg)
+static volatile sig_atomic_t s_dump_req;
+
+static void usr1_handler(int sig) { (void)sig; s_dump_req = 1; }
+
+static void dump_all(const char *why)
 {
-    long secs = (long)(intptr_t)arg;
     long self = (long)syscall(SYS_gettid);
     DIR *d;
     struct dirent *e;
+    extern void ssx3_StreamDump(void);
 
-    sleep((unsigned)secs);
-    fprintf(stderr, "[THREADS] ---- dump after %lds ----\n", secs);
+    fprintf(stderr, "[THREADS] ---- dump (%s) ----\n", why);
     d = opendir("/proc/self/task");
     while (d && (e = readdir(d))) {
         long tid = atol(e->d_name);
@@ -75,7 +78,26 @@ static void *dump_thread(void *arg)
     }
     if (d)
         closedir(d);
+    ssx3_StreamDump();
     fprintf(stderr, "[THREADS] ---- end ----\n");
+    fflush(stderr);
+}
+
+/* RECOMP_THREAD_DUMP_SECS=N: one dump after N s. Any time: kill -USR1 <pid>. */
+static void *dump_thread(void *arg)
+{
+    long secs = (long)(intptr_t)arg, t = 0;
+
+    for (;;) {
+        usleep(100000);
+        t += 100;
+        if (s_dump_req) {
+            s_dump_req = 0;
+            dump_all("SIGUSR1");
+        }
+        if (secs > 0 && t == secs * 1000)
+            dump_all("timer");
+    }
     return NULL;
 }
 
@@ -84,10 +106,9 @@ void ssx3_ThreadDumpStart(void)
     const char *v = getenv("RECOMP_THREAD_DUMP_SECS");
     pthread_t t;
 
-    if (!v || atoi(v) <= 0)
-        return;
+    signal(SIGUSR1, usr1_handler);
     signal(SIGUSR2, dump_handler);
-    pthread_create(&t, NULL, dump_thread, (void *)(intptr_t)atoi(v));
+    pthread_create(&t, NULL, dump_thread, (void *)(intptr_t)(v ? atoi(v) : 0));
     pthread_detach(t);
 }
 extern void xbox_PeekSample(const char *label);
