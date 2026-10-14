@@ -615,6 +615,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
      *     from SSX 3's own D3D to the screen. */
     if (!getenv("RECOMP_FB_WINDOW"))     _putenv_s("RECOMP_FB_WINDOW", "1");
     if (!getenv("RECOMP_PB_EXEC"))       _putenv_s("RECOMP_PB_EXEC", "1");
+    /*   RECOMP_D3D_PRESENT: show frames through a D3D11 swap chain with
+     *     vsync (toolkit gpu_present.c; falls back to GDI if it fails). The
+     *     GDI path blits the latest frame every Sleep(16), ~59 Hz against the
+     *     game's 60: a doubled or skipped frame about once a second, and
+     *     tearing. =0 for GDI. */
+    if (!getenv("RECOMP_D3D_PRESENT"))   _putenv_s("RECOMP_D3D_PRESENT", "1");
     /*   RECOMP_USB: emulated OHCI host + gamepad (toolkit src/usb). XAPI
      *     enumerates it, reads the XID descriptor and polls reports; input
      *     comes from a host pad, RECOMP_KEYBOARD or the RECOMP_PAD_* probes. */
