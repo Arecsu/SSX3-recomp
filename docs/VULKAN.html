@@ -51,6 +51,7 @@
   <tr><td>2026-10-14</td><td>Backend hook + glue; game builds in the worktree (private toolkit clone <code>tk/</code>, generated sources and <code>game</code> symlinked from the main tree). <code>RECOMP_GPU=vk</code> reaches the frontend, Honeykrisp, 640x480 target. Next: textures.</td></tr>
   <tr><td>2026-10-14</td><td>Vulkan 1.4 required (push descriptors core). Stage-0 textures + blend + alpha test: intro movie frame correct under <code>RECOMP_GPU=vk</code>.</td></tr>
   <tr><td>2026-10-14</td><td>Frontend menus on Vulkan look right (Select Mode screen). Menu frame rate: Vulkan 43&ndash;50 FPS (p50 18&ndash;23 ms) vs software 5&ndash;8 FPS. Race not tried yet (needs combiners, shadow-map RTs, fog).</td></tr>
+  <tr><td>2026-10-14</td><td>Black menu backgrounds: stage 0 disabled (<code>stage_program&amp;0x1F == 0</code>) but a stale texture was still sampled. Fixed; backgrounds and panels now draw. Still to compare with software: ~10 px black strip at the left/right screen edge. <code>RECOMP_VKR_TRACE=&lt;flagfile&gt;</code> logs large draws while the file exists.</td></tr>
   <tr><td>2026-10-14</td><td>Found the shared toolkit clone diverges from the patch; plan a private clone for the backend hook.</td></tr>
 </table>
 </body>
