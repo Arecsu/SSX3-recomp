@@ -78,3 +78,5 @@ disk/
 build-linux/
 /game
 build-linux-abi/
+build-vk/
+build-linux/
