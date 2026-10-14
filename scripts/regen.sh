@@ -7,14 +7,18 @@
 #   scripts/regen.sh                 # all steps (~2 min)
 #   scripts/regen.sh lift            # only the C lift (after adding an override)
 #
-# XBE defaults to ../SSX3/default.xbe; set XBE=... otherwise. The analysis
+# XBE defaults to ../SSX3/default.xbe, else disk/SSX3/default.xbe; set XBE=... otherwise. The analysis
 # JSON must sit beside the XBE, so the parse step writes there.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TK="$(dirname "$HERE")/xboxrecomp"
 PY="$TK/.venv/bin/python"
-XBE="$(realpath "${XBE:-$(dirname "$HERE")/SSX3/default.xbe}")"
+if [ -z "${XBE:-}" ]; then
+    XBE="$(dirname "$HERE")/SSX3/default.xbe"
+    [ -f "$XBE" ] || XBE="$HERE/disk/SSX3/default.xbe"
+fi
+XBE="$(realpath "$XBE")"
 ANALYSIS="$(dirname "$XBE")/default_analysis.json"
 # DOLBY is DSP56300 microcode for the audio chip, not x86: never disassemble it.
 SECTIONS=(--text-only --extra-sections D3D,D3DX,XGRPH,DSOUND,XPP)
