@@ -28,6 +28,7 @@ switch ($Cmd) {
         Set-Content -Path $pad -Value $null
         $env:RECOMP_PAD_LIVE = $pad
         $env:RECOMP_THREAD_DUMP_TRIGGER = (Join-Path $root "dump.trigger")
+        $env:RECOMP_SNAP_TRIGGER = (Join-Path $root "snap.trigger")
         foreach ($k in $Env.Keys) { Set-Item -Path "env:$k" -Value $Env[$k] }
         $p = Start-Process -FilePath "$root\build\ssx3_recomp.exe" -WorkingDirectory $root `
                 -RedirectStandardOutput "$root\stdout.txt" -RedirectStandardError "$root\stderr.txt" -PassThru
@@ -54,12 +55,32 @@ public static class LiveWin {
         $g.Refresh()
         $h = $g.MainWindowHandle
         if ($h -eq [IntPtr]::Zero) { "no window yet"; exit 1 }
-        $r = New-Object LiveWin+RECT
-        [void][LiveWin]::GetWindowRect($h, [ref]$r)
-        $bmp = New-Object System.Drawing.Bitmap ($r.R - $r.L), ($r.B - $r.T)
-        $gr = [System.Drawing.Graphics]::FromImage($bmp)
-        $hdc = $gr.GetHdc(); [void][LiveWin]::PrintWindow($h, $hdc, 2); $gr.ReleaseHdc($hdc)
-        $bmp.Save((Join-Path $root $Out), [System.Drawing.Imaging.ImageFormat]::Png)
+        # From inside the game (RECOMP_SNAP_TRIGGER): the frame being shown,
+        # whatever presents it -- PrintWindow cannot read a D3D11 swap chain.
+        $bmpPath = Join-Path $root "snap_tmp.bmp"
+        Remove-Item $bmpPath -ErrorAction SilentlyContinue
+        Set-Content -Path (Join-Path $root "snap.trigger") -Value $bmpPath -NoNewline
+        $t0 = Get-Date
+        while (-not (Test-Path $bmpPath) -and ((Get-Date) - $t0).TotalSeconds -lt 3) { Start-Sleep -Milliseconds 100 }
+        $saved = $false
+        if (Test-Path $bmpPath) {
+            Start-Sleep -Milliseconds 100
+            try {
+                $img = [System.Drawing.Image]::FromFile($bmpPath)
+                $img.Save((Join-Path $root $Out), [System.Drawing.Imaging.ImageFormat]::Png)
+                $img.Dispose(); $saved = $true
+            } catch { }
+            Remove-Item $bmpPath -ErrorAction SilentlyContinue
+        }
+        if (-not $saved) {
+            Remove-Item (Join-Path $root "snap.trigger") -ErrorAction SilentlyContinue
+            $r = New-Object LiveWin+RECT
+            [void][LiveWin]::GetWindowRect($h, [ref]$r)
+            $bmp = New-Object System.Drawing.Bitmap ($r.R - $r.L), ($r.B - $r.T)
+            $gr = [System.Drawing.Graphics]::FromImage($bmp)
+            $hdc = $gr.GetHdc(); [void][LiveWin]::PrintWindow($h, $hdc, 2); $gr.ReleaseHdc($hdc)
+            $bmp.Save((Join-Path $root $Out), [System.Drawing.Imaging.ImageFormat]::Png)
+        }
         "'{0}' -> {1}" -f $g.MainWindowTitle, $Out
     }
     "key" {

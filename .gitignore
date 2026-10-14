@@ -70,3 +70,5 @@ logs/
 game_state.txt
 game_state.tmp
 soak.png
+snap.trigger
+snap_tmp.bmp
