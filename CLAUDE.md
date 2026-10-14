@@ -425,6 +425,16 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   | 0029B0DC | loading | race loading screens |
   | 00299D7C | ingame | briefing, race, results, replay, pause/restart dialogs |
 
+  game_state.txt has a 6th field, the GPU executor's total draw count
+  (xbox_Nv2aDrawCount). tools\to_race.ps1 navigates from these fields only
+  (no window title, no draw counts per screen): every frontend screen from
+  the title to the rules takes A (Start on the title), and ingame after a
+  loading state is the briefing. Its "seconds in state" restarts on every
+  sub-state change, so the scripts time states by name themselves. The
+  title starts an attract demo after ~40 s idle. RECOMP_FE_PROBE=1 logs
+  changing fields of the frontend state object (no per-menu page field in
+  its first 4 KB). Intro movies are skipped by default (main.c holds the
+  movie mask 0x3083B8 at 0; RECOMP_SKIP_INTRO=0 plays them).
   Inside ingame, state+0xA8 moves with the phase (5 at the briefing, 8 and
   0xC during a race); the remaining values (finish, results, replay) still
   have to be mapped -- to_race.ps1 prints the state for every new screen.

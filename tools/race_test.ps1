@@ -11,22 +11,17 @@ $nav = Join-Path $PSScriptRoot "to_race.ps1"
 
 for ($i = 1; $i -le $Runs; $i++) {
     & $live start -Env $Env -Dir $Dir | Out-Null
-    Start-Sleep -Seconds 15
+    Start-Sleep -Seconds 2
     $out = & $nav -TimeoutSec $TimeoutSec -Dir $Dir 2>&1 | Select-Object -Last 1
     $err = Get-Content (Join-Path $root "stderr.txt") -ErrorAction SilentlyContinue
     $crash = ($err | Select-String -SimpleMatch "[CRASH]" | Select-Object -First 1)
-    # Name the failure from the last screen seen: the known classes are a
-    # pad that never enumerated (stuck on the title, < 200 draws), a hang in
-    # the menus, and the race-load stall (309 / 22 = loading screens).
+    # Name the failure: the watchdog's verdict ("stuck: [no pad] ..."), else
+    # the state the run timed out in (to_race.ps1 works from game state only).
     $kind = ""
     if ($out -match "^stuck: (\[[^\]]+\])") {
-        $kind = "$($Matches[1]) "                 # the watchdog's own verdict
-    } elseif ($out -match "last screen: (\d+) draws") {
-        $d = [int]$Matches[1]
-        $kind = if ($d -eq 309 -or $d -eq 22) { "[load stall] " }
-                elseif ($d -lt 200) { "[title: no input] " }
-                elseif (@(339, 984, 382, 275, 367, 413, 329) -contains $d -or $d -ge 900) { "[menu hang] " }
-                else { "[other] " }
+        $kind = "$($Matches[1]) "
+    } elseif ($out -match "timed out \(state (\S+)") {
+        $kind = "[$($Matches[1]) timeout] "
     }
     $result = if ($out -match "briefing") { "OK   reached the race briefing" }
               elseif ($crash) { "CRASH $crash" }

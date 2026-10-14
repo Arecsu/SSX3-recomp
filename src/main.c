@@ -548,6 +548,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
      *   -- ~2x the frame rate in a race (9-12 vs 4-7 FPS). =0 for the old
      *   lock-step mode. */
     if (!getenv("RECOMP_NV2A_ACK_THREAD")) _putenv_s("RECOMP_NV2A_ACK_THREAD", "1");
+    /* Skip the intro movies (EA logo, THX, intro): the intro state plays the
+     * movies whose bits are set in the mask at 0x003083B8 (bit 0 EA, 1 THX,
+     * 2 intro; starts at 7) -- held at 0, none plays, and boot reaches the
+     * title in seconds instead of ~35 s (found by Corne Dorrestijn,
+     * scripts/race_loop.sh). RECOMP_SKIP_INTRO=0 plays them. Added to any
+     * RECOMP_POKE a run already sets. */
+    {
+        const char *skip = getenv("RECOMP_SKIP_INTRO");
+        if (!(skip && skip[0] == '0')) {
+            const char *poke = getenv("RECOMP_POKE");
+            char buf[256];
+            snprintf(buf, sizeof buf, "%s%s0x3083B8:0", poke && *poke ? poke : "",
+                     poke && *poke ? "," : "");
+            _putenv_s("RECOMP_POKE", buf);
+        }
+    }
 
 #if defined(__linux__) && defined(__aarch64__)
     /* The guest is x86: its lock-free code, and the pushbuffer / PUT hand-off

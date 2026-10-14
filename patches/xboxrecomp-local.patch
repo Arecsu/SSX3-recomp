@@ -1406,7 +1406,7 @@ index 0000000..602f84f
 +
 +#endif
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index c65632c..ea02b8e 100644
+index c65632c..5ddbe2c 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
 @@ -37,6 +37,7 @@
@@ -2524,7 +2524,7 @@ index c65632c..ea02b8e 100644
              float in[4];
              left--;
              fprintf(stderr, "[VTRACE] prim %u n %u idx %u %u %u\n", s_gpu.prim,
-@@ -2409,7 +3156,45 @@ static void frame_trace_flip(void)
+@@ -2409,7 +3156,52 @@ static void frame_trace_flip(void)
      }
  }
  
@@ -2534,6 +2534,13 @@ index c65632c..ea02b8e 100644
 + * title's side, exactly like a GPU that stopped. */
 +static void draw_primitive_body(void);
 +int xbox_io_log(void);
++
++/* Draws executed so far: a title's progress probe (game_state.txt) that
++ * needs no window -- a count that stops moving is a frame that never ends. */
++uint32_t xbox_Nv2aDrawCount(void)
++{
++    return s_gpu.draws;
++}
 +
 +void xbox_Nv2aDrawInfo(char *buf, size_t n)
 +{
@@ -2570,7 +2577,7 @@ index c65632c..ea02b8e 100644
  {
      float v[4];
      uint32_t i;
-@@ -2417,7 +3202,7 @@ static void draw_primitive(void)
+@@ -2417,7 +3209,7 @@ static void draw_primitive(void)
      if (!s_gpu.prim || !s_gpu.idx_count)
          return;
      s_gpu.draws++;
@@ -2579,7 +2586,7 @@ index c65632c..ea02b8e 100644
          fprintf(stderr, "  [GPU] draw #%u\n", s_gpu.draws);
      s_gpu.verts += s_gpu.idx_count;
  
-@@ -2814,9 +3599,11 @@ static void tex_stage_method(uint32_t method, uint32_t param)
+@@ -2814,9 +3606,11 @@ static void tex_stage_method(uint32_t method, uint32_t param)
          /* A DMA-object offset like a surface's: physical, reached through
           * the contiguous window when it names contiguous memory. */
          t->offset = dma_resolve(param);
@@ -2591,7 +2598,7 @@ index c65632c..ea02b8e 100644
          t->cube = (param >> 2) & 1;
          t->levels = (param >> 16) & 0xF;
          /* A swizzled texture carries its own dimensions here, as log2 in
-@@ -2832,8 +3619,8 @@ static void tex_stage_method(uint32_t method, uint32_t param)
+@@ -2832,8 +3626,8 @@ static void tex_stage_method(uint32_t method, uint32_t param)
          t->palette = dma_resolve(param & ~0x3Fu);
          break;
      case NV097_SET_TEXTURE_ADDRESS:
@@ -2602,7 +2609,7 @@ index c65632c..ea02b8e 100644
          t->addr_u =  param        & 0xF;
          t->addr_v = (param >>  8) & 0xF;
          break;
-@@ -2847,6 +3634,9 @@ static void tex_stage_method(uint32_t method, uint32_t param)
+@@ -2847,6 +3641,9 @@ static void tex_stage_method(uint32_t method, uint32_t param)
      case 0x1B14:                                  /* SET_TEXTURE_FILTER */
          t->filter = param;
          break;
@@ -2612,7 +2619,7 @@ index c65632c..ea02b8e 100644
      default:
          break;
      }
-@@ -2910,10 +3700,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -2910,10 +3707,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
          return;
      }
      if (subch != 0) {                      /* 3D class lives on subchannel 0 */
@@ -2632,7 +2639,7 @@ index c65632c..ea02b8e 100644
      case NV097_SET_SURFACE_CLIP_HORIZONTAL:
          s_gpu.clip_x = param & 0xFFFF;
          s_gpu.clip_w = (param >> 16) & 0xFFFF;
-@@ -2925,6 +3723,14 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -2925,6 +3730,14 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
      case NV097_SET_SURFACE_FORMAT:
          s_gpu.format = param;
          break;
@@ -2647,7 +2654,7 @@ index c65632c..ea02b8e 100644
      case NV097_SET_SURFACE_PITCH:
          s_gpu.pitch = param & 0xFFFF;      /* colour pitch; zeta is the top half */
          break;
-@@ -3119,6 +3925,13 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3119,6 +3932,13 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
                                                 : s_gpu.color_offset;
              uint32_t pitch = s_gpu.drawn_offset ? s_gpu.drawn_pitch
                                                  : s_gpu.pitch;
@@ -2661,7 +2668,7 @@ index c65632c..ea02b8e 100644
              if (done) {
                  xbox_FramebufferWindowSet(dma_resolve(done), pitch);
                  xbox_FramebufferWindowPresent(dma_resolve(done), pitch);
-@@ -3179,8 +3992,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3179,8 +3999,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
      case 0x030C: s_gpu.depth_test = param; break; /* DEPTH_TEST_ENABLE */
      case 0x0354: s_gpu.depth_func = param; break; /* DEPTH_FUNC */
      case 0x035C: s_gpu.depth_mask = param; break; /* DEPTH_MASK */
@@ -2680,7 +2687,7 @@ index c65632c..ea02b8e 100644
  
      default:
          if (method >= 0x0260 && method < 0x0280) {         /* ALPHA_ICW(i) */
-@@ -3220,6 +4043,21 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3220,6 +4050,21 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
              nv2a_vsh_constant_component(58, (method - 0x0AF0) / 4, param);
              break;
          }
@@ -2702,7 +2709,7 @@ index c65632c..ea02b8e 100644
          if (method >= 0x0B00 && method < 0x0B80) {    /* TRANSFORM_PROGRAM(i) */
              nv2a_vsh_program_word(param);
              break;
-@@ -3406,6 +4244,7 @@ static void peek_chain(void)
+@@ -3406,6 +4251,7 @@ static void peek_chain(void)
  
  void nv2a_pb_exec_report(void)
  {
@@ -2710,7 +2717,7 @@ index c65632c..ea02b8e 100644
      peek_addresses();
      peek_chain();
      if (getenv("RECOMP_FIND_NAN")) {
-@@ -3534,10 +4373,92 @@ void nv2a_pb_exec_report(void)
+@@ -3534,10 +4380,92 @@ void nv2a_pb_exec_report(void)
               * is using. */
              union { uint32_t u; float f; } v;
              v.u = s_unhandled[i].last_param;

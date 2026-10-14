@@ -16,6 +16,8 @@
  *     which tools\*.ps1 read (tools\game_state.ps1). <sub> is the dword at
  *     state+0xA8: inside "ingame" it changes with the phase (5 at the
  *     briefing, then 8 / 0xC during the race; meaning still being mapped).
+ *     <draws> is the GPU executor's total draw count: a frame that never
+ *     ends shows as a count that stops moving (tools\to_race.ps1 [freeze]).
  * Names come from the table below; an unknown vtable is reported as "?".
  * RECOMP_GAME_STATE=0 disables it.
  */
@@ -57,6 +59,48 @@ static int guest_ok(uint32_t va)
     return va >= 0x10000u && (va < 0x04000000u || (va >= 0x80000000u && va < 0x84000000u));
 }
 
+/* RECOMP_FE_PROBE=1: find the frontend's "current screen" field. While the
+ * state is frontend, the first 0x1000 bytes of the state object are compared
+ * with the previous sample (every 300 ms) and each dword that changed between
+ * two small values (< 0x400) is logged as [FEPROBE] +off old->new, next to
+ * the pad layer's own "PAD: live" press lines -- the field that moves on
+ * every screen change and nowhere else is the page. */
+#define FE_PROBE_BYTES 0x1000
+static void fe_probe(uint32_t cur, uint32_t vt, DWORD t)
+{
+    static int on = -1;
+    static uint32_t prev[FE_PROBE_BYTES / 4], prev_cur;
+    uint32_t i;
+    if (on < 0) {
+        const char *e = getenv("RECOMP_FE_PROBE");
+        on = e && e[0] == '1';
+    }
+    if (!on || vt != 0x00289618u || !guest_ok(cur) || !guest_ok(cur + FE_PROBE_BYTES))
+        return;
+    static uint32_t prev_vt[FE_PROBE_BYTES / 4];
+    for (i = 0; i < FE_PROBE_BYTES / 4; i++) {
+        uint32_t v = MEM32(cur + i * 4), pvt = 0;
+        if (cur == prev_cur && v != prev[i] && v < 0x400u && prev[i] < 0x400u) {
+            fprintf(stderr, "[FEPROBE] t=%lu +%03X %u->%u\n", (unsigned long)t, i * 4, prev[i], v);
+        }
+        /* Pointer fields: an object whose first dword looks like a vtable
+         * (inside the image's data, 0x00280000-0x00340000). A screen object
+         * swapped for another shows as its vtable changing. */
+        if (guest_ok(v) && v >= 0x80000000u) {
+            uint32_t w = MEM32(v);
+            if (w >= 0x00280000u && w < 0x00340000u)
+                pvt = w;
+        }
+        if (cur == prev_cur && pvt != prev_vt[i] && (pvt || prev_vt[i]))
+            fprintf(stderr, "[FEPROBE] t=%lu +%03X -> obj vt %08X->%08X\n", (unsigned long)t, i * 4,
+                    prev_vt[i], pvt);
+        prev_vt[i] = pvt;
+        prev[i] = v;
+    }
+    prev_cur = cur;
+    fflush(stderr);
+}
+
 static DWORD WINAPI game_state_thread(LPVOID unused)
 {
     uint32_t last_vt = 0xFFFFFFFFu, last_next = 0xFFFFFFFFu, last_sub = 0xFFFFFFFFu;
@@ -80,6 +124,13 @@ static DWORD WINAPI game_state_thread(LPVOID unused)
                 sub = MEM32(cur + 0xA8);   /* in-game sub-state, see below */
             }
         }
+        {
+            static DWORD last_probe;
+            if (now - last_probe >= 300) {
+                last_probe = now;
+                fe_probe(cur, vt, now - t0);
+            }
+        }
         if (vt != last_vt || next != last_next || sub != last_sub) {
             if (vt != last_vt || sub != last_sub)
                 since = now;
@@ -93,8 +144,10 @@ static DWORD WINAPI game_state_thread(LPVOID unused)
         /* Rewritten every sample so a reader sees a fresh "seconds in state". */
         {
             FILE *f;
-            snprintf(line, sizeof line, "%08X %s %lu %lu %u\n", vt, state_name(vt),
-                     (unsigned long)(now - t0), (unsigned long)((now - since) / 1000), sub);
+            extern uint32_t xbox_Nv2aDrawCount(void);
+            snprintf(line, sizeof line, "%08X %s %lu %lu %u %u\n", vt, state_name(vt),
+                     (unsigned long)(now - t0), (unsigned long)((now - since) / 1000), sub,
+                     xbox_Nv2aDrawCount());
             f = fopen("game_state.tmp", "w");
             if (f) {
                 fputs(line, f);
