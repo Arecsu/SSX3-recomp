@@ -5421,7 +5421,7 @@ index 8e9325e..cc6b183 100644
   * Register name aliases for generated code
   *
 diff --git a/tools/recomp/translator.py b/tools/recomp/translator.py
-index 3cd9250..f647ded 100644
+index 3cd9250..50b9f1a 100644
 --- a/tools/recomp/translator.py
 +++ b/tools/recomp/translator.py
 @@ -1311,6 +1311,36 @@ class FunctionTranslator:
@@ -5461,7 +5461,76 @@ index 3cd9250..f647ded 100644
      def _read_local_jump_table(self, table_va, lower, upper,
                                 max_entries=256, min_entry_va=None):
          """Read the contiguous pointer cluster around an indexed-jump base."""
-@@ -2495,6 +2525,15 @@ class FunctionTranslator:
+@@ -2027,6 +2057,10 @@ class FunctionTranslator:
+         self.lifter.imm_code_refs = imm_refs
+ 
+         # Build basic blocks
++        forced = getattr(self, "_forced_leaders", None)
++        if forced:
++            switch_leaders = set(switch_leaders or ()) | {
++                a for a in forced if start < a < end}
+         blocks = self.disasm.build_basic_blocks(
+             instructions, start, end,
+             extra_leaders=switch_leaders if switch_leaders else None,
+@@ -2058,6 +2092,57 @@ class FunctionTranslator:
+                     block.successors = []
+         return instructions, blocks
+ 
++    def entry_stub(self, addr, name):
++        """C for a call/jump target in the middle of another function.
++
++        tools.disasm sometimes splits one function in two (a switch arm, a
++        shared epilogue), so a jump between the halves becomes a call to an
++        address that is no function start. A stub that only returns skips that
++        code silently -- SSX 3's Options menu crashed on one, Equip Gear went
++        wrong on others. Instead: the containing function translated again
++        with `addr` forced to a block leader, renamed, entered with a goto.
++        Registers are the globals; ebp is the jumper's frame (g_seh_ebp, set
++        before every tail jump), exactly the state a guest jump arrives with.
++        Returns None when addr is not an instruction of a known function.
++        """
++        if not hasattr(self, "_entry_index"):
++            self._entry_index = sorted(
++                (a, info) for a, info in self.func_db.items())
++            self._entry_starts = [a for a, _ in self._entry_index]
++        import bisect as _bisect
++        i = _bisect.bisect_right(self._entry_starts, addr) - 1
++        if i < 0:
++            return None
++        fstart, finfo = self._entry_index[i]
++        fend = finfo.get("end") or fstart + finfo.get("size", 0)
++        recovered = self._recovered_cfg.get(fstart)
++        if recovered:
++            fend = recovered["end"]
++        if not (fstart < addr < fend):
++            return None
++        self._forced_leaders = {addr}
++        try:
++            code = self.translate_function(fstart, finfo)
++        except Exception:
++            code = None
++        finally:
++            self._forced_leaders = None
++        label = f"loc_{addr:08X}:"
++        if not code or label not in code:
++            return None
++        fname = _func_ident(fstart, finfo.get("name", f"sub_{fstart:08X}"))
++        head = f"void {fname}(void)"
++        if head not in code:
++            return None
++        code = code.replace(head, f"void {name}(void)", 1)
++        first = code.find("\nloc_")
++        if first < 0:
++            return None
++        frame = "    ebp = g_seh_ebp;\n" if "uint32_t ebp" in code[:first] else ""
++        entry = (f"\n    /* entered at 0x{addr:08X}, inside 0x{fstart:08X} */\n"
++                 f"{frame}    goto loc_{addr:08X};\n")
++        return code[:first] + entry + code[first:]
++
+     def translate_function(self, func_addr, func_info):
+         """
+         Translate a single function to C code.
+@@ -2495,6 +2580,15 @@ class FunctionTranslator:
                  # otherwise produce `loc_X:` immediately before `}` and fail to
                  # compile. The null statement costs nothing and is always valid.
                  lines.append(f"loc_{bb.start:08X}: ;")
@@ -5477,10 +5546,32 @@ index 3cd9250..f647ded 100644
  
              # Inherit agreed state, including compatible CMP/TEST snapshots
              # whose source operands differ between predecessor paths. The
-@@ -3182,6 +3221,19 @@ class BatchTranslator:
+@@ -3162,10 +3256,13 @@ class BatchTranslator:
+                 "",
+                 "#define RECOMP_GENERATED_CODE",
+                 f'#include "{header_name}"',
++                '#include <math.h>',
+                 "",
+             ]
+             stub_lines.append(
+-                "/* Each stub consumes the return address its caller pushed,")
++                "/* A target inside another function is that function's code entered")
++            stub_lines.append(
++                " * at the target (entry_stub). The rest: each stub consumes the return address its caller pushed,")
+             stub_lines.append(
+                 " * exactly as a real 'ret' would. An empty body leaves esp 4 bytes")
+             stub_lines.append(
+@@ -3181,7 +3278,26 @@ class BatchTranslator:
+             stub_lines.append(
                  " * esp off by N on every call. */")
              stub_lines.append("")
++            entry_n = 0
              for addr in sorted(unresolved):
++                code = self.translator.entry_stub(addr, unresolved[addr])
++                if code:
++                    stub_lines.append(code)
++                    entry_n += 1
++                    continue
 +                epi = self.translator._stub_epilogue(addr)
 +                if epi and epi[0]:
 +                    # A shared epilogue: run it -- restore the registers it

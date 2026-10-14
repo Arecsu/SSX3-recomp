@@ -41,5 +41,25 @@
   {
     "start": "0x000267B0",
     "note": "referenced 3x from .rdata (0x00281F2C, 0x0028246C, 0x002824FC), likely vtable slots; found by scanning .data/.rdata for pointers to undetected code after a ret/padding"
+  },
+  {
+    "start": "0x000877B1",
+    "note": "Equip Gear screen (class 0x28A6D0) code after sub_00087706's detected end, in no function: jumped to from 0x00087706 and run as a returning stub, so the screen's setup was skipped and the screen list broke (Equip Gear hang/crash, 2026-10-14)"
+  },
+  {
+    "start": "0x00217774",
+    "note": "CRT x87 helper code between detected functions (jmp target)"
+  },
+  {
+    "start": "0x0021C620",
+    "note": "import thunk jump table (jmp [import]) between detected functions"
+  },
+  {
+    "start": "0x002559F8",
+    "note": "DSOUND code between detected functions (jump target)"
+  },
+  {
+    "start": "0x00259650",
+    "note": "DSOUND code between detected functions (call target, ret 12)"
   }
 ]

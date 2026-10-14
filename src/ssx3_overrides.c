@@ -273,6 +273,29 @@ volatile uint32_t g_ssx3_ui_screen_vt, g_ssx3_ui_screen_id;
 void sub_00202460(void)
 {
     uint32_t scr = g_ecx;
+    {
+        /* RECOMP_UI_TRACE=2: every screen state change, with the screen's
+         * first children (the widget list at +0x24: head [+0x24+0xC]). */
+        static int verbose = -1;
+        if (verbose < 0) {
+            const char *e = getenv("RECOMP_UI_TRACE");
+            verbose = e && atoi(e) >= 2;
+        }
+        if (verbose && scr) {
+            uint32_t head = MEM32(scr + 0x24 + 0xC), n = head, k;
+            fprintf(stderr, "[UI2] screen %08X vt %08X id %d state %u children:", scr, MEM32(scr),
+                    (int)MEM32(scr + 0xC), (MEM16(scr + 0x1C) >> 8) & 0x3F);
+            for (k = 0; k < 12 && n; k++) {
+                uint32_t next = MEM32(n + 8);
+                fprintf(stderr, " %08X(vt %08X)", n, MEM32(n));
+                if (next == n || next == head)
+                    break;
+                n = next;
+            }
+            fprintf(stderr, "\n");
+            fflush(stderr);
+        }
+    }
     if (scr && ((MEM16(scr + 0x1C) >> 8) & 0x3F) == 5) {
         uint32_t vt = MEM32(scr), id = MEM32(scr + 0xC);
         if (vt != g_ssx3_ui_screen_vt || id != g_ssx3_ui_screen_id) {
