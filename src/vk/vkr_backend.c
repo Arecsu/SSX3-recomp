@@ -475,8 +475,15 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
     double td = 0;
     if (s_stats < 0) s_stats = getenv("RECOMP_VKR_STATS") != NULL;
     if (s_stats) { td = now_ms(); stats_tick(); }
-    if (!is_main(t))
-        return 0;
+    if (!is_main(t)) {
+        /* RECOMP_VKR_SKIP_RT=1 (measurement): drop draws into swizzled
+         * render targets (the rider shadow maps) instead of handing them to
+         * the software rasteriser -- what drawing them costs. */
+        static int skip_rt = -1;
+        if (skip_rt < 0)
+            skip_rt = getenv("RECOMP_VKR_SKIP_RT") != NULL;
+        return skip_rt && t->swizzled;
+    }
     if (cap < need) {
         free(idx);
         cap = need;

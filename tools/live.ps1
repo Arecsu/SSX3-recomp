@@ -41,6 +41,8 @@ switch ($Cmd) {
         # or holding a pad must not steer them); -Env @{RECOMP_NO_HOST_PAD='0'}
         # turns the real pad back on. tools\play.bat does not use this script.
         $env:RECOMP_NO_HOST_PAD = "1"
+        # ...and are silent (RECOMP_MUTE='0' in -Env for sound).
+        $env:RECOMP_MUTE = "1"
         $env:RECOMP_THREAD_DUMP_TRIGGER = (Join-Path $work "dump.trigger")
         $env:RECOMP_SNAP_TRIGGER = (Join-Path $work "snap.trigger")
         foreach ($k in $Env.Keys) { Set-Item -Path "env:$k" -Value $Env[$k] }

@@ -1315,9 +1315,55 @@ TRACED(sub_000E1AE0)
 TRACED_RET(sub_000E1A80)
 TRACED_RET(sub_000D7460)
 
+/* RECOMP_FRAMETIMER_STATS=1: how regularly the frame timer's callback
+ * (sub_001AE020, a one-shot XAPI timer the game re-arms every 1000/60 ms
+ * from its own millisecond clock) actually runs -- per second: calls, mean,
+ * min and max interval, and how many were over 20 ms. */
+static void frametimer_stats(void)
+{
+    static LARGE_INTEGER f, last, sec;
+    static double sum, mn = 1e9, mx, gap_max, fire_late_max;
+    static int n, late;
+    LARGE_INTEGER now;
+    extern double xbox_TimerLastFire(double *late_ms, double *now_ms);
+    {
+        /* The last kernel timer to fire is (nearly always) the XAPI timer
+         * queue's: the gap to here is its thread getting going. */
+        double fl, qn, fired = xbox_TimerLastFire(&fl, &qn);
+        if (qn - fired > gap_max) gap_max = qn - fired;
+        if (fl > fire_late_max) fire_late_max = fl;
+    }
+    QueryPerformanceCounter(&now);
+    if (!f.QuadPart) {
+        QueryPerformanceFrequency(&f);
+        sec = now;
+    }
+    if (last.QuadPart) {
+        double d = (double)(now.QuadPart - last.QuadPart) * 1e3 / (double)f.QuadPart;
+        sum += d; n++;
+        if (d < mn) mn = d;
+        if (d > mx) mx = d;
+        if (d > 20.0) late++;
+    }
+    last = now;
+    if ((double)(now.QuadPart - sec.QuadPart) >= (double)f.QuadPart) {
+        if (n)
+            fprintf(stderr, "[FRAMETIMER] %d calls, interval mean %.2f min %.2f max %.2f ms, %d over 20 ms"
+                    " | timer fired late <= %.2f ms, fire->callback <= %.2f ms\n",
+                    n, sum / n, mn, mx, late, fire_late_max, gap_max);
+        sec = now; sum = 0; n = late = 0; mn = 1e9; mx = 0; gap_max = fire_late_max = 0;
+    }
+    sub_001AE020();
+}
+
 void *ssx3_lookup_trace(uint32_t va)
 {
-    static int on = -1;
+    static int on = -1, stats = -1;
+
+    if (stats < 0)
+        stats = getenv("RECOMP_FRAMETIMER_STATS") != NULL;
+    if (stats && va == 0x001AE020)
+        return frametimer_stats;
 
     if (on < 0)
         on = getenv("RECOMP_TRACE_FRAMETIMER") != NULL;

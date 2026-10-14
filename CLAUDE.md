@@ -644,8 +644,9 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   two losses differed (one trap raised 141 ms earlier and never completed,
   pending 2; one with a flip in the trap registers, pending 0).
 - Live driving: `tools\live.ps1 start|snap|press -Buttons a|key -Key 0x0D|dump|stop`
-  (start sets RECOMP_NO_HOST_PAD=1: scripted runs ignore the machine's real
-  controllers, so the user can hold a pad while tests run; play.bat is unaffected)
+  (start sets RECOMP_NO_HOST_PAD=1 and RECOMP_MUTE=1: scripted runs ignore the
+  machine's real controllers and are silent, so the user can use the PC while
+  tests run; play.bat is unaffected. Audio measurements need -Env @{RECOMP_MUTE='0'})
   (`key` posts WM_KEYDOWN/UP to the window, exercising the real keyboard
   path; verified 2026-10-13: Enter presses reach the menus with
   `RECOMP_KEYBOARD=1`. `RECOMP_INPUT_DIAG=1` logs what the pad layer sees.)
@@ -723,6 +724,20 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
     directional shading and a more saturated picture; part of that is the
     capture. Next if it matters: compare against an xemu frame (lossless)
     and check the vertex-program lighting path (nv2a_vsh_interp.c).
+- FRAME PACING (2026-10-14): SSX 3 paces frames with a self-correcting
+  one-shot XAPI timer (sub_001AE480 sets it up, callback sub_001AE020 ->
+  sub_001AE030: period 1000/60 ms, re-armed from KeTickCount, wakes the main
+  thread parked in sub_001ADF40). KeTickCount was written from GetTickCount()
+  (15.6 ms steps) and only between executor passes, so it stood still for
+  ms at a time; the timer swung between ~3 and ~30 ms (40% of intervals over
+  20 ms). Toolkit: xbox_TickCountMs() (QPC, 1 ms) and a 1 ms tick thread;
+  kernel timers have sub-ms due times and arming wakes the timer thread; the
+  guest-CPU handover's 5 ms waits use the 1 ms clock too. Now every interval
+  is 14-19 ms; race ~57.5 FPS, p99 ~27 ms (was ~55 / 32-35). Remaining
+  hitches are elsewhere (flip/vblank phase?). Probes: RECOMP_FRAMETIMER_STATS=1
+  (intervals, how late the timer fired, fire->callback), RECOMP_TIMER_STATS=1
+  (kernel timer lateness), RECOMP_VKR_SKIP_RT=1 (drop shadow-map draws:
+  only ~2 FPS, so GPU shadow maps are not the 60 FPS lever).
 - Untranslated instructions reached (no-ops): `wbinvd`, `out`/`in`, `ldmxcsr`.
 - Upstream candidates: the toolkit fixes in `patches/`; `tools.split`
   ignoring applied names (docs/DECOMP.md says otherwise); template

@@ -195,6 +195,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — Frame timer steady (KeTickCount at 1 ms from QPC on its own thread; it was GetTickCount between executor passes): timer intervals 14-19 ms (were 3-30), race ~57.5 FPS p99 ~27 ms. Test runs muted (RECOMP_MUTE).
 - 2026-10-14 — GPU ack thread sleeps between kickoff bursts (RECOMP_ACK_IDLE_US, default 2000): race CPU 2.92 → 2.15 cores, FPS unchanged (55.9 vs 53.7).
 - 2026-10-14 — Phase 1 gate passed: 20/20 boot→race on Vulkan (race_par 4x5, 3.4 min); software renderer no longer gated.
 - 2026-10-14 — Playtest fixes: Options menu crash (stub for a shared `pop esi; ret 8` epilogue never restored esi -- toolkit stub generator), audio crackle (output queue cushion, wait instead of drop), Vulkan cube maps.
