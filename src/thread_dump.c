@@ -141,6 +141,10 @@ static void td_dump(const char *why)
         extern void ssx3_StreamDump(void);
         ssx3_JobTraceDump();
         ssx3_StreamDump();
+        {
+            extern void ssx3_StrmTraceDump(void);
+            ssx3_StrmTraceDump();
+        }
     }
 
     snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);

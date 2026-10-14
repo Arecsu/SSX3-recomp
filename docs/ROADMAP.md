@@ -53,7 +53,7 @@ Fix the known failures before the renderer changes so regressions stay visible.
 - [ ] Any remaining async-GPU hang (map-select/rules class): soak-test the idle wake; replace it with exact behaviour if a better model of D3D's NOP patching emerges. **2026-10-14:** caught one (fence already past the waited time, wake lost); watchdog `[BLOCK-RESCUE]` delivers the owed wake (default on) -- 10 runs, 2 rescues, both raced. Root cause of the lost wake still open.
 - [x] ISRs and DPCs run under the guest-CPU lock (single-CPU semantics; `RECOMP_IRQ_LOCK=0` to disable). They used to run on host threads in parallel with guest threads; the USB driver's enumeration then stalled in about 1 boot in 6 (no pad on the title screen). After: 6/6 runs enumerated fully.
 - [ ] Guest-thread priority scheduling in the guest lock (Xbox is single-CPU, strict priority) — only if Phase 1 bugs point at ordering.
-- [ ] USB enumeration under heavy host load (8 parallel instances: ~25% stay on the title screen without a pad; CLAUDE.md "USB ENUMERATION UNDER LOAD"). With the watchdog it shows as `[no pad]` or `[freeze]` (title screen at 1-2 draws, FPS 0: the frontend itself stops, not only the input) -- 5 of 16 runs at 8 instances.
+- [ ] Title-screen movie freeze (was filed as "USB enumeration under load": the pad is fine, the frontend's background movie stream stops -- EA STRM ring, CLAUDE.md "TITLE-SCREEN MOVIE FREEZE"); the only failure class left at 8 parallel instances (~1 in 6). Same code as the main-thread crash at 0x00173B36.
 - [ ] Crash in EA movie/stream code on the main thread (2026-10-14, 1 in 16 parallel runs): read fault at 0xE0220705, guest stack 0x00173B36 <- 0x00173C05 <- 0x001731CD <- 0x001740C4; log kept as `logs/crash_20261014_i8_stderr.txt` (Windows build dir).
 - [ ] Gate: 20/20 boot→race on both GPU modes.
 
@@ -137,6 +137,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — The "[no pad]" runs are a title-screen movie stream freeze (EA STRM ring), not USB; ring trace added. RECOMP_PRIO_LOCK=1 still worse (16/24 vs 20/24).
 - 2026-10-14 — Watchdog in to_race.ps1 ([no pad] / [freeze] / [<state> stall]); race_par 8x2 in 4.6 min (was 22).
 - 2026-10-14 — 43% stall FIXED (guest CPU kept across uncontended critical sections): race_par 8x3 = 18 OK, 0 load stalls, 6 title/no-pad (USB under load, new item).
 - 2026-10-14 — Parallel test runs: tools/race_par.ps1 (N instances in work\i<k>); 2x1 trial OK in 1.5 min.

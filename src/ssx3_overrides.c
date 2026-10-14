@@ -531,6 +531,135 @@ void sub_00177990(void)
     sub_00177990_gen();
 }
 
+/*
+ * EA STRM ring trace (always on, cheap: a host ring of the last 512 events,
+ * printed with every thread dump). The title screen's background movie
+ * freezes the frontend in ~1 run in 6 under load: the main thread loops in
+ * sub_00177F80 (next chunk of a stream: walk the ring from the current chunk
+ * to the next block tagged with the stream's id) and its walk pointer ends up
+ * outside the ring -- the block chain is corrupt (the main-thread crash at
+ * 0x00173B36 is the same walk hitting unmapped memory). Recorded: block scans
+ * (sub_00177760, eax = manager), chunk fetches (sub_00177F80(h)), releases
+ * (sub_00178540(h, chunk)), flushes (sub_00178800(h)), the read scheduler
+ * (sub_00178280, K/k) and read completions (sub_001781B0, C/c), with thread, time
+ * and the manager's ring pointers (+0x60 read, +0x64 scan, +0x68 write).
+ */
+typedef struct { DWORD ms, tid; char op; uint32_t m, a, b, c, d, e; } StrmEv;
+#define STRM_RING 2048
+static StrmEv s_strm_ev[STRM_RING];
+static volatile LONG s_strm_n;
+static volatile uint32_t s_strm_mgrs[8];
+
+static void strm_note(char op, uint32_t m, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e)
+{
+    LONG i = InterlockedIncrement(&s_strm_n) - 1;
+    StrmEv *v = &s_strm_ev[i % STRM_RING];
+    int k;
+    v->ms = GetTickCount(); v->tid = GetCurrentThreadId(); v->op = op;
+    v->m = m; v->a = a; v->b = b; v->c = c; v->d = d; v->e = e;
+    for (k = 0; k < 8; k++) {
+        if (s_strm_mgrs[k] == m) break;
+        if (!s_strm_mgrs[k]) { s_strm_mgrs[k] = m; break; }
+    }
+}
+
+static int strm_ok(uint32_t va) { return va >= 0x80000000u && va < 0x84000000u; }
+
+extern void sub_00177760_gen(void);
+extern void sub_00177F80_gen(void);
+extern void sub_00178540_gen(void);
+extern void sub_00178800_gen(void);
+
+void sub_00177760(void)                 /* scan new blocks; eax = manager */
+{
+    uint32_t M = g_eax, scan = MEM32(M + 0x64), wr = MEM32(M + 0x68);
+    uint32_t tag = strm_ok(scan) ? MEM32(scan) : 0, sz = strm_ok(scan) ? MEM32(scan + 4) : 0;
+    sub_00177760_gen();
+    strm_note('S', M, scan, wr, tag, sz, (g_eax << 28) | (MEM32(M + 0x64) & 0x0FFFFFFFu));
+}
+
+void sub_00177F80(void)                 /* next chunk of stream h */
+{
+    /* A consumer polls an empty stream every frame: an empty fetch is
+     * recorded once, not each time, so the ring keeps the history. */
+    static volatile uint32_t last_h, last_cur;
+    uint32_t h = MEM32(g_esp + 4), M = strm_ok(h) ? MEM32(h) : 0;
+    uint32_t cur = strm_ok(h) ? MEM32(h + 12) : 0, avail = strm_ok(h) ? MEM32(h + 8) : 0;
+    int quiet = avail == 0 && h == last_h && cur == last_cur;
+    if (!quiet)
+        strm_note('g', M, h, MEM32(h + 4), avail, cur, strm_ok(cur) ? MEM32(cur + 4) : 0);
+    sub_00177F80_gen();
+    if (!quiet || g_eax)
+        strm_note('G', M, h, g_eax, MEM32(h + 8), MEM32(h + 12), M ? MEM32(M + 0x60) : 0);
+    last_h = h;
+    last_cur = strm_ok(h) ? MEM32(h + 12) : 0;
+}
+
+extern void sub_00178280_gen(void);
+extern void sub_001781B0_gen(void);
+
+void sub_00178280(void)                 /* schedule the next read (M, n) */
+{
+    uint32_t M = MEM32(g_esp + 4);
+    strm_note('K', M, MEM32(M + 0x60), MEM32(M + 0x64), MEM32(M + 0x68), MEM32(M + 0x48), MEM32(M + 0x18C));
+    sub_00178280_gen();
+    strm_note('k', M, MEM32(M + 0x60), MEM32(M + 0x64), MEM32(M + 0x68), MEM32(M + 0x48), MEM32(M + 0x188));
+}
+
+void sub_001781B0(void)                 /* read completed (op, ?, M) */
+{
+    uint32_t op = MEM32(g_esp + 4), M = MEM32(g_esp + 12);
+    strm_note('C', M, op, MEM32(M + 0x68), MEM32(M + 0x188), MEM32(M + 0x180), MEM32(M + 0x48));
+    sub_001781B0_gen();
+    strm_note('c', M, op, MEM32(M + 0x68), MEM32(M + 0x64), MEM32(M + 0x60), MEM32(M + 0x48));
+}
+
+void sub_00178540(void)                 /* release chunk */
+{
+    uint32_t h = MEM32(g_esp + 4), ch = MEM32(g_esp + 8), M = strm_ok(h) ? MEM32(h) : 0;
+    strm_note('r', M, h, ch, M ? MEM32(M + 0x60) : 0, M ? MEM32(M + 0x64) : 0, M ? MEM32(M + 0x68) : 0);
+    sub_00178540_gen();
+    strm_note('R', M, h, ch, M ? MEM32(M + 0x60) : 0, M ? MEM32(M + 0x64) : 0, M ? MEM32(M + 0x68) : 0);
+}
+
+void sub_00178800(void)                 /* flush stream h */
+{
+    uint32_t h = MEM32(g_esp + 4), M = strm_ok(h) ? MEM32(h) : 0;
+    strm_note('F', M, h, M ? MEM32(M + 0x60) : 0, M ? MEM32(M + 0x64) : 0, M ? MEM32(M + 0x68) : 0, 0);
+    sub_00178800_gen();
+    strm_note('f', M, h, M ? MEM32(M + 0x60) : 0, M ? MEM32(M + 0x64) : 0, M ? MEM32(M + 0x68) : 0, 0);
+}
+
+void ssx3_StrmTraceDump(void)
+{
+    LONG n = s_strm_n, i, first = n > STRM_RING ? n - STRM_RING : 0;
+    int k;
+    fprintf(stderr, "[STRMTRACE] last %ld of %ld (ms tid op M a b c d e)\n", n - first, n);
+    for (i = first; i < n; i++) {
+        const StrmEv *v = &s_strm_ev[i % STRM_RING];
+        fprintf(stderr, "[STRMEV] %lu %lu %c %08X %08X %08X %08X %08X %08X\n", v->ms, v->tid, v->op,
+                v->m, v->a, v->b, v->c, v->d, v->e);
+    }
+    for (k = 0; k < 8 && s_strm_mgrs[k]; k++) {
+        uint32_t M = s_strm_mgrs[k], p, j;
+        if (!strm_ok(M) || MEM32(M) != 0x4D525453u)
+            continue;
+        fprintf(stderr, "[STRMRING] M %08X ring %08X-%08X rd %08X scan %08X wr %08X busy %u | blocks from rd:",
+                M, MEM32(M + 0x3C), MEM32(M + 0x44), MEM32(M + 0x60), MEM32(M + 0x64), MEM32(M + 0x68),
+                MEM32(M + 0x48));
+        for (p = MEM32(M + 0x60), j = 0; j < 40 && strm_ok(p); j++) {
+            uint32_t t = MEM32(p), w = MEM32(p + 4);
+            fprintf(stderr, " %08X:%08X/%08X", p, t, w);
+            if (p == MEM32(M + 0x68)) break;
+            if (t == 0xFFFFFFFFu) p = MEM32(M + 0x40);
+            else if ((w & 0xFFFFFFu) == 0) break;
+            else p += w & 0xFFFFFFu;
+        }
+        fprintf(stderr, "\n");
+    }
+    fflush(stderr);
+}
+
 static volatile uint32_t s_block_t;     /* BlockOnTime: time being waited for */
 static volatile DWORD    s_block_since; /* when that call began, 0 = none */
 

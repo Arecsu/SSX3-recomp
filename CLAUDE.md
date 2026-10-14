@@ -559,6 +559,23 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   logs (RECOMP_USB_TRACE=1): race_par batch of 13:0x on 2026-10-14, stuck
   runs i2 #2, i3 #2, i5 #1, i6 #2 in work\i<k>\logs\. Next: compare
   their USB traces with a good run's.
+- TITLE-SCREEN MOVIE FREEZE (open, 2026-10-14; the "[no pad]"/"[freeze]"
+  runs, ~1 in 6 at 8 parallel instances, the only failure class left in
+  race_par 8x3 batches): the frontend plays a background movie through EA's
+  STRM manager (M 0x814F3EC0, handle 0x814F42BC). The main thread waits in
+  sub_00177F80 (next chunk) <- sub_00173B20 <- ... <- sub_001706A0 <-
+  sub_00080730; its walk once ran off the ring (main-thread crash at
+  0x00173B36). Ring trace ([STRMEV]/[STRMRING] in every thread dump,
+  wrappers on sub_00177760 scan, sub_00177F80 fetch, sub_00178540 release,
+  sub_00178800 flush, sub_00178280 schedule, sub_001781B0 read completion)
+  of one freeze: rd = scan at an unscanned 'MADk' block of 0xA41C bytes that
+  is 0x184 bytes short of the write pointer, busy = 1, ring has room -- the
+  read that should complete it was issued (or not) and never finished /
+  never rescheduled. Scheduler sub_00178280: rd > wr and gap < read size ->
+  busy 2 (wait for the consumer); no room before the ring end -> copy the
+  unscanned tail to the ring start and wrap; else async read via
+  sub_00179E40 with completion sub_001781B0. RECOMP_PRIO_LOCK=1 makes it
+  worse (16/24 vs 20/24).
 - ASYNC GPU FREEZE (map select / rules / loading 31-33%): main thread loops in
   D3D BlockOnTime: the idle wake does reach it (KeSetEvent on 0x0024CE9C,
   ~10/s) but the time it waits for never completes; 0x5C bytes are written
