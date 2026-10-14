@@ -251,10 +251,29 @@ index 83e652d..e4ec703 100644
  
  #endif /* APU_XAUDIO2_H */
 diff --git a/src/input/xinput_device.c b/src/input/xinput_device.c
-index a91edbe..a18661a 100644
+index a91edbe..a0cc203 100644
 --- a/src/input/xinput_device.c
 +++ b/src/input/xinput_device.c
-@@ -257,6 +257,57 @@ static SDL_GameController *g_pads[XBOX_MAX_CONTROLLERS];
+@@ -141,7 +141,17 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+     if (dwPort >= XBOX_MAX_CONTROLLERS || !pState)
+         return ERROR_DEVICE_NOT_CONNECTED;
+ 
+-    result = XInputGetState(dwPort, &xi_state);
++    /* RECOMP_NO_HOST_PAD=1: ignore the machine's real controllers (scripted
++     * test runs, so a pad in someone's hands does not steer them; the
++     * scripted presses and the keyboard still work). */
++    {
++        static int no_pad = -1;
++        if (no_pad < 0) {
++            const char *v = getenv("RECOMP_NO_HOST_PAD");
++            no_pad = v && *v && *v != '0';
++        }
++        result = no_pad ? ERROR_DEVICE_NOT_CONNECTED : XInputGetState(dwPort, &xi_state);
++    }
+     if (result != ERROR_SUCCESS) {
+         g_controller_connected[dwPort] = FALSE;
+         if (dwPort == 0 && keyboard_enabled()) {
+@@ -257,6 +267,57 @@ static SDL_GameController *g_pads[XBOX_MAX_CONTROLLERS];
  static BOOL  g_controller_connected[XBOX_MAX_CONTROLLERS];
  static DWORD g_packet[XBOX_MAX_CONTROLLERS];
  
@@ -312,7 +331,7 @@ index a91edbe..a18661a 100644
  /* Open up to XBOX_MAX_CONTROLLERS attached game controllers. */
  static void open_controllers(void)
  {
-@@ -287,6 +338,13 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+@@ -287,6 +348,13 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
      SDL_GameController *c = g_pads[dwPort];
      if (!c || !SDL_GameControllerGetAttached(c)) {
          g_controller_connected[dwPort] = FALSE;
@@ -326,7 +345,7 @@ index a91edbe..a18661a 100644
          return ERROR_DEVICE_NOT_CONNECTED;
      }
  
-@@ -335,6 +393,8 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+@@ -335,6 +403,8 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
      pState->Gamepad.sThumbRY =
          (SHORT)(-1 - SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_RIGHTY));
  

@@ -644,6 +644,8 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   two losses differed (one trap raised 141 ms earlier and never completed,
   pending 2; one with a flip in the trap registers, pending 0).
 - Live driving: `tools\live.ps1 start|snap|press -Buttons a|key -Key 0x0D|dump|stop`
+  (start sets RECOMP_NO_HOST_PAD=1: scripted runs ignore the machine's real
+  controllers, so the user can hold a pad while tests run; play.bat is unaffected)
   (`key` posts WM_KEYDOWN/UP to the window, exercising the real keyboard
   path; verified 2026-10-13: Enter presses reach the menus with
   `RECOMP_KEYBOARD=1`. `RECOMP_INPUT_DIAG=1` logs what the pad layer sees.)
