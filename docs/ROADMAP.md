@@ -124,6 +124,18 @@ is guest code and CPU vertex programs. The black polygons in the sky
   vblank/timer with 1 ms resolution; kernel timers use the same clock and
   stay on their period grid. Race 53-58 FPS, p50 17 ms, p99 24-33 ms.
 - [ ] 2.0d Vertex programs on the GPU (SPIR-V), the next big CPU cost.
+  **2026-10-14 measurements:** the frame timer is now steady, so what is left of
+  the hitches is GPU-executor time: every slow frame (`[SLOWFRAME]`, > 22 ms
+  between flips, RECOMP_FRAME_STATS) has the executor busy for the whole
+  interval (~800-860 draws). Executor thread profile (`profile_tally.py --thread
+  nv2a_ack_thread`): CPU vertex programs ~42% (`nv2a_vsh_run`) + ~17% waiting for
+  the pool running them; the Vulkan backend ~17%. Not the lever: shadow maps on
+  the GPU (RECOMP_VKR_SKIP_RT=1 gains ~2 FPS), pool sizing per draw
+  (RECOMP_VSH_PER_THREAD, neutral). Plan: the backend gets the raw vertex
+  attributes, the program and its constants instead of transformed vertices;
+  microcode -> GLSL -> SPIR-V cached by program hash (xemu's vsh translation
+  rules); clipping by the GPU; draws into software surfaces (shadow maps) keep
+  the CPU path.
 - [ ] 2.1 Device and presentation: D3D11 device + swap chain in the game window; flips present the front surface; vsync-paced at 60 Hz. **Done (opt-in `RECOMP_D3D_PRESENT=1`, toolkit `src/video/gpu_present.c`):** device + DISCARD swap chain on the window, each flipped frame uploaded to the back buffer and presented with vsync (`RECOMP_VSYNC=0` off). Screenshots now come from inside the process (`RECOMP_SNAP_TRIGGER`, used by `live.ps1 snap`), since PrintWindow cannot read a swap chain. Left: make it the default after a visual check; share the device with the renderer (2.2+).
 - [ ] 2.2 Surfaces: colour/depth render targets as D3D11 textures keyed by guest address and format, including **swizzled RTs** (rider shadow maps) and clear rects; Z24S8/Z16 depth, stencil.
 - [ ] 2.3 Textures: upload from guest memory (swizzled, linear, DXT1/3/5, palettised, cube maps), cached by address + content hash with invalidation on CPU writes; render-target-as-texture without a round trip; sampler state (filter, address modes incl. border colour).

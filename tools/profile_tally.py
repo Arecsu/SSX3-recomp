@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Tally [PROF] samples from stderr.txt (written by src/thread_dump.c).
 
-    python3 tools/profile_tally.py build/ssx3_recomp.map stderr.txt
+    python3 tools/profile_tally.py build/ssx3_recomp.map stderr.txt [--thread FUNC]
+
+--thread FUNC: only the threads whose samples have FUNC in their stack (for
+example nv2a_ack_thread, the GPU executor), with innermost and inclusive
+counts for them alone.
 
 Prints the most frequent innermost function per thread and overall, using the
 linker map to name each rebased RIP (generated code is sub_<guest VA>).
@@ -20,6 +24,8 @@ def load_map(path):
 
 def main():
     addrs, names = load_map(sys.argv[1])
+    want = sys.argv[sys.argv.index("--thread") + 1] if "--thread" in sys.argv else None
+    samples = []
     def name(rip):
         i = bisect.bisect_right(addrs, rip) - 1
         return names[i] if i >= 0 else hex(rip)
@@ -45,6 +51,7 @@ def main():
         frames = [name(r) for r in rips if 0x140000000 <= r < 0x150000000]
         if not frames:
             continue
+        samples.append((tid, rips, frames))
         blocked = not (0x140000000 <= rips[0] < 0x150000000)
         key = ("[wait] " if blocked else "") + frames[0]
         leaf[key] += 1
@@ -68,6 +75,24 @@ def main():
     for tid, cnt in sorted(per_thread.items(), key=lambda kv: -running(kv[1]))[:8]:
         top = ", ".join(f"{f} {c}" for f, c in cnt.most_common(6))
         print(f"  tid {tid}: running {running(cnt)}/{sum(cnt.values())}; {top}")
+
+    if want:
+        tids = {t for t, _, fr in samples if want in fr}
+        sel = [(r, fr) for t, r, fr in samples if t in tids]
+        lf = collections.Counter(); inc = collections.Counter()
+        for r, fr in sel:
+            blocked = not (0x140000000 <= r[0] < 0x150000000)
+            lf[("[wait] " if blocked else "") + fr[0]] += 1
+            for f in set(fr):
+                inc[f] += 1
+        n = len(sel) or 1
+        print(f"\nThreads with {want}: {len(tids)}, {len(sel)} samples")
+        print("  innermost:")
+        for f, c in lf.most_common(25):
+            print(f"    {c:5d}  {100*c/n:5.1f}%  {f}")
+        print("  inclusive:")
+        for f, c in inc.most_common(25):
+            print(f"    {c:5d}  {100*c/n:5.1f}%  {f}")
 
 if __name__ == "__main__":
     main()
