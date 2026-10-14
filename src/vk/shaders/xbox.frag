@@ -27,7 +27,7 @@ layout(set = 0, binding = 4, std140) uniform RC {
 } rc;
 
 layout(push_constant) uniform PC {
-    layout(offset = 32) uint alpha_func;  /* 0 = test off, else GL func 0x200..0x207 */
+    layout(offset = 64) uint alpha_func;  /* 0 = test off, else GL func 0x200..0x207 */
     uint alpha_ref;                       /* 0..255 */
     float w_scale;                        /* W-buffering: depth = w * this; 0 = off */
 } pc;

@@ -466,29 +466,19 @@ static void trace_black(uint32_t prim, const Nv2aVshOutput *v, uint32_t n, const
                 v[i].tex[0][2], v[i].tex[0][3]);
 }
 
-static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, uint32_t n)
+/* Triangle-list indices for n vertices of primitive prim, in a buffer
+ * reused across calls; *k gets the count. NULL: not drawable here (points,
+ * lines) or out of memory. */
+static uint32_t *build_idx(uint32_t prim, uint32_t n, uint32_t *k_out)
 {
     static uint32_t *idx;
     static uint32_t cap;
     uint32_t i, k = 0, need = n * 6;
-
-    double td = 0;
-    if (s_stats < 0) s_stats = getenv("RECOMP_VKR_STATS") != NULL;
-    if (s_stats) { td = now_ms(); stats_tick(); }
-    if (!is_main(t)) {
-        /* RECOMP_VKR_SKIP_RT=1 (measurement): drop draws into swizzled
-         * render targets (the rider shadow maps) instead of handing them to
-         * the software rasteriser -- what drawing them costs. */
-        static int skip_rt = -1;
-        if (skip_rt < 0)
-            skip_rt = getenv("RECOMP_VKR_SKIP_RT") != NULL;
-        return skip_rt && t->swizzled;
-    }
     if (cap < need) {
         free(idx);
         cap = need;
         idx = (uint32_t *)malloc(cap * sizeof *idx);
-        if (!idx) { cap = 0; return 0; }
+        if (!idx) { cap = 0; return NULL; }
     }
     switch (prim) {
     case PRIM_TRIANGLES:
@@ -521,8 +511,30 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
         }
         break;
     default:
-        return 0;                       /* points and lines: not yet */
+        return NULL;                    /* points and lines: not yet */
     }
+    *k_out = k;
+    return idx;
+}
+
+static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, uint32_t n)
+{
+    uint32_t *idx, k = 0;
+
+    double td = 0;
+    if (s_stats < 0) s_stats = getenv("RECOMP_VKR_STATS") != NULL;
+    if (s_stats) { td = now_ms(); stats_tick(); }
+    if (!is_main(t)) {
+        /* RECOMP_VKR_SKIP_RT=1 (measurement): drop draws into swizzled
+         * render targets (the rider shadow maps) instead of handing them to
+         * the software rasteriser -- what drawing them costs. */
+        static int skip_rt = -1;
+        if (skip_rt < 0)
+            skip_rt = getenv("RECOMP_VKR_SKIP_RT") != NULL;
+        return skip_rt && t->swizzled;
+    }
+    if (!(idx = build_idx(prim, n, &k)))
+        return 0;
     if (!k)
         return 1;
     /* The vertex program output is relative to the surface origin, which is
@@ -546,6 +558,47 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
         if (s_stats) { s_t[3] += now_ms() - t2; s_n[0]++; }
         if (s_trace == 2)
             trace_black(prim, v, n, &st);
+    }
+    s_dirty = 1;
+    if (s_stats) s_t[0] += now_ms() - td;
+    return 1;
+}
+
+/* The draw with the vertex program left to the GPU. Declined (so the CPU
+ * runs it and calls be_draw) for other surfaces, and while a trace that needs
+ * the transformed vertices is on. */
+static int be_draw_vsh(const Nv2aTarget *t, uint32_t prim, const float *in, uint32_t n,
+                       const Nv2aVshProgram *p)
+{
+    uint32_t *idx, k = 0;
+    double td = 0;
+    if (s_trace == 2)
+        return 0;
+    if (s_stats < 0) s_stats = getenv("RECOMP_VKR_STATS") != NULL;
+    if (s_stats) { td = now_ms(); stats_tick(); }
+    if (!is_main(t))
+        return 0;
+    if (!(idx = build_idx(prim, n, &k)))
+        return 0;
+    if (!k)
+        return 1;
+    {
+        VkrDrawState st;
+        double t2;
+        memset(&st, 0, sizeof st);
+        fill_state(t, &st);
+        bind_textures(&st);
+        {
+            static int no_shadow = -1;
+            if (no_shadow < 0) no_shadow = getenv("RECOMP_VKR_NO_SHADOW") != NULL;
+            if (no_shadow && samples_rt(&st))
+                return 1;
+        }
+        t2 = s_stats ? now_ms() : 0;
+        if (!vkr_draw_vsh(s_vk, in, n, p->nin, &p->ins[0][0], p->nins, p->hash, p->consts,
+                          idx, k, &st))
+            return 0;
+        if (s_stats) { s_t[3] += now_ms() - t2; s_n[0]++; }
     }
     s_dirty = 1;
     if (s_stats) s_t[0] += now_ms() - td;
@@ -624,7 +677,7 @@ static void be_flip(const Nv2aTarget *t)
     s_dirty = 0;
 }
 
-static const Nv2aBackend s_backend = {be_draw, be_clear, be_flip};
+static const Nv2aBackend s_backend = {be_draw, be_clear, be_flip, be_draw_vsh};
 
 int vkr_backend_install(void)
 {

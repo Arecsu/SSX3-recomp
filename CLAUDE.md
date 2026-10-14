@@ -25,7 +25,9 @@ Windows (p50 17 ms) vs ~12 in software -- see ROADMAP 2.0c for the steps
 (readback memory, trap waits, piecewise submits, render-target textures in
 place, vertex cache, and the vblank clock that capped it at ~43). MR !3
 (two frames in flight, pre-decoded vertex programs, LensFX nowait) is
-merged; `src/vk/vkr_thread.h` maps its pthread calls on Windows. The black
+merged; `src/vk/vkr_thread.h` maps its pthread calls on Windows. Vertex
+programs run on the GPU (ROADMAP 2.0d, `xbox_vsh.vert`, RECOMP_GPU_VSH=0 =
+CPU): race at a steady 60 FPS. The black
 shapes over the race backdrop were the executor dropping ARRAY_ELEMENT32
 (0x1808, the odd last index of an index list) -- fixed in the toolkit patch.
 

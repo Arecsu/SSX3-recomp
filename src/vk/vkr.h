@@ -66,6 +66,14 @@ uint32_t vkr_tex_generation(VkrContext *c);   /* changes when all textures were 
 int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
              const uint32_t *idx, uint32_t nidx, const VkrDrawState *st);
 
+/* The same with the NV2A vertex program run on the GPU: in is nverts x nin
+ * float4 program inputs, prog nins x 8 words (toolkit nv2a_vsh_export),
+ * consts the 192 constants (float[192][4]). */
+int vkr_draw_vsh(VkrContext *c, const float *in, uint32_t nverts, uint32_t nin,
+                 const uint32_t *prog, uint32_t nins, uint32_t prog_hash,
+                 const float (*consts)[4], const uint32_t *idx, uint32_t nidx,
+                 const VkrDrawState *st);
+
 uint32_t vkr_width(const VkrContext *c);
 uint32_t vkr_height(const VkrContext *c);
 

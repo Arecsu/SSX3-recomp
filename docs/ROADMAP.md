@@ -123,7 +123,16 @@ is guest code and CPU vertex programs. The black polygons in the sky
   grid from the performance counter; the timer thread waits until the next
   vblank/timer with 1 ms resolution; kernel timers use the same clock and
   stay on their period grid. Race 53-58 FPS, p50 17 ms, p99 24-33 ms.
-- [ ] 2.0d Vertex programs on the GPU (SPIR-V), the next big CPU cost.
+- [x] 2.0d Vertex programs on the GPU (2026-10-14, default on, RECOMP_GPU_VSH=0 = CPU):
+  src/vk/shaders/xbox_vsh.vert interprets the NV2A microcode per vertex (a port of
+  nv2a_vsh_run), reading the program (toolkit nv2a_vsh_export: 8 words per
+  instruction), the 192 constants and the vertex's packed inputs from the frame's
+  upload buffer (binding 5); program and constants are uploaded once per recording
+  while unchanged. The executor only fetches the attributes the program reads and
+  offers the batch to the backend's draw_vsh; shadow maps, programs that write c[]
+  and traced frames keep the CPU path. Race: 60.0 FPS, p50 16.6 ms, p99 20 ms (was
+  ~57.5 / ~27); process CPU 2.15 -> 1.63 cores; race_par 4x2 8/8; title, menus,
+  Options and race checked by screenshot.
   **2026-10-14 measurements:** the frame timer is now steady, so what is left of
   the hitches is GPU-executor time: every slow frame (`[SLOWFRAME]`, > 22 ms
   between flips, RECOMP_FRAME_STATS) has the executor busy for the whole
@@ -207,6 +216,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — Vertex programs on the GPU (2.0d): race at a steady 60 FPS (p99 20 ms), CPU 1.63 cores.
 - 2026-10-14 — Frame timer steady (KeTickCount at 1 ms from QPC on its own thread; it was GetTickCount between executor passes): timer intervals 14-19 ms (were 3-30), race ~57.5 FPS p99 ~27 ms. Test runs muted (RECOMP_MUTE).
 - 2026-10-14 — GPU ack thread sleeps between kickoff bursts (RECOMP_ACK_IDLE_US, default 2000): race CPU 2.92 → 2.15 cores, FPS unchanged (55.9 vs 53.7).
 - 2026-10-14 — Phase 1 gate passed: 20/20 boot→race on Vulkan (race_par 4x5, 3.4 min); software renderer no longer gated.

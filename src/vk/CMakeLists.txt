@@ -11,14 +11,23 @@ find_program(GLSLC glslc REQUIRED)
 set(VKR_GEN "${CMAKE_CURRENT_BINARY_DIR}/vkr_gen")
 file(MAKE_DIRECTORY "${VKR_GEN}")
 
+# vkr_shader(<stage> [<base>]): shaders/<base>.<stage> (default base xbox)
+# -> vkr_gen/<name>_spv.h with the array <name>_spv, name = xbox_<stage>, or
+# <base>_<stage> for another base.
 function(vkr_shader stage)
-    set(src "${CMAKE_CURRENT_SOURCE_DIR}/shaders/xbox.${stage}")
-    set(spv "${VKR_GEN}/xbox_${stage}.spv")
-    set(hdr "${VKR_GEN}/xbox_${stage}_spv.h")
+    set(base "xbox")
+    set(name "xbox_${stage}")
+    if(ARGC GREATER 1)
+        set(base "${ARGV1}")
+        set(name "${ARGV1}_${stage}")
+    endif()
+    set(src "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${base}.${stage}")
+    set(spv "${VKR_GEN}/${name}.spv")
+    set(hdr "${VKR_GEN}/${name}_spv.h")
     add_custom_command(
         OUTPUT "${hdr}"
         COMMAND ${GLSLC} --target-env=vulkan1.3 -O -o "${spv}" "${src}"
-        COMMAND ${CMAKE_COMMAND} -DIN=${spv} -DOUT=${hdr} -DNAME=xbox_${stage}_spv
+        COMMAND ${CMAKE_COMMAND} -DIN=${spv} -DOUT=${hdr} -DNAME=${name}_spv
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_spv.cmake"
         DEPENDS "${src}" "${CMAKE_CURRENT_SOURCE_DIR}/embed_spv.cmake"
         VERBATIM)
@@ -26,6 +35,7 @@ function(vkr_shader stage)
 endfunction()
 vkr_shader(vert)
 vkr_shader(frag)
+vkr_shader(vert xbox_vsh)
 
 add_library(vkr STATIC vkr.c ${VKR_HEADERS})
 # vkr_backend.c is added by the game build (needs the toolkit headers).
