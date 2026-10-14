@@ -39,7 +39,7 @@ int main(int argc, char **argv)
     if (!c) return 1;
     if (!vkr_set_target(c, W, H, zm)) return 1;
     vkr_clear(c, clear, 1, 1.0f);
-    vkr_draw(c, v, 6, idx, 6, 1, 1);
+    vkr_draw(c, v, 6, idx, 6, 1, 1, 0x203);
     if (!vkr_read_back(c, px)) return 1;
 
     memcpy(hdr + 2, &sz, 4); memcpy(hdr + 10, &off, 4);

@@ -154,7 +154,8 @@ static int make_pipeline(VkrContext *c)
     VkPipelineColorBlendAttachmentState cba = {0};
     VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
-                            VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE};
+                            VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+                            VK_DYNAMIC_STATE_DEPTH_COMPARE_OP};
     VkPipelineDynamicStateCreateInfo dy = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
     VkFormat cf = VK_FORMAT_B8G8R8A8_UNORM;
     VkPipelineRenderingCreateInfo ri = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
@@ -180,7 +181,7 @@ static int make_pipeline(VkrContext *c)
     ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     cba.colorWriteMask = 0xF;
     cb.attachmentCount = 1; cb.pAttachments = &cba;
-    dy.dynamicStateCount = 4; dy.pDynamicStates = dyn;
+    dy.dynamicStateCount = 5; dy.pDynamicStates = dyn;
     ri.colorAttachmentCount = 1; ri.pColorAttachmentFormats = &cf;
     ri.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
     pi.pNext = &ri; pi.stageCount = 2; pi.pStages = st;
@@ -383,8 +384,19 @@ void vkr_clear(VkrContext *c, const float rgba[4], int clear_depth, float depth)
     vkCmdClearAttachments(c->cmd, n, ca, 1, &cr);
 }
 
+void vkr_clear_depth(VkrContext *c, float depth)
+{
+    VkClearAttachment ca = {VK_IMAGE_ASPECT_DEPTH_BIT};
+    VkClearRect cr = {{{0, 0}, {c->w, c->h}}, 0, 1};
+    if (!begin_cmd(c)) return;
+    begin_pass(c);
+    ca.clearValue.depthStencil.depth = depth;
+    vkCmdClearAttachments(c->cmd, 1, &ca, 1, &cr);
+}
+
 int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
-             const uint32_t *idx, uint32_t nidx, int depth_test, int depth_write)
+             const uint32_t *idx, uint32_t nidx, int depth_test, int depth_write,
+             uint32_t gl_depth_func)
 {
     uint32_t vb = (c->buf_used + 15) & ~15u;
     uint32_t ib = vb + nverts * (uint32_t)sizeof *v;
@@ -405,11 +417,17 @@ int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, pc);
     vkCmdSetDepthTestEnable(c->cmd, depth_test ? VK_TRUE : VK_FALSE);
     vkCmdSetDepthWriteEnable(c->cmd, depth_write ? VK_TRUE : VK_FALSE);
+    vkCmdSetDepthCompareOp(c->cmd, gl_depth_func >= 0x200 && gl_depth_func <= 0x207
+                                       ? (VkCompareOp)(gl_depth_func - 0x200)
+                                       : VK_COMPARE_OP_LESS_OR_EQUAL);
     vkCmdBindVertexBuffers(c->cmd, 0, 1, &c->buf, &off);
     vkCmdBindIndexBuffer(c->cmd, c->buf, ib, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(c->cmd, nidx, 1, 0, 0, 0);
     return 1;
 }
+
+uint32_t vkr_width(const VkrContext *c) { return c->w; }
+uint32_t vkr_height(const VkrContext *c) { return c->h; }
 
 int vkr_read_back(VkrContext *c, uint8_t *out)
 {

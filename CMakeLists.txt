@@ -97,6 +97,16 @@ if(WIN32)
     )
 else()
     target_link_libraries(${PROJECT_NAME} PRIVATE m pthread dl)
+    # Vulkan renderer for the NV2A executor (RECOMP_GPU=vk), see docs/VULKAN.html.
+    option(SSX3_VULKAN "Build the Vulkan renderer" ON)
+    if(SSX3_VULKAN)
+        add_subdirectory(src/vk ${CMAKE_BINARY_DIR}/vk)
+        target_sources(${PROJECT_NAME} PRIVATE src/vk/vkr_backend.c)
+        target_include_directories(${PROJECT_NAME} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/vk ${XBOXRECOMP_DIR}/src/kernel)
+        target_link_libraries(${PROJECT_NAME} PRIVATE vkr)
+        target_compile_definitions(${PROJECT_NAME} PRIVATE SSX3_VULKAN=1)
+    endif()
     # Symbol names (sub_XXXXXXXX) in the crash handler's backtrace.
     target_link_options(${PROJECT_NAME} PRIVATE -rdynamic)
 endif()

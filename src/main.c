@@ -46,6 +46,9 @@
 
 /* xboxrecomp runtime headers */
 #include <xbox/xboxrecomp.h>
+#ifdef SSX3_VULKAN
+#include "vkr_backend.h"
+#endif
 
 /*
  * If xboxrecomp.h is not an umbrella header in your setup, include
@@ -660,6 +663,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
      * 0x0024B0D8. Nothing executes the pushbuffer on the GPU here, so all
      * submitted work is complete; mirror that so the wait terminates. */
     xbox_Nv2aMirrorFence(0x0024B0D8, 0x2C, 0x30);
+
+#ifdef SSX3_VULKAN
+    {
+        const char *gpu = getenv("RECOMP_GPU");
+        if (gpu && !strcmp(gpu, "vk") && !vkr_backend_install())
+            fprintf(stderr, "[VKR] unavailable, software rasteriser stays\n");
+    }
+#endif
 
     /*
      * TODO: Pre-initialize CRT globals if needed.

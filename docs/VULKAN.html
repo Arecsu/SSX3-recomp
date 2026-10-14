@@ -30,7 +30,7 @@
 <h2>Milestones</h2>
 <ul class="t">
   <li class="done">1. Context, offscreen colour+depth, indexed draws, readback (<code>vkr_selftest</code>).</li>
-  <li class="wip">2. Backend hook in the toolkit patch: <code>Nv2aGpuBackend</code> callbacks (clear, draw batch, flip/readback); exe registers it; <code>RECOMP_GPU=vk</code>.</li>
+  <li class="done">2. Backend hook (<code>nv2a_backend.h</code>, in the toolkit patch): draw / clear / flip callbacks; <code>src/vk/vkr_backend.c</code> registers with <code>RECOMP_GPU=vk</code>. Boots to the frontend; frames come from Vulkan (white: no textures yet). Only the main 32-bit linear surface goes to Vulkan; other targets stay software.</li>
   <li class="open">3. Surfaces keyed by guest address (colour/depth, swizzled RTs); present by writing the front surface to guest memory (existing SDL present), later a direct swapchain.</li>
   <li class="open">4. Textures: upload from guest memory (swizzle, DXT, palette), cache + invalidate.</li>
   <li class="open">5. Register combiners &rarr; GLSL (port of <code>nv2a_combiner.c</code>), pipeline cache; blend, alpha test, fog, stencil, colour mask.</li>
@@ -47,6 +47,7 @@
 <h2>Log</h2>
 <table>
   <tr><td>2026-10-14</td><td>Worktree <code>vulkan</code> from <code>linux</code>. Core + selftest on Honeykrisp: depth-tested triangles OK (5ee232b).</td></tr>
+  <tr><td>2026-10-14</td><td>Backend hook + glue; game builds in the worktree (private toolkit clone <code>tk/</code>, generated sources and <code>game</code> symlinked from the main tree). <code>RECOMP_GPU=vk</code> reaches the frontend, Honeykrisp, 640x480 target. Next: textures.</td></tr>
   <tr><td>2026-10-14</td><td>Found the shared toolkit clone diverges from the patch; plan a private clone for the backend hook.</td></tr>
 </table>
 </body>

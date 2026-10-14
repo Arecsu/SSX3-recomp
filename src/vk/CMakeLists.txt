@@ -28,6 +28,7 @@ vkr_shader(vert)
 vkr_shader(frag)
 
 add_library(vkr STATIC vkr.c ${VKR_HEADERS})
+# vkr_backend.c is added by the game build (needs the toolkit headers).
 target_include_directories(vkr PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" PRIVATE "${VKR_GEN}")
 target_link_libraries(vkr PUBLIC Vulkan::Vulkan)
 
