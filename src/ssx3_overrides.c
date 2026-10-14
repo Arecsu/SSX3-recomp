@@ -400,8 +400,68 @@ void ssx3_StreamDump(void)
  */
 extern void sub_00234BE0_gen(void);
 
+/*
+ * Rescue for a lost fence wake (default on; RECOMP_BLOCK_RESCUE=0 off).
+ * BlockOnTime's far path sleeps on the event at dev+0x1DBC with no timeout
+ * until the GPU's NO_OPERATION(5) software method sets it, and returns after
+ * one wake. In ~1 run in 10 the wake never comes: the main thread waited
+ * 417 s for time 0x1ECF while the fence stood at 0x1ED3 -- already past it --
+ * with the executor idle, and the race never loaded ("43%" with draws
+ * stopped). A watchdog thread checks every 50 ms: a wait older than 200 ms
+ * whose time the fence has reached (D3D's own test: cur - time >= cur -
+ * fence) gets the wake it was owed, set from the host, and is logged as
+ * [BLOCK-RESCUE] with the state of the software-method chain so the cause
+ * can still be found. A wait whose time is NOT reached after 2 s is logged
+ * once ([BLOCK-STUCK]) and left alone.
+ */
+extern void xbox_Nv2aSwmDiag(char *buf, size_t n);
+extern int  xbox_KeSetEventFromHost(uint32_t guest_va);
+
+static DWORD WINAPI block_rescue_thread(LPVOID unused)
+{
+    DWORD rescued_call = 0, reported_call = 0;
+    unsigned n = 0;
+    char diag[512];
+    (void)unused;
+    for (;;) {
+        DWORD since = s_block_since, now;
+        uint32_t t = s_block_t, dev, fence, cur;
+        Sleep(50);
+        now = GetTickCount();
+        if (!since || since != s_block_since || now - since < 200)
+            continue;
+        dev = MEM32(0x0024B0D8u);
+        if (!dev)
+            continue;
+        fence = MEM32(MEM32(dev + 0x30));
+        cur = MEM32(dev + 0x2C);
+        if (cur - t >= cur - fence) {
+            if (since == rescued_call)
+                continue;               /* already woken; let it run */
+            rescued_call = since;
+            n++;
+            if (n <= 20 || n % 100 == 0) {
+                xbox_Nv2aSwmDiag(diag, sizeof diag);
+                fprintf(stderr, "[BLOCK-RESCUE] #%u waited %lu ms for time %08X, fence %08X cur %08X"
+                        " put %08X get %08X | %s\n", n, (unsigned long)(now - since), t, fence, cur,
+                        MEM32(0xFD800040u), MEM32(0xFD800044u), diag);
+                fflush(stderr);
+            }
+            xbox_KeSetEventFromHost(dev + 0x1DBC);
+        } else if (now - since >= 2000 && since != reported_call) {
+            reported_call = since;
+            xbox_Nv2aSwmDiag(diag, sizeof diag);
+            fprintf(stderr, "[BLOCK-STUCK] waited %lu ms for time %08X, fence %08X cur %08X wr %08X"
+                    " put %08X get %08X | %s\n", (unsigned long)(now - since), t, fence, cur,
+                    MEM32(dev), MEM32(0xFD800040u), MEM32(0xFD800044u), diag);
+            fflush(stderr);
+        }
+    }
+}
+
 void sub_00234BE0(void)
 {
+    static volatile LONG rescue_started;
     static int on = -1;
     static uint32_t last_t;
     static unsigned repeats;
@@ -432,6 +492,11 @@ void sub_00234BE0(void)
                     pos_ok ? MEM32(pos + 0x18) : 0, pos_ok ? MEM32(pos + 0x1C) : 0);
             fflush(stderr);
         }
+    }
+    if (!rescue_started && InterlockedExchange(&rescue_started, 1) == 0) {
+        const char *e = getenv("RECOMP_BLOCK_RESCUE");
+        if (!(e && e[0] == '0'))
+            CloseHandle(CreateThread(NULL, 0, block_rescue_thread, NULL, 0, NULL));
     }
     s_block_t = t;
     s_block_since = GetTickCount();

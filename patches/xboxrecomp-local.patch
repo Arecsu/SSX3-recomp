@@ -149,7 +149,7 @@ index cd69e57..86d2428 100644
      idx = g_xa2_next_buf;
      copy_samples = (num_samples > XA2_BUF_SAMPLES) ? XA2_BUF_SAMPLES : num_samples;
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
-index c65ba43..70fb940 100644
+index c65ba43..cb131dd 100644
 --- a/src/kernel/kernel_bridge.c
 +++ b/src/kernel/kernel_bridge.c
 @@ -1514,6 +1514,31 @@ static HANDLE bridge_resolve_handle(uint32_t token);
@@ -199,7 +199,29 @@ index c65ba43..70fb940 100644
      h = ke_shadow_lookup(guest_va);
      if (!h)
          h = bridge_resolve_handle(guest_va);
-@@ -1560,6 +1587,7 @@ static void bridge_KeWaitForSingleObject(void)
+@@ -1545,6 +1572,21 @@ static void bridge_KeSetEvent(void)
+         g_eax = 0;
+ }
+ 
++/* KeSetEvent from host code (a title's watchdog), same paths as the bridge.
++ * Returns 1 if an event was found and set. */
++int xbox_KeSetEventFromHost(uint32_t guest_va)
++{
++    int type;
++    HANDLE h = ke_guest_event(guest_va, &type);
++    if (h) {
++        if (kevent_watched(guest_va)) kevent_note("set(host)", guest_va, "guest");
++        BRIDGE_MEM32(guest_va + 4) = 1;
++        return SetEvent(h) != 0;
++    }
++    h = ke_shadow_lookup(guest_va);
++    return h ? SetEvent(h) != 0 : 0;
++}
++
+ /* ── KeWaitForSingleObject (ordinal 159) ─────────────────── */
+ static void bridge_KeWaitForSingleObject(void)
+ {
+@@ -1560,6 +1602,7 @@ static void bridge_KeWaitForSingleObject(void)
           * writing 0 there -- so bring the host event in line first. */
          int type;
          HANDLE ge = ke_guest_event(object, &type);
@@ -207,7 +229,7 @@ index c65ba43..70fb940 100644
          if (ge) {
              if (BRIDGE_MEM32(object + 4) == 0) {
                  ResetEvent(ge);
-@@ -2028,6 +2056,21 @@ static int kernel_run_dpc(uint32_t dpc_va, uint32_t arg1, uint32_t arg2)
+@@ -2028,6 +2071,21 @@ static int kernel_run_dpc(uint32_t dpc_va, uint32_t arg1, uint32_t arg2)
      BRIDGE_MEM32(dpc_va + 20) = arg1;
      BRIDGE_MEM32(dpc_va + 24) = arg2;
  
@@ -229,7 +251,7 @@ index c65ba43..70fb940 100644
      g_esp -= 4; BRIDGE_MEM32(g_esp) = arg2;
      g_esp -= 4; BRIDGE_MEM32(g_esp) = arg1;
      g_esp -= 4; BRIDGE_MEM32(g_esp) = context;
-@@ -2270,7 +2313,10 @@ static void kernel_vblank_tick(void)
+@@ -2270,7 +2328,10 @@ static void kernel_vblank_tick(void)
      if (!xbox_GetConnectedInterrupt(NV2A_VECTOR))
          return;
  
@@ -241,7 +263,7 @@ index c65ba43..70fb940 100644
      BRIDGE_MEM32(XBOX_NV2A_REG_BASE + NV2A_PMC_INTR_0)   |= NV2A_PMC_INTR_PCRTC;
  
      {
-@@ -2284,6 +2330,183 @@ static void kernel_vblank_tick(void)
+@@ -2284,6 +2345,212 @@ static void kernel_vblank_tick(void)
      }
  }
  
@@ -267,6 +289,11 @@ index c65ba43..70fb940 100644
 +static HANDLE g_nv2a_swm_event;
 +static uint32_t g_nv2a_swm_addr, g_nv2a_swm_data;
 +static volatile LONG64 g_nv2a_swm_raised_ms;
++/* Wake-chain counters for xbox_Nv2aSwmDiag: idle wakes posted / skipped
++ * because one was in flight, traps raised, ISR claimed / declined / absent,
++ * traps taken down by the title's handler wrapper. */
++static volatile LONG g_swm_idle_posted, g_swm_idle_busy, g_swm_raised,
++                     g_swm_claimed, g_swm_declined, g_swm_noisr, g_swm_handled;
 +
 +static void swm_clear_regs(void);
 +
@@ -290,8 +317,26 @@ index c65ba43..70fb940 100644
 + * run: the trap has been seen once, so it is taken down now. */
 +void xbox_Nv2aSwmHandled(void)
 +{
++    InterlockedIncrement(&g_swm_handled);
 +    if (InterlockedCompareExchange(&g_nv2a_swm_pending, 2, 2) == 2)
 +        swm_clear_regs();
++}
++
++/* One line on the software-method wake chain, for a title's hang report. */
++void xbox_Nv2aSwmDiag(char *buf, size_t n)
++{
++    extern uint32_t xbox_GetConnectedInterrupt(uint32_t vector);
++    snprintf(buf, n, "swm pending %ld (raised %lld ms ago) isr %s | idle wakes %ld posted %ld busy"
++             " | raised %ld claimed %ld declined %ld no-isr %ld handled %ld"
++             " | PMC %08X PGRAPH_INTR %08X NSOURCE %08X TRAPPED %08X/%08X",
++             (long)g_nv2a_swm_pending,
++             g_nv2a_swm_raised_ms ? (long long)GetTickCount64() - g_nv2a_swm_raised_ms : -1LL,
++             xbox_GetConnectedInterrupt(3u) ? "connected" : "none",
++             (long)g_swm_idle_posted, (long)g_swm_idle_busy, (long)g_swm_raised,
++             (long)g_swm_claimed, (long)g_swm_declined, (long)g_swm_noisr, (long)g_swm_handled,
++             BRIDGE_MEM32(0xFD000000u + NV2A_PMC_INTR_0),
++             BRIDGE_MEM32(0xFD000000u + 0x00400100u), BRIDGE_MEM32(0xFD000000u + 0x00400108u),
++             BRIDGE_MEM32(0xFD000000u + 0x00400704u), BRIDGE_MEM32(0xFD000000u + 0x00400708u));
 +}
 +
 +void xbox_Nv2aSoftwareMethod(uint32_t subch, uint32_t method, uint32_t param)
@@ -353,8 +398,11 @@ index c65ba43..70fb940 100644
 +    extern uint32_t xbox_GetConnectedInterrupt(uint32_t vector);
 +    if (!xbox_GetConnectedInterrupt(3u))           /* NV2A_VECTOR */
 +        return;
-+    if (InterlockedCompareExchange(&g_nv2a_swm_pending, 1, 0) != 0)
++    if (InterlockedCompareExchange(&g_nv2a_swm_pending, 1, 0) != 0) {
++        InterlockedIncrement(&g_swm_idle_busy);
 +        return;                                     /* one already in flight */
++    }
++    InterlockedIncrement(&g_swm_idle_posted);
 +    g_nv2a_swm_addr = 0x0100u;
 +    g_nv2a_swm_data = 5u;
 +    if (g_nv2a_swm_event)
@@ -383,6 +431,9 @@ index c65ba43..70fb940 100644
 +    g_nv2a_swm_raised_ms = (LONG64)GetTickCount64();
 +    InterlockedExchange(&g_nv2a_swm_pending, 2);
 +    claimed = kernel_raise_interrupt(NV2A_VECTOR);
++    InterlockedIncrement(&g_swm_raised);
++    InterlockedIncrement(claimed > 0 ? &g_swm_claimed
++                         : claimed == 0 ? &g_swm_declined : &g_swm_noisr);
 +    {
 +        static int stats = -1;
 +        static unsigned cnt, five;
@@ -425,7 +476,7 @@ index c65ba43..70fb940 100644
  /* Run whatever is queued. Called from the timer thread, which has the guest
   * stack and TIB that a deferred routine needs. */
  static void kernel_drain_dpcs(void)
-@@ -2566,13 +2789,19 @@ static DWORD WINAPI kernel_timer_thread(LPVOID unused)
+@@ -2566,13 +2833,19 @@ static DWORD WINAPI kernel_timer_thread(LPVOID unused)
          g_fs_base = tib;
      }
  
@@ -446,7 +497,7 @@ index c65ba43..70fb940 100644
          now = (long long)GetTickCount64();
  
          for (i = 0; i < XBOX_MAX_TIMERS; i++) {
-@@ -2635,6 +2864,23 @@ static void kernel_set_timer(uint32_t timer_va, long long due_100ns,
+@@ -2635,6 +2908,23 @@ static void kernel_set_timer(uint32_t timer_va, long long due_100ns,
      }
      LeaveCriticalSection(&g_timer_lock);
  
@@ -470,7 +521,7 @@ index c65ba43..70fb940 100644
      /* A freshly set timer starts unsignaled, like the real KeSetTimer. */
      {
          HANDLE ev = ke_shadow_lookup(timer_va);
-@@ -4155,8 +4401,31 @@ static void bridge_KeQueryBasePriorityThread(void)
+@@ -4155,8 +4445,31 @@ static void bridge_KeQueryBasePriorityThread(void)
          XBOX_TO_NATIVE(STACK_ARG(0)));
  }
  
@@ -502,7 +553,7 @@ index c65ba43..70fb940 100644
      g_eax = (uint32_t)xbox_KeSetBasePriorityThread(
          XBOX_TO_NATIVE(STACK_ARG(0)), (LONG)STACK_ARG(1));
  }
-@@ -4472,15 +4741,49 @@ static void bridge_KeWaitForMultipleObjects(void)
+@@ -4472,15 +4785,49 @@ static void bridge_KeWaitForMultipleObjects(void)
      }
      if (count > BRIDGE_MAXIMUM_WAIT_OBJECTS)
          count = BRIDGE_MAXIMUM_WAIT_OBJECTS;
@@ -555,7 +606,7 @@ index c65ba43..70fb940 100644
  }
  
  #undef BRIDGE_MAXIMUM_WAIT_OBJECTS
-@@ -7349,8 +7652,7 @@ static void bridge_KeSetPriorityProcess(void)
+@@ -7349,8 +7696,7 @@ static void bridge_KeSetPriorityProcess(void)
  /* --- KeSetPriorityThread (ordinal 148, 2 args = 8 bytes) --- */
  static void bridge_KeSetPriorityThread(void)
  {
@@ -565,7 +616,7 @@ index c65ba43..70fb940 100644
      g_eax = 0;
  }
  
-@@ -9371,17 +9673,134 @@ static int guest_cpu_enabled(void)
+@@ -9371,17 +9717,134 @@ static int guest_cpu_enabled(void)
      return g_guest_cpu_on;
  }
  
@@ -636,10 +687,10 @@ index c65ba43..70fb940 100644
      if (guest_cpu_enabled() && !t_guest_held) {
 -        EnterCriticalSection(&g_guest_cpu);
 +        guest_cpu_acquire(prio_index(t_guest_prio));
-+        t_guest_held = 1;
-+    }
-+}
-+
+         t_guest_held = 1;
+     }
+ }
+ 
 +/* Loop-head preemption (RECOMP_LOOP_YIELD in the generated code): every
 + * RECOMP_LOOP_QUANTUM loop iterations a guest thread holding the guest CPU
 + * lets it go and yields, so a thread spinning on a flag another guest thread
@@ -656,10 +707,10 @@ index c65ba43..70fb940 100644
 +        LeaveCriticalSection(&g_guest_cpu);
 +        SwitchToThread();
 +        guest_cpu_acquire(prio_index(t_guest_prio));
-         t_guest_held = 1;
-     }
- }
- 
++        t_guest_held = 1;
++    }
++}
++
 +/* Interrupt and DPC context takes the guest CPU too.
 + *
 + * The Xbox has one CPU: an ISR or DPC preempts whatever thread was running
@@ -701,7 +752,7 @@ index c65ba43..70fb940 100644
  void guest_cpu_part(void)
  {
      if (t_guest_held) {
-@@ -9407,7 +9826,7 @@ static void kernel_thunk_dispatch(void)
+@@ -9407,7 +9870,7 @@ static void kernel_thunk_dispatch(void)
       * a guest callback a bridge runs (an APC) returns into the bridge, not to
       * the thread's own code -- and only if the thread still exists as one. */
      if (t_guest_thread && t_dispatch_depth == 0 && guest_cpu_enabled()) {

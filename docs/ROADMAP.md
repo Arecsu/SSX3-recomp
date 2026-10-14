@@ -46,7 +46,7 @@ Fix the known failures before the renderer changes so regressions stay visible.
 
 - [ ] **43% race-load stall** (~1 in 6): world streamer loses a request (resource 0/40 stuck in state 8). Job queues ruled out (CLAUDE.md). Next: trace the streamer's own request state (`sub_0020DB60` object +0xAC/+0xC0/+0xC8), compare a good and a stalled run.
 - [ ] Loader-worker crash in world streaming (intermittent; seen at `0x0020D26A` and `sub_0020CAB0` with a garbage chunk index) -- same streamer object as the 43% stall: one corruption bug (CLAUDE.md, "WORLD STREAMER CORRUPTION"). **2026-10-14:** the two-thread race on the streamer is ruled out (all entries wrapped, 16 runs, no overlap); thread dumps now carry `[STREAMDUMP]` (request list, slot records, resource table, fence wait). Two failure classes look alike at "43%": streamer stall (loading screen keeps drawing) vs async GPU freeze (draws stop, main thread in BlockOnTime).
-- [ ] Any remaining async-GPU hang (map-select/rules class): soak-test the idle wake; replace it with exact behaviour if a better model of D3D's NOP patching emerges.
+- [ ] Any remaining async-GPU hang (map-select/rules class): soak-test the idle wake; replace it with exact behaviour if a better model of D3D's NOP patching emerges. **2026-10-14:** caught one (fence already past the waited time, wake lost); watchdog `[BLOCK-RESCUE]` delivers the owed wake (default on) -- 10 runs, 2 rescues, both raced. Root cause of the lost wake still open.
 - [x] ISRs and DPCs run under the guest-CPU lock (single-CPU semantics; `RECOMP_IRQ_LOCK=0` to disable). They used to run on host threads in parallel with guest threads; the USB driver's enumeration then stalled in about 1 boot in 6 (no pad on the title screen). After: 6/6 runs enumerated fully.
 - [ ] Guest-thread priority scheduling in the guest lock (Xbox is single-CPU, strict priority) — only if Phase 1 bugs point at ordering.
 - [ ] Gate: 20/20 boot→race on both GPU modes.
@@ -131,6 +131,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — Async GPU freeze caught and worked around (fence-wake rescue watchdog); streamer stall traced to EA's STRM stream manager never delivering the world stream (suspected lost wake-up). race_test 8/10 (both failures streamer stalls).
 - 2026-10-14 — Streamer: two-thread race ruled out; [STREAMDUMP] in thread dumps; "43%" split into streamer stall vs GPU freeze. race_test 6/6 then.
 - 2026-10-14 — Phase 2.1 started: D3D11 device/swap chain presentation (opt-in), in-process screenshots.
 - 2026-10-14 — Game state hook; soak/scripted race; streamer crash + 43% stall traced to one corrupted streamer object; async GPU freeze shown to be a BlockOnTime loop (idle wake reaches it).

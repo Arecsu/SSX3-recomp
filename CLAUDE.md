@@ -469,7 +469,8 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   request list and re-points it only after the new file is read) -- but with
   every entry wrapped (RECOMP_STREAM_CHECK=1 logs [STREAM-OVERLAP] when a
   second thread enters; RECOMP_STREAM_SERIAL=1 would make it wait) 16 runs
-  logged no overlap at all, stalls included. Every thread dump now prints
+  logged no overlap at all (the poller was wrapped for the last 16 of them;
+  the streamer stalls among those runs had no overlap either). Every thread dump now prints
   [STREAMDUMP]: the request list (entry name, state 0 idle / 1 requested /
   2 loading / 3 unloading / 4 off / 5 ready / 6 in use, slot and the slot's
   record), the resource state table 0x312AC8, and D3D's fence wait if the
@@ -480,6 +481,21 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   streamer stall (loader thread polling sub_000E0490); if draws stop and the
   main thread sits in BlockOnTime (sub_00234BE0 <- sub_00234F90) it is the
   async GPU freeze below.
+  STREAMER STALL, what the dump shows (2 stalls, 2026-10-14): request entries
+  stuck in state 2 (loading), their slots in slot state 1 (queued, no buffer)
+  or 2 (reading). sub_0020D370 starts at most one read at a time, through the
+  reader at streamer+0x300 (busy byte +0x90, EA stream handle +0x88), and
+  marks the slot 2 without checking that the read started; sub_0020DF80
+  pulls completed chunks (sub_00177F80) until the stream reports done
+  (sub_00178070: manager busy [M+0x48] == 0 and nothing left), then slot 3
+  and reader idle. So the world stream's data never arrives. EA's 'STRM'
+  stream manager M ([handle] = M, lock at M+4 via sub_0017B210/B220): opening
+  (sub_00177E10) queues the request, then kicks the I/O (sub_00177990) only
+  if [M+0x48] was 0 -- if busy it relies on the running I/O to take the next
+  request. [M+0x48] is cleared under the lock in sub_00177990 (no request
+  left) and, when it is 2, in sub_00178800 (from sub_001789B0 and
+  sub_0018FE30) -- next: check whether those hold the lock and whether a
+  request queued in between is ever kicked (suspected lost wake-up).
 - ASYNC GPU FREEZE (map select / rules / loading 31-33%): main thread loops in
   D3D BlockOnTime: the idle wake does reach it (KeSetEvent on 0x0024CE9C,
   ~10/s) but the time it waits for never completes; 0x5C bytes are written
@@ -490,6 +506,17 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   without re-checking the time; its near path spins on the fence. The GPU
   position it uses is DMA_GET ([[dev+0x1C10]+0x44]); positions at or below
   D3D's write pointer count as the current lap (+ ring size [dev+0x40]).
+  CAUGHT (2026-10-14, [STREAMDUMP]): main thread waited 417 s for time
+  0x1ECF with the fence already at 0x1ED3 and the executor idle -- the wake
+  was simply lost. D3D's NOP handler (0x0023B933) sets the event
+  unconditionally, so the loss is upstream (idle wake / ISR / DPC). WORKAROUND
+  (default on, RECOMP_BLOCK_RESCUE=0 off): a watchdog thread in
+  ssx3_overrides.c sets the event from the host when a wait is >200 ms old
+  and its time is reached, logging [BLOCK-RESCUE] with the wake chain's
+  counters (xbox_Nv2aSwmDiag); a wait whose time is not reached after 2 s is
+  logged as [BLOCK-STUCK]. 10 runs: 2 rescues, both runs reached the race; the
+  two losses differed (one trap raised 141 ms earlier and never completed,
+  pending 2; one with a flip in the trap registers, pending 0).
 - Live driving: `tools\live.ps1 start|snap|press -Buttons a|key -Key 0x0D|dump|stop`
   (`key` posts WM_KEYDOWN/UP to the window, exercising the real keyboard
   path; verified 2026-10-13: Enter presses reach the menus with
