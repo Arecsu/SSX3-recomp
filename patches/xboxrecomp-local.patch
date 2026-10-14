@@ -1135,7 +1135,7 @@ index 0000000..602f84f
 +
 +#endif
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index c65632c..5b536a0 100644
+index c65632c..1b79ac7 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
 @@ -37,6 +37,7 @@
@@ -2379,7 +2379,7 @@ index c65632c..5b536a0 100644
      peek_addresses();
      peek_chain();
      if (getenv("RECOMP_FIND_NAN")) {
-@@ -3534,10 +4330,75 @@ void nv2a_pb_exec_report(void)
+@@ -3534,10 +4330,92 @@ void nv2a_pb_exec_report(void)
               * is using. */
              union { uint32_t u; float f; } v;
              v.u = s_unhandled[i].last_param;
@@ -2428,12 +2428,29 @@ index c65632c..5b536a0 100644
 +    info->normalised = tex_size_from_format(t->color) != 0;
 +    info->format = t->color;
 +    info->stage_program = s_gpu.rc.stage_program;
-+    /* Hash the base level (8 bytes at a time); a changed texture changes it. */
-+    w = (const uint64_t *)((const uint8_t *)xbox_GetMemoryOffset() + t->offset);
-+    n = tex_base_bytes(t) / 8;
-+    for (i = 0; i < n; i++)
-+        h = (h ^ w[i]) * 1099511628211ull;
-+    info->hash = h ^ ((uint64_t)t->color << 56) ^ ((uint64_t)t->width << 20) ^ t->height;
++    /* Hash the base level (8 bytes at a time); a changed texture changes it.
++     * Done at most once per texture per flipped frame: hashing on every draw
++     * cost 70% of a frame on the character screen. A texture rewritten
++     * mid-frame is picked up at the next flip. */
++    {
++        static struct { uint32_t offset, color, w, h, flips; uint64_t hash; } memo[256];
++        uint32_t slot = (t->offset >> 7) * 2654435761u >> 24;
++        if (memo[slot].offset == t->offset && memo[slot].color == t->color
++            && memo[slot].w == t->width && memo[slot].h == t->height
++            && memo[slot].flips == s_gpu.flips + 1) {
++            info->hash = memo[slot].hash;
++            return 1;
++        }
++        w = (const uint64_t *)((const uint8_t *)xbox_GetMemoryOffset() + t->offset);
++        n = tex_base_bytes(t) / 8;
++        for (i = 0; i < n; i++)
++            h = (h ^ w[i]) * 1099511628211ull;
++        info->hash = h ^ ((uint64_t)t->color << 56) ^ ((uint64_t)t->width << 20) ^ t->height;
++        memo[slot].offset = t->offset; memo[slot].color = t->color;
++        memo[slot].w = t->width; memo[slot].h = t->height;
++        memo[slot].flips = s_gpu.flips + 1;
++        memo[slot].hash = info->hash;
++    }
 +    return 1;
 +}
 +

@@ -8,6 +8,33 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
+
+/* RECOMP_VKR_STATS=1: where the backend's time goes, once a second. */
+static double s_t[6];            /* draw total, lookup+hash, decode+upload, vkr_draw, flip */
+static unsigned s_n[3];          /* draws, texture creates, flips */
+static int s_stats = -1;
+
+static double now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
+}
+
+static void stats_tick(void)
+{
+    static double last;
+    double t = now_ms();
+    if (!last) last = t;
+    if (t - last < 1000.0)
+        return;
+    fprintf(stderr, "[VKRSTAT] draws %u tex-creates %u flips %u | ms/s: draw-total %.0f lookup+hash %.0f"
+            " decode+upload %.0f vkr_draw %.0f flip %.0f\n", s_n[0], s_n[1], s_n[2],
+            s_t[0], s_t[1], s_t[2], s_t[3], s_t[4]);
+    memset(s_t, 0, sizeof s_t); memset(s_n, 0, sizeof s_n);
+    last = t;
+}
 
 #include "nv2a_backend.h"
 #include "vkr.h"
@@ -101,16 +128,20 @@ static void bind_textures(VkrDrawState *st)
     for (k = 0; k < 4; k++) {
         Nv2aTexInfo ti;
         VkrTex *tex;
+        double t0 = s_stats ? now_ms() : 0;
         if (!((st->u.stage_program >> (k * 5)) & 0x1F))
             continue;
         if (!nv2a_exec_tex_info(k, &ti))
             continue;
         tex = vkr_tex_find(s_vk, ti.hash);
+        if (s_stats) s_t[1] += now_ms() - t0;
         if (!tex) {
+            double t1 = s_stats ? now_ms() : 0;
             uint32_t *px = (uint32_t *)malloc((size_t)ti.width * ti.height * 4);
             if (px && nv2a_exec_tex_decode(k, px))
                 tex = vkr_tex_create(s_vk, ti.hash, ti.width, ti.height, px);
             free(px);
+            if (s_stats) { s_t[2] += now_ms() - t1; s_n[1]++; }
         }
         st->tex[k] = tex;
         st->addr_u[k] = ti.addr_u; st->addr_v[k] = ti.addr_v;
@@ -126,6 +157,9 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
     static uint32_t cap;
     uint32_t i, k = 0, need = n * 6;
 
+    double td = 0;
+    if (s_stats < 0) s_stats = getenv("RECOMP_VKR_STATS") != NULL;
+    if (s_stats) { td = now_ms(); stats_tick(); }
     if (!is_main(t))
         return 0;
     if (cap < need) {
@@ -175,10 +209,14 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
         VkrDrawState st;
         memset(&st, 0, sizeof st);
         fill_state(t, &st);
+        double t2;
         bind_textures(&st);
+        t2 = s_stats ? now_ms() : 0;
         vkr_draw(s_vk, (const VkrVertex *)v, n, idx, k, &st);
+        if (s_stats) { s_t[3] += now_ms() - t2; s_n[0]++; }
     }
     s_dirty = 1;
+    if (s_stats) s_t[0] += now_ms() - td;
     return 1;
 }
 
@@ -209,8 +247,13 @@ static void be_flip(const Nv2aTarget *t)
     uint32_t y;
     if (!s_dirty || t->bpp != 4 || t->width != s_w || t->height != s_h)
         return;
-    if (!vkr_read_back(s_vk, s_px))
-        return;
+    {
+        double tf = s_stats ? now_ms() : 0;
+        int ok = vkr_read_back(s_vk, s_px);
+        if (s_stats) { s_t[4] += now_ms() - tf; s_n[2]++; }
+        if (!ok)
+            return;
+    }
     for (y = 0; y < s_h; y++)
         memcpy(mem + t->color_offset + (size_t)(t->y + y) * t->pitch + (size_t)t->x * 4,
                s_px + (size_t)y * s_w * 4, (size_t)s_w * 4);
