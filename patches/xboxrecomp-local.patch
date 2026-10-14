@@ -2992,10 +2992,10 @@ index 08bae4b..a0e55ee 100644
  #endif
 diff --git a/src/video/fb_present_sdl.c b/src/video/fb_present_sdl.c
 new file mode 100644
-index 0000000..663aea6
+index 0000000..e19a55e
 --- /dev/null
 +++ b/src/video/fb_present_sdl.c
-@@ -0,0 +1,343 @@
+@@ -0,0 +1,347 @@
 +/**
 + * POSIX counterpart of fb_present.c: show the guest framebuffer in an SDL2
 + * window. Same contract (RECOMP_FB_WINDOW, flip-time copy, BMP dump, snap
@@ -3280,7 +3280,11 @@ index 0000000..663aea6
 +
 +        while (SDL_PollEvent(&e)) {
 +            if (e.type == SDL_QUIT) {
-+                s_fb_running = 0;
++                /* Window close, and SDL turns SIGINT/SIGTERM into this too.
++                 * Closing only the window left the game running and the
++                 * next flip reopened it. */
++                fflush(NULL);
++                _exit(0);
 +            } else if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) {
 +                int vk = sdl_to_vk(e.key.keysym.sym);
 +                if (vk)
