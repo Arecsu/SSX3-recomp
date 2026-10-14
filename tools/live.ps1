@@ -7,13 +7,17 @@
 #   powershell -File tools\live.ps1 dump [-Mem "va:len,..."] all-thread stack dump (+ guest memory) into stderr.txt
 #   powershell -File tools\live.ps1 stop
 # stdout/stderr go to stdout.txt / stderr.txt in the project root as usual.
+# -Dir <dir>: run as a separate instance in <dir> (created on start, with a
+# junction game -> <project>\game): its own pad file, pid, logs, triggers and
+# game_state.txt, so several sessions can run at once (tools\race_par.ps1).
 param([Parameter(Position = 0)][string]$Cmd = "snap", [string]$Out = "snap.png",
       [string]$Buttons = "", [string]$Mem = "", [hashtable]$Env = @{},
-      [string]$Key = "0x0D", [int]$Hold = 200)
+      [string]$Key = "0x0D", [int]$Hold = 200, [string]$Dir = "")
 
 $root = Split-Path -Parent $PSScriptRoot
-$pad = Join-Path $root "pad_live.txt"
-$pidFile = Join-Path $root "live.pid"
+$work = if ($Dir) { $Dir } else { $root }
+$pad = Join-Path $work "pad_live.txt"
+$pidFile = Join-Path $work "live.pid"
 
 function Get-Game {
     if (-not (Test-Path $pidFile)) { return $null }
@@ -24,14 +28,20 @@ function Get-Game {
 switch ($Cmd) {
     "start" {
         $g = Get-Game; if ($g) { Stop-Process -Id $g.Id -Force; Start-Sleep -Milliseconds 500 }
-        . "$PSScriptRoot\archive_logs.ps1"; Save-PreviousLogs $root
+        if ($work -ne $root) {
+            New-Item -ItemType Directory -Force -Path $work | Out-Null
+            if (-not (Test-Path (Join-Path $work "game"))) {
+                New-Item -ItemType Junction -Path (Join-Path $work "game") -Target (Join-Path $root "game") | Out-Null
+            }
+        }
+        . "$PSScriptRoot\archive_logs.ps1"; Save-PreviousLogs $work
         Set-Content -Path $pad -Value $null
         $env:RECOMP_PAD_LIVE = $pad
-        $env:RECOMP_THREAD_DUMP_TRIGGER = (Join-Path $root "dump.trigger")
-        $env:RECOMP_SNAP_TRIGGER = (Join-Path $root "snap.trigger")
+        $env:RECOMP_THREAD_DUMP_TRIGGER = (Join-Path $work "dump.trigger")
+        $env:RECOMP_SNAP_TRIGGER = (Join-Path $work "snap.trigger")
         foreach ($k in $Env.Keys) { Set-Item -Path "env:$k" -Value $Env[$k] }
-        $p = Start-Process -FilePath "$root\build\ssx3_recomp.exe" -WorkingDirectory $root `
-                -RedirectStandardOutput "$root\stdout.txt" -RedirectStandardError "$root\stderr.txt" -PassThru
+        $p = Start-Process -FilePath "$root\build\ssx3_recomp.exe" -WorkingDirectory $work `
+                -RedirectStandardOutput "$work\stdout.txt" -RedirectStandardError "$work\stderr.txt" -PassThru
         Set-Content -Path $pidFile -Value $p.Id
         "started pid $($p.Id)"
     }
@@ -57,9 +67,9 @@ public static class LiveWin {
         if ($h -eq [IntPtr]::Zero) { "no window yet"; exit 1 }
         # From inside the game (RECOMP_SNAP_TRIGGER): the frame being shown,
         # whatever presents it -- PrintWindow cannot read a D3D11 swap chain.
-        $bmpPath = Join-Path $root "snap_tmp.bmp"
+        $bmpPath = Join-Path $work "snap_tmp.bmp"
         Remove-Item $bmpPath -ErrorAction SilentlyContinue
-        Set-Content -Path (Join-Path $root "snap.trigger") -Value $bmpPath -NoNewline
+        Set-Content -Path (Join-Path $work "snap.trigger") -Value $bmpPath -NoNewline
         $t0 = Get-Date
         while (-not (Test-Path $bmpPath) -and ((Get-Date) - $t0).TotalSeconds -lt 3) { Start-Sleep -Milliseconds 100 }
         $saved = $false
@@ -67,19 +77,19 @@ public static class LiveWin {
             Start-Sleep -Milliseconds 100
             try {
                 $img = [System.Drawing.Image]::FromFile($bmpPath)
-                $img.Save((Join-Path $root $Out), [System.Drawing.Imaging.ImageFormat]::Png)
+                $img.Save((Join-Path $work $Out), [System.Drawing.Imaging.ImageFormat]::Png)
                 $img.Dispose(); $saved = $true
             } catch { }
             Remove-Item $bmpPath -ErrorAction SilentlyContinue
         }
         if (-not $saved) {
-            Remove-Item (Join-Path $root "snap.trigger") -ErrorAction SilentlyContinue
+            Remove-Item (Join-Path $work "snap.trigger") -ErrorAction SilentlyContinue
             $r = New-Object LiveWin+RECT
             [void][LiveWin]::GetWindowRect($h, [ref]$r)
             $bmp = New-Object System.Drawing.Bitmap ($r.R - $r.L), ($r.B - $r.T)
             $gr = [System.Drawing.Graphics]::FromImage($bmp)
             $hdc = $gr.GetHdc(); [void][LiveWin]::PrintWindow($h, $hdc, 2); $gr.ReleaseHdc($hdc)
-            $bmp.Save((Join-Path $root $Out), [System.Drawing.Imaging.ImageFormat]::Png)
+            $bmp.Save((Join-Path $work $Out), [System.Drawing.Imaging.ImageFormat]::Png)
         }
         "'{0}' -> {1}" -f $g.MainWindowTitle, $Out
     }
@@ -102,7 +112,7 @@ public static class LiveKey {
         "key $Key"
     }
     "dump" {
-        Set-Content -Path (Join-Path $root "dump.trigger") -Value $Mem -NoNewline
+        Set-Content -Path (Join-Path $work "dump.trigger") -Value $Mem -NoNewline
         Start-Sleep -Seconds 2
         "dump requested"
     }

@@ -1,16 +1,18 @@
 # Reliability test: N times, boot the game and drive it to the race briefing
 # with to_race.ps1, then report the outcome (briefing / crash / timeout).
-#   powershell -File tools\race_test.ps1 [-Runs 3] [-TimeoutSec 480] [-Env @{...}]
-param([int]$Runs = 3, [int]$TimeoutSec = 480, [hashtable]$Env = @{})
+#   powershell -File tools\race_test.ps1 [-Runs 3] [-TimeoutSec 480] [-Env @{...}] [-Dir instance]
+# (-Dir: run in an instance directory, see live.ps1; tools\race_par.ps1 runs
+# several of these at once.)
+param([int]$Runs = 3, [int]$TimeoutSec = 480, [hashtable]$Env = @{}, [string]$Dir = "")
 
-$root = Split-Path -Parent $PSScriptRoot
+$root = if ($Dir) { $Dir } else { Split-Path -Parent $PSScriptRoot }
 $live = Join-Path $PSScriptRoot "live.ps1"
 $nav = Join-Path $PSScriptRoot "to_race.ps1"
 
 for ($i = 1; $i -le $Runs; $i++) {
-    & $live start -Env $Env | Out-Null
+    & $live start -Env $Env -Dir $Dir | Out-Null
     Start-Sleep -Seconds 15
-    $out = & $nav -TimeoutSec $TimeoutSec 2>&1 | Select-Object -Last 1
+    $out = & $nav -TimeoutSec $TimeoutSec -Dir $Dir 2>&1 | Select-Object -Last 1
     $err = Get-Content (Join-Path $root "stderr.txt") -ErrorAction SilentlyContinue
     $crash = ($err | Select-String -SimpleMatch "[CRASH]" | Select-Object -First 1)
     # Name the failure from the last screen seen: the known classes are a
@@ -31,10 +33,10 @@ for ($i = 1; $i -le $Runs; $i++) {
     if ($result -like "FAIL*") {
         # A stall: dump every thread (and the RECOMP_JOB_TRACE ring) before
         # the run is killed; the log is kept in logs\ by the next start.
-        & $live dump | Out-Null
+        & $live dump -Dir $Dir | Out-Null
         # The dump (threads + the 4096-entry job ring) takes a while to write.
         Start-Sleep -Seconds 20
     }
-    & $live stop | Out-Null
+    & $live stop -Dir $Dir | Out-Null
     Start-Sleep -Seconds 3
 }

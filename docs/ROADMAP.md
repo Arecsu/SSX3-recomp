@@ -34,6 +34,8 @@ keyboard/XInput input, boot→race reliability ~5/6. See README and CLAUDE.md.
 - [x] Scripted play: periodic A taps ride a whole race (it finishes by itself); `tools/soak.ps1` races back to back via the restart dialog.
 - [x] Game state hook (`src/game_state.c`): the game's own state machine published as `[STATE]` lines and `game_state.txt` (`tools/game_state.ps1`); top-level states named. Next: map the in-race sub-states and switch the scripts from draw counts to it.
 - [ ] `tools/race_test.ps1` extended: all peaks/events (open), configurable run count (done), summary table; failures auto-dump with a 20 s write window (done) and are classified from the last screen -- `[title: no input]`, `[menu hang]`, `[load stall]`, `[other]`, `CRASH` (done).
+- [x] Parallel test runs (2026-10-14): `tools/race_par.ps1 -Instances N -Runs M [-Env @{...}]` runs N game instances at once, each in its own directory `work\i<k>` (junction `game` -> the shared rip; own pad file, pid, logs, triggers, `game_state.txt`; `live.ps1` / `to_race.ps1` / `race_test.ps1` take `-Dir`), with `RECOMP_RASTER_THREADS` = cores / N each. Summary printed and saved to `logs/race_par_<ts>.txt`. 2 instances = 2 runs in the time of one; use 6-10 for the ~1-in-10 bugs (63 GB RAM / 32 cores here). Default for reliability work from now on.
+- [ ] Use parallel runs everywhere: `bench.ps1` / `shots.ps1` / `soak.ps1` take `-Dir` too, so measurements can run beside a reliability batch (note: concurrent instances share the CPU, so benchmarks must run alone).
 - [x] Screenshot suite: `tools/shots.ps1` saves every distinct menu screen (by draw count), the briefing and 4 race shots into `logs/shots_<ts>[_label]/`; first software-path reference set: `logs/shots_20261013-235549_software` (16 shots). Per-peak race spots come with the all-peaks navigator.
 - [x] Baseline numbers recorded here (2026-10-13, default build, Snow Jam race, `tools/bench.ps1 -Seconds 90`):
   - **Software rasteriser, async executor:** 9.9 FPS avg, p50 101 ms, p99 267 ms, 0 crashes (`logs/bench_20261013-232858.json`).
@@ -131,6 +133,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — Parallel test runs: tools/race_par.ps1 (N instances in work\i<k>); 2x1 trial OK in 1.5 min.
 - 2026-10-14 — 43% stall traced to EA's STRM manager reading the next request at the old file position (skipped seek after a 'CEND'); [EAREAD]/[STRM] logging built, next: catch a stall with it (resume note in CLAUDE.md).
 - 2026-10-14 — 43% stall = the first world-stream block decodes to a garbage asset header (reader retries forever); not pool exhaustion, not a thread race. Bank/pool/chunk wrappers added.
 - 2026-10-14 — Async GPU freeze caught and worked around (fence-wake rescue watchdog); streamer stall traced to EA's STRM stream manager never delivering the world stream (suspected lost wake-up). race_test 8/10 (both failures streamer stalls).

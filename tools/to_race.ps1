@@ -7,12 +7,13 @@
 # Start presses get through the intro and title (screens with < 200 draws).
 # -ShotDir <dir>: also save each distinct screen once as it is passed
 # (screen_<draws>.png, and briefing.png) -- the menu half of tools\shots.ps1.
-#   powershell -File tools\to_race.ps1 [-TimeoutSec 600] [-StopAtBriefing] [-ShotDir dir]
-param([int]$TimeoutSec = 600, [switch]$StopAtBriefing, [string]$ShotDir = "")
+#   powershell -File tools\to_race.ps1 [-TimeoutSec 600] [-StopAtBriefing] [-ShotDir dir] [-Dir instance]
+param([int]$TimeoutSec = 600, [switch]$StopAtBriefing, [string]$ShotDir = "", [string]$Dir = "")
 
-$live = Join-Path $PSScriptRoot "live.ps1"
+$liveScript = Join-Path $PSScriptRoot "live.ps1"
+function live { & $liveScript @args -Dir $Dir }
 . (Join-Path $PSScriptRoot "game_state.ps1")
-$root = Split-Path -Parent $PSScriptRoot
+$root = if ($Dir) { $Dir } else { Split-Path -Parent $PSScriptRoot }
 $seen = @{}
 $menus = @(339, 984, 382, 275, 367, 413, 329)
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
@@ -20,7 +21,7 @@ $lastPress = Get-Date "2000-01-01"
 $loadingSeen = $false
 
 while ((Get-Date) -lt $deadline) {
-    $title = & $live snap -Out "nav.png" 2>$null
+    $title = live snap -Out "nav.png" 2>$null
     if ($title -notmatch "draws: (\d+)") { Start-Sleep -Seconds 2; continue }
     $draws = [int]$Matches[1]
     $since = ((Get-Date) - $lastPress).TotalSeconds
@@ -36,22 +37,22 @@ while ((Get-Date) -lt $deadline) {
         # not, so only named screens and the first frame of each count.
         $shot = Join-Path $ShotDir ("screen_{0}.png" -f $draws)
         if (($menus -contains $draws -or ($draws -lt 200 -and $draws -gt 0)) -and -not (Test-Path $shot)) {
-            Copy-Item (Join-Path (Split-Path -Parent $PSScriptRoot) "nav.png") $shot -ErrorAction SilentlyContinue
+            Copy-Item (Join-Path $root "nav.png") $shot -ErrorAction SilentlyContinue
         }
     }
     if ($draws -eq 309 -or $draws -eq 22) { $loadingSeen = $true }
     if ($loadingSeen -and $draws -ge 600) {
-        if ($ShotDir) { Copy-Item (Join-Path (Split-Path -Parent $PSScriptRoot) "nav.png") (Join-Path $ShotDir "briefing.png") -ErrorAction SilentlyContinue }
+        if ($ShotDir) { Copy-Item (Join-Path $root "nav.png") (Join-Path $ShotDir "briefing.png") -ErrorAction SilentlyContinue }
         if ($StopAtBriefing) { "at briefing ($draws draws)"; exit 0 }
-        & $live press -Buttons "a:300" | Out-Null
+        live press -Buttons "a:300" | Out-Null
         "briefing ($draws draws): pressed A, racing"
         exit 0
     } elseif ($loadingSeen) {
         # loading: wait
     } elseif ($menus -contains $draws -or $draws -ge 900) {
-        if ($since -ge 4) { & $live press -Buttons "a" | Out-Null; $lastPress = Get-Date; "menu $draws -> A" }
+        if ($since -ge 4) { live press -Buttons "a" | Out-Null; $lastPress = Get-Date; "menu $draws -> A" }
     } elseif ($draws -lt 200 -and $draws -ne 22) {
-        if ($since -ge 2) { & $live press -Buttons "start" | Out-Null; $lastPress = Get-Date }
+        if ($since -ge 2) { live press -Buttons "start" | Out-Null; $lastPress = Get-Date }
     }
     Start-Sleep -Seconds 2
 }

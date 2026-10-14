@@ -67,6 +67,7 @@ tools/ssx3-recomp/
 play_stdout.txt
 play_stderr.txt
 logs/
+work/
 game_state.txt
 game_state.tmp
 soak.png

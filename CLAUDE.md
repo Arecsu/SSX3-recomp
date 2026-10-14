@@ -43,6 +43,7 @@ In this repo:
 | `tools/build.bat` | MSVC + Ninja release build (Windows), `[jobs]` arg, default 16. |
 | `tools/run.ps1` | Run with stdout/stderr capture, timeout kill, `-Watchdog N`, `-ThreadDump N`, `-Env @{...}`. |
 | `tools/shot.ps1` | Run, screenshot the game window after `-After N` s, kill. |
+| `tools/race_test.ps1` / `tools/race_par.ps1` | Boot→race reliability runs; `race_par.ps1 -Instances 8 -Runs 2 -Env @{...}` runs 8 instances at once in `work\i<k>\` (logs in `work\i<k>\logs\` and `work\i<k>\stderr.txt`; summary in `logs\race_par_*.txt`). `live.ps1`/`to_race.ps1`/`race_test.ps1` take `-Dir <instance dir>`. |
 | `tools/play.bat` | **Play it**: starts the build with `RECOMP_KEYBOARD=1` (keyboard = player 1, merged with any XInput pad); key map in the file; logs to `play_std*.txt`. |
 | `tools/split_named.py` | `tools.split` with Ghidra names kept (upstream drops them). |
 | `scripts/setup.sh` | Clone toolkit at the base commit, apply the local patch, make the venv. |
@@ -525,7 +526,7 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   suspect a stale cached position. RESUME HERE: [EAREAD] (sub_0017A5A0
   wrapper: fd, pos, len, cached, base, result) and [STRM] (sub_00177990
   request start: request, pos, tag, open file) are built and log with
-  RECOMP_STREAM_CHECK=1; run `tools\race_test.ps1 -Runs 12 -Env
+  RECOMP_STREAM_CHECK=1; run `tools\race_par.ps1 -Instances 8 -Runs 2 -Env
   @{RECOMP_STREAM_CHECK='1'}` until a stall (~1 in 10) and compare its
   EAREAD/STRM sequence around the ASKY CEND with a good run's.
 - ASYNC GPU FREEZE (map select / rules / loading 31-33%): main thread loops in
