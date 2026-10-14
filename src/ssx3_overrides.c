@@ -211,6 +211,47 @@ void sub_0017BDA0(void)
  * RECOMP_STREAM_CHECK=1: an index past MAX_SLOTS is logged with the guest
  * call chain and the object, and answered "not ready" (0) instead of read.
  */
+/* RECOMP_UI_TRACE=1: the frontend's list widgets (EA UI lib). sub_00205D40
+ * selects logical item <index> of a list (this+0x96 items shown through
+ * this+0x97 child rows, scrolled by this+0x98); sub_0008C540 is a screen's
+ * "restore the remembered item" (index from the table at 0x368448 by screen
+ * id this+0xC). The Options screen crashed there on an item lookup that
+ * returned NULL. */
+extern void sub_00205D40_gen(void);
+extern void sub_0008C540_gen(void);
+static int ui_trace_on(void)
+{
+    static int on = -1;
+    if (on < 0)
+        on = getenv("RECOMP_UI_TRACE") != NULL;
+    return on;
+}
+
+void sub_00205D40(void)
+{
+    if (ui_trace_on()) {
+        uint32_t self = g_ecx;
+        fprintf(stderr, "[UI] list %08X vt %08X select %u | flags14 %08X sel %u items %u rows %u scroll %u"
+                " focus %08X saved %u parent %08X | ret %08X\n",
+                self, MEM32(self), MEM8(g_esp + 4), MEM32(self + 0x14), MEM8(self + 0x95),
+                MEM8(self + 0x96), MEM8(self + 0x97), MEM8(self + 0x98), MEM32(self + 0xA0),
+                MEM8(self + 0xA4), MEM32(self + 0x5C), MEM32(g_esp));
+        fflush(stderr);
+    }
+    sub_00205D40_gen();
+}
+
+void sub_0008C540(void)
+{
+    if (ui_trace_on()) {
+        uint32_t self = g_ecx;
+        fprintf(stderr, "[UI] screen %08X vt %08X id %d restore focus | ret %08X\n",
+                self, MEM32(self), (int)(int8_t)MEM8(self + 0xC), MEM32(g_esp));
+        fflush(stderr);
+    }
+    sub_0008C540_gen();
+}
+
 #define STREAM_MAX_SLOTS 4096u
 extern void sub_0020CAB0_gen(void);
 

@@ -175,6 +175,17 @@ void recomp_icall_not_code_log(uint32_t va)
                     "(null or wild function pointer, at call #%llu)\n",
             va, (unsigned long long)hits[i],
             (unsigned long long)g_icall_count);
+    /* The first time: who called. The guest stack's return addresses name
+     * the function holding the bad pointer; ecx is its object if thiscall. */
+    if (hits[i] == 1) {
+        extern void print_guest_regs_and_stack(void);
+        int k;
+        print_guest_regs_and_stack();
+        fprintf(stderr, "  recent indirect-call targets (oldest first):");
+        for (k = 0; k < 16; k++)
+            fprintf(stderr, " %08X", g_icall_trace[(g_icall_trace_idx + k) & 15]);
+        fputc('\n', stderr);
+    }
     fflush(stderr);
 }
 

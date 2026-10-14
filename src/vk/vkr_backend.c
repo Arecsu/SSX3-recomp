@@ -249,6 +249,7 @@ static void fill_state(const Nv2aTarget *t, VkrDrawState *st)
     u->fog_param[2] = (float)t->fog_mode;
     for (k = 0; k < 4; k++) {
         u->tex_scale[k][0] = u->tex_scale[k][1] = 1.0f;
+        u->tex_scale[k][2] = u->tex_scale[k][3] = 0.0f;
         st->addr_u[k] = st->addr_v[k] = 3;
     }
 }
@@ -268,6 +269,30 @@ static void bind_textures(VkrDrawState *st)
 {
     int k;
     {
+        /* RECOMP_VKR_STAGES=1: each distinct stage program once, with which
+         * stages hold a cube map -- what the title's materials use. */
+        static int on = -1, n;
+        static uint32_t seen[64];
+        int i;
+        if (on < 0)
+            on = getenv("RECOMP_VKR_STAGES") != NULL;
+        if (on && n < 64) {
+            uint32_t key = st->u.stage_program;
+            for (k = 0; k < 4; k++) {
+                Nv2aTexInfo ti;
+                if (((key >> (k * 5)) & 0x1F) && nv2a_exec_tex_info(k, &ti) && ti.cube)
+                    key |= 0x80000000u >> k;
+            }
+            for (i = 0; i < n && seen[i] != key; i++)
+                ;
+            if (i == n) {
+                seen[n++] = key;
+                fprintf(stderr, "[VK-STAGES] program %05X cube stages %X final %08X %08X\n",
+                        key & 0xFFFFF, key >> 28, st->u.final0, st->u.final1);
+            }
+        }
+    }
+    {
         static uint32_t gen;                /* the texture cache was purged: drop our pointers */
         if (vkr_tex_generation(s_vk) != gen) {
             gen = vkr_tex_generation(s_vk);
@@ -286,7 +311,8 @@ static void bind_textures(VkrDrawState *st)
         if (s_stats) s_t[1] += now_ms() - t0;
         if (!tex) {
             double t1 = s_stats ? now_ms() : 0;
-            uint32_t *px = (uint32_t *)malloc((size_t)ti.width * ti.height * 4);
+            uint32_t rows = ti.cube ? ti.height * 6 : ti.height;  /* cube: faces stacked */
+            uint32_t *px = (uint32_t *)malloc((size_t)ti.width * rows * 4);
             int rt = is_rt(ti.offset), j;
             if (px && nv2a_exec_tex_decode(k, px)) {
                 /* A render target redrawn every frame: one texture per
@@ -300,7 +326,7 @@ static void bind_textures(VkrDrawState *st)
                 if (old && vkr_tex_update(s_vk, old, ti.hash, px))
                     tex = old;
                 else {
-                    tex = vkr_tex_create(s_vk, ti.hash, ti.width, ti.height, px);
+                    tex = vkr_tex_create(s_vk, ti.hash, ti.width, rows, px);
                     if (tex && rt && s_nrt_tex < 16) {
                         s_rt_tex[s_nrt_tex].off = ti.offset; s_rt_tex[s_nrt_tex].w = ti.width;
                         s_rt_tex[s_nrt_tex].h = ti.height; s_rt_tex[s_nrt_tex].tex = tex;
@@ -312,10 +338,13 @@ static void bind_textures(VkrDrawState *st)
             if (s_stats) { s_t[2] += now_ms() - t1; s_n[1]++; }
         }
         st->tex[k] = tex;
-        st->addr_u[k] = ti.addr_u; st->addr_v[k] = ti.addr_v;
+        st->addr_u[k] = ti.cube ? 3 : ti.addr_u;       /* a cube's faces are clamped */
+        st->addr_v[k] = ti.cube ? 3 : ti.addr_v;
         st->linear[k] = ti.linear_filter;
         st->u.tex_scale[k][0] = ti.normalised ? 1.0f : 1.0f / (float)ti.width;
         st->u.tex_scale[k][1] = ti.normalised ? 1.0f : 1.0f / (float)ti.height;
+        st->u.tex_scale[k][2] = ti.cube ? 1.0f : 0.0f;
+        st->u.tex_scale[k][3] = (float)ti.height;
     }
 }
 

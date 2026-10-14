@@ -92,6 +92,25 @@ vec4 stage_fetch(int st, vec4 c, out bool kill)
     kill = false;
     if (mode == 0u)
         return vec4(0.0, 0.0, 0.0, 1.0);
+    if (mode == 3u && rc.tex_scale[st].z > 0.5) {
+        /* Cube map, its six faces stacked in one texture (+X -X +Y -Y +Z
+         * -Z): pick the face by the major axis (nv2a_pb_exec.c, GL rules),
+         * and keep v half a texel inside it so filtering stays on the face. */
+        vec3 r = c.xyz, a = abs(r);
+        float ma, sc, tc, face, h = rc.tex_scale[st].w;
+        if (a.x >= a.y && a.x >= a.z) {
+            face = r.x > 0.0 ? 0.0 : 1.0; ma = a.x; sc = r.x > 0.0 ? -r.z : r.z; tc = -r.y;
+        } else if (a.y >= a.z) {
+            face = r.y > 0.0 ? 2.0 : 3.0; ma = a.y; sc = r.x; tc = r.y > 0.0 ? r.z : -r.z;
+        } else {
+            face = r.z > 0.0 ? 4.0 : 5.0; ma = a.z; sc = r.z > 0.0 ? r.x : -r.x; tc = -r.y;
+        }
+        if (ma == 0.0)
+            ma = 1.0;
+        float u = (sc / ma + 1.0) * 0.5;
+        float v = clamp((tc / ma + 1.0) * 0.5, 0.5 / h, 1.0 - 0.5 / h);
+        return texture(tex[st], vec2(u, (face + v) / 6.0));
+    }
     if (mode == 1u || mode == 2u || mode == 3u) {
         vec2 uv = (c.xy / q) * rc.tex_scale[st].xy;
         return texture(tex[st], uv);

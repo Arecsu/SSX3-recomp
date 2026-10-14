@@ -1,8 +1,8 @@
 diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
-index 258048c..2f1b55f 100644
+index 258048c..39291bf 100644
 --- a/src/apu/apu_core.c
 +++ b/src/apu/apu_core.c
-@@ -377,12 +377,69 @@ void mcpx_apu_monitor_finalize(MCPXAPUState *d)
+@@ -377,12 +377,72 @@ void mcpx_apu_monitor_finalize(MCPXAPUState *d)
              g_waveout.frames_written);
  }
  
@@ -32,8 +32,11 @@ index 258048c..2f1b55f 100644
 +    if (from_vp) { vp_bufs++; if (p > vp_peak) vp_peak = p; }
 +    if (qemu_clock_get_ms(QEMU_CLOCK_REALTIME) - last >= 1000) {
 +        last = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
-+        fprintf(stderr, "[APU-LEVEL] peak %d (vp peak %d) | buffers %d (vp %d)\n",
-+                peak, vp_peak, bufs, vp_bufs);
++        int under, drops, minq, waits, refills;
++        xa2_take_stats(&under, &drops, &minq, &waits, &refills);
++        fprintf(stderr, "[APU-LEVEL] peak %d (vp peak %d) | buffers %d (vp %d) | underruns %d drops %d"
++                " waits %d refills %d min queued %d\n", peak, vp_peak, bufs, vp_bufs, under, drops,
++                waits, refills, minq);
 +        peak = vp_peak = bufs = vp_bufs = 0;
 +    }
 +}
@@ -72,7 +75,7 @@ index 258048c..2f1b55f 100644
      /* XAudio2 path: render and submit a buffer */
      if (xa2_is_active()) {
          int buf_size = xa2_get_buffer_size();
-@@ -413,6 +470,7 @@ void mcpx_apu_monitor_frame(MCPXAPUState *d)
+@@ -413,6 +473,7 @@ void mcpx_apu_monitor_frame(MCPXAPUState *d)
              remaining -= chunk;
          }
  
@@ -80,7 +83,7 @@ index 258048c..2f1b55f 100644
          xa2_submit_samples((const int16_t *)xa2_tmp, buf_size);
          return;
      }
-@@ -483,10 +541,26 @@ static void throttle(MCPXAPUState *d)
+@@ -483,10 +544,26 @@ static void throttle(MCPXAPUState *d)
  
      int64_t now_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
  
@@ -108,7 +111,7 @@ index 258048c..2f1b55f 100644
  
      while (!d->pause_requested) {
          now_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
-@@ -530,7 +604,9 @@ static void se_frame(MCPXAPUState *d)
+@@ -530,7 +607,9 @@ static void se_frame(MCPXAPUState *d)
  
      mcpx_apu_vp_frame(d, mixbins);
      mcpx_apu_dsp_frame(d, mixbins);
@@ -118,8 +121,21 @@ index 258048c..2f1b55f 100644
  
      d->ep_frame_div++;
  
+@@ -544,6 +623,12 @@ static void se_frame(MCPXAPUState *d)
+ static void *mcpx_apu_frame_thread(void *arg)
+ {
+     MCPXAPUState *d = MCPX_APU_DEVICE(arg);
++#if defined(_WIN32)
++    /* The audio clock: a wake that comes late is a gap at the speakers once
++     * the output queue's cushion is used up, and the game's own threads
++     * keep every core busy. */
++    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
++#endif
+     qemu_mutex_lock(&d->lock);
+ 
+     while (!qatomic_read(&d->exiting)) {
 diff --git a/src/apu/apu_xaudio2.c b/src/apu/apu_xaudio2.c
-index cd69e57..86d2428 100644
+index cd69e57..f423dcd 100644
 --- a/src/apu/apu_xaudio2.c
 +++ b/src/apu/apu_xaudio2.c
 @@ -25,7 +25,8 @@
@@ -132,22 +148,108 @@ index cd69e57..86d2428 100644
  
  static IXAudio2               *g_xa2 = NULL;
  static IXAudio2MasteringVoice *g_xa2_master = NULL;
-@@ -138,7 +139,14 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
+@@ -34,6 +35,8 @@ static int16_t                 g_xa2_bufs[XA2_NUM_BUFS][XA2_BUF_SAMPLES][2];
+ static int                     g_xa2_next_buf = 0;
+ static int                     g_xa2_initialized = 0;
+ static int                     g_xa2_frames_written = 0;
++static int                     g_xa2_underruns, g_xa2_drops, g_xa2_waits, g_xa2_refills;
++static int                     g_xa2_min_queued = 1 << 30;
+ 
+ int xa2_init(void)
+ {
+@@ -138,7 +141,50 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
      if (!g_xa2_initialized || !g_xa2_source) return 0;
  
      IXAudio2SourceVoice_GetState(g_xa2_source, &state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
 -    if ((int)state.BuffersQueued >= XA2_NUM_BUFS) return 0;
++    if (state.BuffersQueued == 0 && g_xa2_frames_written)
++        g_xa2_underruns++;
++    /* Voice-processor frames (256 samples, 5.3 ms) arrive in step with the
++     * card, so the queue keeps whatever depth it had -- in some runs 1-2
++     * buffers, where every late frame-thread wake is an underrun (a click).
++     * Keep a cushion: start, and restart after running (nearly) dry, with
++     * silence up to 8 buffers (43 ms). The full side is handled below. */
++    if (num_samples <= 256 && state.BuffersQueued <= 1) {
++        static const int16_t silence[256][2];
++        XAUDIO2_BUFFER sb;
++        UINT32 k;
++        memset(&sb, 0, sizeof(sb));
++        sb.AudioBytes = (UINT32)(num_samples * XA2_CHANNELS * sizeof(int16_t));
++        sb.pAudioData = (const BYTE *)silence;
++        for (k = state.BuffersQueued; k < 7; k++)
++            if (FAILED(IXAudio2SourceVoice_SubmitSourceBuffer(g_xa2_source, &sb, NULL)))
++                break;
++        if (g_xa2_frames_written)
++            g_xa2_refills++;
++        state.BuffersQueued = k;
++    }
++    if ((int)state.BuffersQueued < g_xa2_min_queued)
++        g_xa2_min_queued = (int)state.BuffersQueued;
 +    /* ~64 ms of queue either way: 3 buffers of the HLE mixer's 1024 samples,
 +     * or 12 of the 256-sample frames the emulated APU's voice processor
 +     * delivers (8 VP frames of 32), which arrive in step with real time and
 +     * need the slack to ride out a frame thread that is a little late. */
 +    {
-+        int max_queued = num_samples <= 256 ? 12 : 3;
-+        if ((int)state.BuffersQueued >= max_queued) return 0;
++        int max_queued = num_samples <= 256 ? 12 : 3, waited = 0;
++        /* A full queue means this side runs ahead of the sound card: the
++         * frame thread is paced by the system clock, which drifts against
++         * the card's. Dropping the buffer is an audible click (one every
++         * few seconds in a race); waiting for room lets the card set the
++         * pace, as the APU's own clock does on the console. Bounded, so a
++         * stalled device still cannot hold the frame thread. */
++        while ((int)state.BuffersQueued >= max_queued && num_samples <= 256 && waited < 20) {
++            Sleep(1);
++            waited++;
++            IXAudio2SourceVoice_GetState(g_xa2_source, &state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
++        }
++        if (waited)
++            g_xa2_waits++;
++        if ((int)state.BuffersQueued >= max_queued) { g_xa2_drops++; return 0; }
 +    }
  
      idx = g_xa2_next_buf;
      copy_samples = (num_samples > XA2_BUF_SAMPLES) ? XA2_BUF_SAMPLES : num_samples;
+@@ -156,6 +202,22 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
+     return 1;
+ }
+ 
++/* Output health since the last call: buffers that found the queue empty
++ * (the device ran dry -- an audible gap), buffers dropped because the queue
++ * was full, the lowest queue depth seen, submits that waited for room and
++ * silence refills of a (nearly) empty queue. */
++void xa2_take_stats(int *underruns, int *drops, int *min_queued, int *waits, int *refills)
++{
++    *waits = g_xa2_waits;
++    *refills = g_xa2_refills;
++    g_xa2_waits = g_xa2_refills = 0;
++    *underruns = g_xa2_underruns;
++    *drops = g_xa2_drops;
++    *min_queued = g_xa2_min_queued == 1 << 30 ? -1 : g_xa2_min_queued;
++    g_xa2_underruns = g_xa2_drops = 0;
++    g_xa2_min_queued = 1 << 30;
++}
++
+ int xa2_get_buffer_size(void)
+ {
+     return XA2_BUF_SAMPLES;
+@@ -168,5 +230,6 @@ void xa2_shutdown(void)                               {}
+ int  xa2_is_active(void)                              { return 0; }
+ int  xa2_submit_samples(const int16_t *s, int n)      { (void)s; (void)n; return 0; }
+ int  xa2_get_buffer_size(void)                        { return 0; }
++void xa2_take_stats(int *u, int *d, int *m, int *w, int *r) { *u = *d = *w = *r = 0; *m = -1; }
+ 
+ #endif /* _WIN32 */
+diff --git a/src/apu/apu_xaudio2.h b/src/apu/apu_xaudio2.h
+index 83e652d..e4ec703 100644
+--- a/src/apu/apu_xaudio2.h
++++ b/src/apu/apu_xaudio2.h
+@@ -20,5 +20,6 @@ int xa2_submit_samples(const int16_t *samples, int num_samples);
+ 
+ /* Get the preferred buffer size in samples. */
+ int xa2_get_buffer_size(void);
++void xa2_take_stats(int *underruns, int *drops, int *min_queued, int *waits, int *refills);
+ 
+ #endif /* APU_XAUDIO2_H */
 diff --git a/src/input/xinput_device.c b/src/input/xinput_device.c
 index a91edbe..a18661a 100644
 --- a/src/input/xinput_device.c
@@ -1433,10 +1535,10 @@ index 9760735..4717e28 100644
      /* Creating the shadow here is not required -- Enter does it -- but doing
 diff --git a/src/kernel/nv2a_backend.h b/src/kernel/nv2a_backend.h
 new file mode 100644
-index 0000000..d3216f1
+index 0000000..c6df02b
 --- /dev/null
 +++ b/src/kernel/nv2a_backend.h
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,79 @@
 +/**
 + * Pluggable GPU backend for the pushbuffer executor.
 + *
@@ -1485,10 +1587,12 @@ index 0000000..d3216f1
 +    uint32_t format;                /* NV097 colour format code */
 +    uint32_t stage_program;         /* SET_SHADER_STAGE_PROGRAM, 5 bits per stage */
 +    uint64_t hash;                  /* of the base level's bytes (this frame) */
++    int      cube;                  /* cube map: decoded as six faces stacked, +X -X +Y -Y +Z -Z */
 +} Nv2aTexInfo;
 +
 +/* Texture stage description, and mip 0 decoded to A8R8G8B8 (width*height
-+ * dwords). Both return 0 if the stage is unusable. */
++ * dwords; a cube map width*height*6, the faces one below the other). Both
++ * return 0 if the stage is unusable. */
 +int nv2a_exec_tex_info(int stage, Nv2aTexInfo *info);
 +int nv2a_exec_tex_decode(int stage, uint32_t *out);
 +
@@ -1515,7 +1619,7 @@ index 0000000..d3216f1
 +
 +#endif
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index c65632c..1a853cf 100644
+index c65632c..dae58fd 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
 @@ -37,10 +37,12 @@
@@ -3009,7 +3113,7 @@ index c65632c..1a853cf 100644
      peek_addresses();
      peek_chain();
      if (getenv("RECOMP_FIND_NAN")) {
-@@ -3534,10 +4495,154 @@ void nv2a_pb_exec_report(void)
+@@ -3534,10 +4495,157 @@ void nv2a_pb_exec_report(void)
               * is using. */
              union { uint32_t u; float f; } v;
              v.u = s_unhandled[i].last_param;
@@ -3058,6 +3162,7 @@ index c65632c..1a853cf 100644
 +    info->normalised = tex_size_from_format(t->color) != 0;
 +    info->format = t->color;
 +    info->stage_program = s_gpu.rc.stage_program;
++    info->cube = t->cube;
 +    /* Hash the base level (8 bytes at a time); a changed texture changes it.
 +     * Done at most once per texture per flipped frame: hashing on every draw
 +     * cost 70% of a frame on the character screen. A texture rewritten
@@ -3073,7 +3178,7 @@ index c65632c..1a853cf 100644
 +            return 1;
 +        }
 +        w = (const uint64_t *)((const uint8_t *)xbox_GetMemoryOffset() + t->offset);
-+        n = tex_base_bytes(t) / 8;
++        n = (t->cube ? 5 * tex_face_stride(t) + tex_base_bytes(t) : tex_base_bytes(t)) / 8;
 +        for (i = 0; i < n; i++)
 +            h = (h ^ w[i]) * 1099511628211ull;
 +        if (t->color == 0x0B) {
@@ -3087,7 +3192,8 @@ index c65632c..1a853cf 100644
 +                    h = (h ^ w[i]) * 1099511628211ull;
 +            }
 +        }
-+        info->hash = h ^ ((uint64_t)t->color << 56) ^ ((uint64_t)t->width << 20) ^ t->height;
++        info->hash = h ^ ((uint64_t)t->color << 56) ^ ((uint64_t)t->width << 20) ^ t->height
++                   ^ ((uint64_t)t->cube << 55);
 +        memo[slot].offset = t->offset; memo[slot].color = t->color;
 +        memo[slot].w = t->width; memo[slot].h = t->height;
 +        memo[slot].palette = t->palette;
@@ -3104,11 +3210,12 @@ index c65632c..1a853cf 100644
 +static void tex_decode_job(int k, int n)
 +{
 +    const Texture *t = s_dec_tex;
-+    uint32_t x, y;
-+    for (y = (uint32_t)k; y < t->height; y += (uint32_t)n)
++    uint32_t x, y, rows = t->cube ? t->height * 6 : t->height;
++    uint32_t stride = t->cube ? tex_face_stride(t) : 0;
++    for (y = (uint32_t)k; y < rows; y += (uint32_t)n)
 +        for (x = 0; x < t->width; x++) {
 +            uint32_t argb = 0xFFFF00FFu;
-+            if (!sample_tex(t, 0, x, y, &argb))
++            if (!sample_tex(t, (y / t->height) * stride, x, y % t->height, &argb))
 +                argb = 0xFFFF00FFu;          /* unsupported format: magenta */
 +            s_dec_out[y * t->width + x] = argb;
 +        }
@@ -4819,10 +4926,47 @@ index 8e9325e..cc6b183 100644
   * Register name aliases for generated code
   *
 diff --git a/tools/recomp/translator.py b/tools/recomp/translator.py
-index 3cd9250..9e5150d 100644
+index 3cd9250..f647ded 100644
 --- a/tools/recomp/translator.py
 +++ b/tools/recomp/translator.py
-@@ -2495,6 +2495,15 @@ class FunctionTranslator:
+@@ -1311,6 +1311,36 @@ class FunctionTranslator:
+                     return 0
+         return 0
+ 
++    def _stub_epilogue(self, addr, max_insns=8):
++        """The registers popped, then the `ret N` immediate, when the code at
++        `addr` is nothing but a function epilogue (`pop r32`* then `ret`).
++
++        Such an address is a branch target into another function's shared
++        exit -- `jne <epilogue>` from a switch arm that was split off as its
++        own function. A stub that only moves esp leaves every popped
++        callee-saved register holding the jumper's value, so its caller
++        carries on with the wrong esi/edi/ebx; SSX 3's Options menu crashed
++        that way. Returns None for anything else.
++        """
++        offset = va_to_file_offset(addr)
++        if offset is None or not self.xbe_data:
++            return None
++        window = self.xbe_data[offset:offset + max_insns * 3]
++        regs = []
++        try:
++            for insn in self.disasm._cs.disasm(window, addr):
++                mnemonic = insn.mnemonic.lower()
++                if mnemonic == "pop" and insn.op_str in (
++                        "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp"):
++                    regs.append(insn.op_str)
++                    continue
++                if mnemonic in ("ret", "retn"):
++                    return regs, (int(insn.op_str, 0) if insn.op_str else 0)
++                return None
++        except Exception:
++            return None
++        return None
++
+     def _read_local_jump_table(self, table_va, lower, upper,
+                                max_entries=256, min_entry_va=None):
+         """Read the contiguous pointer cluster around an indexed-jump base."""
+@@ -2495,6 +2525,15 @@ class FunctionTranslator:
                  # otherwise produce `loc_X:` immediately before `}` and fail to
                  # compile. The null statement costs nothing and is always valid.
                  lines.append(f"loc_{bb.start:08X}: ;")
@@ -4838,3 +4982,23 @@ index 3cd9250..9e5150d 100644
  
              # Inherit agreed state, including compatible CMP/TEST snapshots
              # whose source operands differ between predecessor paths. The
+@@ -3182,6 +3221,19 @@ class BatchTranslator:
+                 " * esp off by N on every call. */")
+             stub_lines.append("")
+             for addr in sorted(unresolved):
++                epi = self.translator._stub_epilogue(addr)
++                if epi and epi[0]:
++                    # A shared epilogue: run it -- restore the registers it
++                    # pops, then return (address + N bytes of arguments).
++                    regs, n = epi
++                    body = " ".join(f"g_{r} = MEM32(g_esp); g_esp += 4;"
++                                    for r in regs)
++                    note = "; ".join(f"pop {r}" for r in regs) + f"; ret {n}"
++                    stub_lines.append(
++                        f"void {unresolved[addr]}(void) {{ {body} g_esp += {4 + n}; "
++                        f"/* 0x{addr:08X}: {note} */ }}"
++                    )
++                    continue
+                 popped = self.translator._stub_ret_bytes(addr)
+                 note = (f"ret {popped}" if popped else "not detected")
+                 stub_lines.append(

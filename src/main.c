@@ -162,6 +162,88 @@ static void print_guest_context(void *rip)
 }
 #endif /* _WIN32 */
 
+#define GUEST_RAM(a) (((a) >= 0x10000 && (a) < 0x04000000) || ((a) >= 0x80000000u && (a) < 0x84000000u))
+
+/* Guest registers (this thread's) and the stack's return addresses -- for
+ * reports from files that cannot see the thread-local registers. */
+void print_guest_regs_and_stack(void)
+{
+    fprintf(stderr, "  eax=0x%08X ecx=0x%08X edx=0x%08X ebx=0x%08X esi=0x%08X edi=0x%08X esp=0x%08X\n",
+            g_eax, g_ecx, g_edx, g_ebx, g_esi, g_edi, g_esp);
+#ifdef _WIN32
+    {
+        /* The native call chain names the guest functions exactly (each is a
+         * symbol), unlike the stack scan below. */
+        void *fr[20];
+        USHORT n = RtlCaptureStackBackTrace(1, 20, fr, NULL), k;
+        char buf[sizeof(SYMBOL_INFO) + 256];
+        SYMBOL_INFO *sym = (SYMBOL_INFO *)buf;
+        fprintf(stderr, "  native chain (image base %p):", (void *)GetModuleHandleA(NULL));
+        for (k = 0; k < n; k++) {
+            DWORD64 disp = 0;
+            memset(buf, 0, sizeof(buf));
+            sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+            sym->MaxNameLen = 255;
+            if (SymFromAddr(GetCurrentProcess(), (DWORD64)(uintptr_t)fr[k], &disp, sym))
+                fprintf(stderr, " %s+0x%llX", sym->Name, (unsigned long long)disp);
+            else
+                fprintf(stderr, " %p", fr[k]);
+        }
+        fputc('\n', stderr);
+    }
+#endif
+    print_guest_stack();
+    /* esi is usually the object being worked on: its first 0xB0 bytes, and
+     * for each dword pointing into RAM the bytes there (strings show). */
+    if (g_xbox_mem_offset && GUEST_RAM(g_esi) && GUEST_RAM(g_esi + 0xB0)) {
+        const uint8_t *m = (const uint8_t *)((uintptr_t)g_xbox_mem_offset);
+        uint32_t o;
+        for (o = 0; o < 0xB0; o += 4) {
+            uint32_t v = *(const uint32_t *)(m + g_esi + o);
+            fprintf(stderr, "  [esi+%02X] %08X", o, v);
+            if (GUEST_RAM(v) && GUEST_RAM(v + 16)) {
+                const uint8_t *q = m + v;
+                int k;
+                fprintf(stderr, "  -> ");
+                for (k = 0; k < 16; k++)
+                    fprintf(stderr, "%02X", q[k]);
+                fprintf(stderr, " '");
+                for (k = 0; k < 16; k++)
+                    fputc(q[k] >= 32 && q[k] < 127 ? q[k] : '.', stderr);
+                fputc('\'', stderr);
+            }
+            fputc('\n', stderr);
+        }
+    }
+    /* RECOMP_ICALL_NULL_MEM=va:len[,*va:len][,@off:len]: guest memory to show
+     * as well; "*va" shows len bytes where the pointer at va points, "@off"
+     * where the dword at guest esp+off points. */
+    {
+        const char *e = getenv("RECOMP_ICALL_NULL_MEM");
+        while (e && *e && g_xbox_mem_offset) {
+            const uint8_t *m = (const uint8_t *)((uintptr_t)g_xbox_mem_offset);
+            int deref = (*e == '*'), onstack = (*e == '@');
+            char *end;
+            uint32_t va = (uint32_t)strtoul(e + deref + onstack, &end, 16), len = 16, k;
+            if (*end == ':')
+                len = (uint32_t)strtoul(end + 1, &end, 0);
+            if (onstack)
+                va = *(const uint32_t *)(m + g_esp + va);
+            if (deref && GUEST_RAM(va))
+                va = *(const uint32_t *)(m + va);
+            if (GUEST_RAM(va) && GUEST_RAM(va + len)) {
+                fprintf(stderr, "  [MEM %08X]", va);
+                for (k = 0; k < len; k++)
+                    fprintf(stderr, "%s%02X", k % 16 ? " " : "\n    ", m[va + k]);
+                fputc('\n', stderr);
+            }
+            e = strchr(end, ',');
+            if (e)
+                e++;
+        }
+    }
+}
+
 void print_guest_stack(void)
 {
     if (g_xbox_mem_offset && g_esp) {

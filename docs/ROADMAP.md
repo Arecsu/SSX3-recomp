@@ -193,6 +193,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — Playtest fixes: Options menu crash (stub for a shared `pop esi; ret 8` epilogue never restored esi -- toolkit stub generator), audio crackle (output queue cushion, wait instead of drop), Vulkan cube maps.
 - 2026-10-14 — Black race shapes FIXED (executor ARRAY_ELEMENT32, both renderers; found by a subagent on its own instance).
 - 2026-10-14 — MR !3 (Corné's vulkan-race-perf) merged: two frames in flight, pre-decoded vertex programs, LensFX nowait; race 53-58 FPS.
 - 2026-10-14 — Vulkan is the default renderer (6x2 batch 12/12).

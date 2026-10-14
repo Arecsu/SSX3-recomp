@@ -680,6 +680,38 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   initial 7; table of names at 0x3083BC; sub_00080730 plays them).
   `RECOMP_POKE=0x3083B8:0` plays none (a missing .mad file hangs instead).
   `scripts/race_loop.sh` uses it: boot -> race in ~15 s on Linux/Vulkan.
+- PLAYTEST FIXES (2026-10-14, user playtest):
+  * Options menu crash (Y on the main menu): the Options screen's message
+    handler sub_00091640 jumps (jne) into the shared epilogue of the next
+    function, 0x0009186C `pop esi; ret 8`. tools.recomp emitted that
+    unresolved target as a stub `g_esp += 12` -- esi never restored (and esp
+    4 off), so the list code (sub_002055C0) carried on with the screen as
+    `this` and called through its NULL +0xA0. Toolkit fix (translator.py
+    `_stub_epilogue`): a stub whose target is `pop r32`* + `ret N` restores
+    the popped registers. Only two stubs had that shape (0x0009186C and
+    0x0008773F, which skipped three pops). Found with: the null-ICALL report
+    (src/recomp_manual.c + print_guest_regs_and_stack in main.c: registers,
+    symbolised native chain, esi object; RECOMP_ICALL_NULL_MEM=va:len,
+    *va:len, @espoff:len for more memory) and RECOMP_UI_TRACE=1 (_gen
+    wrappers on the list select sub_00205D40 and the screen restore-focus
+    sub_0008C540). Lesson: check recomp_stubs_unresolved.c for stubs whose
+    target is the middle of a real function.
+    `tools\menu_test.ps1 -Steps "y,wait,down,a"` drives the menus with a
+    screenshot per step (Start on the title is sometimes missed -- rerun).
+  * Audio crackle: the output queue kept whatever depth it started with --
+    near full in some runs (a 5.3 ms buffer dropped now and then = click),
+    near empty in others (underruns). Now: wait for room instead of
+    dropping, refill a (nearly) dry queue with silence to 8 buffers (43 ms),
+    and the APU frame thread runs at THREAD_PRIORITY_HIGHEST. A 40 s race:
+    0 underruns / drops / refills, queue 6-9. RECOMP_APU_LEVEL=1 prints
+    underruns, drops, waits, refills and min queue depth per second.
+  * Vulkan cube maps (stage mode 3) were sampled as plain 2D; now the six
+    faces are decoded stacked (Nv2aTexInfo.cube, nv2a_exec_tex_decode) and
+    the shader picks the face. SSX 3's races and character screen use no
+    cube maps (RECOMP_VKR_STAGES=1 lists each stage program once), so this
+    did not change the character look; character lighting matches the
+    software renderer (both use the CPU vertex programs). Open: what the
+    user sees as wrong lighting -- needs a reference image.
 - Untranslated instructions reached (no-ops): `wbinvd`, `out`/`in`, `ldmxcsr`.
 - Upstream candidates: the toolkit fixes in `patches/`; `tools.split`
   ignoring applied names (docs/DECOMP.md says otherwise); template
