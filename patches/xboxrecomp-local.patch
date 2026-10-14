@@ -148,6 +148,91 @@ index cd69e57..86d2428 100644
  
      idx = g_xa2_next_buf;
      copy_samples = (num_samples > XA2_BUF_SAMPLES) ? XA2_BUF_SAMPLES : num_samples;
+diff --git a/src/input/xinput_device.c b/src/input/xinput_device.c
+index a91edbe..a18661a 100644
+--- a/src/input/xinput_device.c
++++ b/src/input/xinput_device.c
+@@ -257,6 +257,57 @@ static SDL_GameController *g_pads[XBOX_MAX_CONTROLLERS];
+ static BOOL  g_controller_connected[XBOX_MAX_CONTROLLERS];
+ static DWORD g_packet[XBOX_MAX_CONTROLLERS];
+ 
++/* RECOMP_KEYBOARD=1: the keyboard as player 1, merged over any pad. Same map
++ * as the Windows backend; keys come from the framebuffer window as VK codes. */
++extern int xbox_FramebufferKeyDown(int vk);
++
++static int keyboard_enabled(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char *v = getenv("RECOMP_KEYBOARD");
++        on = (v && *v && *v != '0') ? 1 : 0;
++    }
++    return on;
++}
++
++static SHORT kb_axis(int neg, int pos)
++{
++    int v = 0;
++    if (xbox_FramebufferKeyDown(neg)) v -= 32767;
++    if (xbox_FramebufferKeyDown(pos)) v += 32767;
++    return (SHORT)v;
++}
++
++/* OR the keyboard into *pState. */
++static void keyboard_merge(XBOX_INPUT_STATE *pState)
++{
++    static const struct { int vk; int btn; } analog[8] = {
++        { 'Z', XBOX_BUTTON_A }, { 'X', XBOX_BUTTON_B }, { 'A', XBOX_BUTTON_X },
++        { 'S', XBOX_BUTTON_Y }, { 'Q', XBOX_BUTTON_WHITE }, { 'E', XBOX_BUTTON_BLACK },
++        { '1', XBOX_BUTTON_LTRIGGER }, { '3', XBOX_BUTTON_RTRIGGER },
++    };
++    WORD b = 0;
++    int i;
++
++    if (xbox_FramebufferKeyDown(0x26)) b |= XBOX_GAMEPAD_DPAD_UP;
++    if (xbox_FramebufferKeyDown(0x28)) b |= XBOX_GAMEPAD_DPAD_DOWN;
++    if (xbox_FramebufferKeyDown(0x25)) b |= XBOX_GAMEPAD_DPAD_LEFT;
++    if (xbox_FramebufferKeyDown(0x27)) b |= XBOX_GAMEPAD_DPAD_RIGHT;
++    if (xbox_FramebufferKeyDown(0x0D)) b |= XBOX_GAMEPAD_START;
++    if (xbox_FramebufferKeyDown(0x08)) b |= XBOX_GAMEPAD_BACK;
++    if (xbox_FramebufferKeyDown(0x10)) b |= XBOX_GAMEPAD_LEFT_THUMB;
++    if (xbox_FramebufferKeyDown(0x11)) b |= XBOX_GAMEPAD_RIGHT_THUMB;
++    pState->Gamepad.wButtons |= b;
++    for (i = 0; i < 8; i++)
++        if (xbox_FramebufferKeyDown(analog[i].vk))
++            pState->Gamepad.bAnalogButtons[analog[i].btn] = 255;
++    if (!pState->Gamepad.sThumbLX) pState->Gamepad.sThumbLX = kb_axis(0x64, 0x66);
++    if (!pState->Gamepad.sThumbLY) pState->Gamepad.sThumbLY = kb_axis(0x62, 0x68);
++    if (!pState->Gamepad.sThumbRX) pState->Gamepad.sThumbRX = kb_axis('J', 'L');
++    if (!pState->Gamepad.sThumbRY) pState->Gamepad.sThumbRY = kb_axis('K', 'I');
++}
++
+ /* Open up to XBOX_MAX_CONTROLLERS attached game controllers. */
+ static void open_controllers(void)
+ {
+@@ -287,6 +338,13 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+     SDL_GameController *c = g_pads[dwPort];
+     if (!c || !SDL_GameControllerGetAttached(c)) {
+         g_controller_connected[dwPort] = FALSE;
++        if (dwPort == 0 && keyboard_enabled()) {
++            static DWORD kb_packet;
++            memset(pState, 0, sizeof(*pState));
++            keyboard_merge(pState);
++            pState->dwPacketNumber = ++kb_packet;   /* must move for edges */
++            return ERROR_SUCCESS;
++        }
+         return ERROR_DEVICE_NOT_CONNECTED;
+     }
+ 
+@@ -335,6 +393,8 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+     pState->Gamepad.sThumbRY =
+         (SHORT)(-1 - SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_RIGHTY));
+ 
++    if (dwPort == 0 && keyboard_enabled())
++        keyboard_merge(pState);
+     return ERROR_SUCCESS;
+ }
+ 
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
 index c65ba43..16c1224 100644
 --- a/src/kernel/kernel_bridge.c
@@ -2637,9 +2722,27 @@ index 72d5131..ff9d026 100644
              VirtualFree(g_span_base, g_memory_size, MEM_RELEASE);
              g_memory_base = MapViewOfFileEx(g_mapping_handle,
 diff --git a/src/usb/ohci.c b/src/usb/ohci.c
-index 641a94d..159126e 100644
+index 641a94d..58a34af 100644
 --- a/src/usb/ohci.c
 +++ b/src/usb/ohci.c
+@@ -1278,7 +1278,7 @@ void xbox_OhciInit(void)
+     ohci_reset(&s_hc[0], XBOX_OHCI0_BASE, 0);
+     ohci_reset(&s_hc[1], XBOX_OHCI1_BASE, 1);
+ 
+-#if defined(_WIN32)
++#if 1
+     /* The registers have to fault to be answered. The MCPX aperture is mapped
+      * as plain committed memory, so both blocks are made inaccessible here and
+      * the title's VEH routes the faults back to xbox_OhciHandleMmio.
+@@ -1314,7 +1314,7 @@ void xbox_OhciInit(void)
+             XBOX_OHCI0_BASE, XBOX_OHCI1_BASE, OHCI_PORTS);
+     fflush(stderr);
+ 
+-#if defined(_WIN32)
++#if 1
+     {
+         HANDLE th = CreateThread(NULL, 0, ohci_thread, NULL, 0, NULL);
+         if (th)
 @@ -1340,6 +1340,21 @@ int xbox_OhciOwnsAddress(uint32_t xbox_va)
      return hc_for(xbox_va) != NULL;
  }
@@ -2889,10 +2992,10 @@ index 08bae4b..a0e55ee 100644
  #endif
 diff --git a/src/video/fb_present_sdl.c b/src/video/fb_present_sdl.c
 new file mode 100644
-index 0000000..61f6b8b
+index 0000000..663aea6
 --- /dev/null
 +++ b/src/video/fb_present_sdl.c
-@@ -0,0 +1,341 @@
+@@ -0,0 +1,343 @@
 +/**
 + * POSIX counterpart of fb_present.c: show the guest framebuffer in an SDL2
 + * window. Same contract (RECOMP_FB_WINDOW, flip-time copy, BMP dump, snap
@@ -3046,7 +3149,9 @@ index 0000000..61f6b8b
 +    if (k >= 'a' && k <= 'z') return k - 'a' + 0x41;
 +    if (k >= '0' && k <= '9') return k;
 +    if (k >= SDLK_F1 && k <= SDLK_F12) return 0x70 + (k - SDLK_F1);
++    if (k >= SDLK_KP_1 && k <= SDLK_KP_9) return 0x61 + (k - SDLK_KP_1);
 +    switch (k) {
++    case SDLK_KP_0: return 0x60;
 +    case SDLK_RETURN: return 0x0D;   case SDLK_ESCAPE: return 0x1B;
 +    case SDLK_SPACE: return 0x20;    case SDLK_TAB: return 0x09;
 +    case SDLK_BACKSPACE: return 0x08;
