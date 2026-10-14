@@ -28,6 +28,7 @@ struct VkrContext {
     VkCommandBuffer cmd;            /* the one being recorded: cmds[ncmd] */
     VkCommandBuffer cmds[16];
     uint32_t ncmd, draws_in_cmd;
+    uint32_t tex_gen;               /* bumped when every texture is freed */
     VkFence fence;
     VkPhysicalDeviceMemoryProperties mem;
 
@@ -438,8 +439,14 @@ static void free_target(VkrContext *c)
     c->color = c->depth = VK_NULL_HANDLE;
 }
 
+uint32_t vkr_tex_generation(VkrContext *c)
+{
+    return c->tex_gen;
+}
+
 static void tex_free_all(VkrContext *c)
 {
+    c->tex_gen++;
     uint32_t i;
     for (i = 0; i < c->ntexs; i++) {
         VkrTex *t = c->texs[i];
@@ -607,6 +614,35 @@ VkrTex *vkr_tex_find(VkrContext *c, uint64_t key)
         if (c->texs[i]->key == key)
             return c->texs[i];
     return NULL;
+}
+
+/* New contents for an existing texture of the same size (a render target
+ * the title redraws every frame: its shadow maps). Draws recorded before
+ * this still read the old contents -- the copy is ordered after them. */
+int vkr_tex_update(VkrContext *c, VkrTex *t, uint64_t key, const uint32_t *pixels)
+{
+    VkBufferImageCopy cp = {0};
+    uint32_t off = (c->buf_used + 15) & ~15u, bytes = t->w * t->h * 4;
+    if (off + bytes > VKR_BUF_BYTES || !begin_cmd(c))
+        return 0;
+    end_pass(c);
+    memcpy(c->buf_map + off, pixels, bytes);
+    c->buf_used = off + bytes;
+    barrier(c, t->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    cp.bufferOffset = off;
+    cp.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    cp.imageSubresource.layerCount = 1;
+    cp.imageExtent.width = t->w; cp.imageExtent.height = t->h; cp.imageExtent.depth = 1;
+    vkCmdCopyBufferToImage(c->cmd, c->buf, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
+    barrier(c, t->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    t->key = key;
+    return 1;
 }
 
 VkrTex *vkr_tex_create(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,

@@ -98,12 +98,15 @@ static int is_front(uint32_t off)
     return s_nfront == 0;
 }
 
+/* Render targets the title draws (swizzled: the shadow maps), see note_rt. */
+static uint32_t s_rt[16];
+static int s_nrt;
+static struct { uint32_t off, w, h; VkrTex *tex; } s_rt_tex[16];
+static int s_nrt_tex;
+
 /* Swizzled render targets the title draws (rider shadow maps): drawn in
  * software; RECOMP_VKR_NO_SHADOW=1 skips the draws that sample them (an
  * experiment for the black shadow-receiver shapes). */
-static uint32_t s_rt[16];
-static int s_nrt;
-
 static void note_rt(uint32_t off)
 {
     int i;
@@ -212,10 +215,27 @@ static void fill_state(const Nv2aTarget *t, VkrDrawState *st)
     }
 }
 
+
+static int is_rt(uint32_t off)
+{
+    int i;
+    for (i = 0; i < s_nrt; i++)
+        if (s_rt[i] == off)
+            return 1;
+    return 0;
+}
+
 /* Bind the texture stages the combiners use. */
 static void bind_textures(VkrDrawState *st)
 {
     int k;
+    {
+        static uint32_t gen;                /* the texture cache was purged: drop our pointers */
+        if (vkr_tex_generation(s_vk) != gen) {
+            gen = vkr_tex_generation(s_vk);
+            s_nrt_tex = 0;
+        }
+    }
     for (k = 0; k < 4; k++) {
         Nv2aTexInfo ti;
         VkrTex *tex;
@@ -229,8 +249,27 @@ static void bind_textures(VkrDrawState *st)
         if (!tex) {
             double t1 = s_stats ? now_ms() : 0;
             uint32_t *px = (uint32_t *)malloc((size_t)ti.width * ti.height * 4);
-            if (px && nv2a_exec_tex_decode(k, px))
-                tex = vkr_tex_create(s_vk, ti.hash, ti.width, ti.height, px);
+            int rt = is_rt(ti.offset), j;
+            if (px && nv2a_exec_tex_decode(k, px)) {
+                /* A render target redrawn every frame: one texture per
+                 * address, updated in place, not a new one per frame. */
+                VkrTex *old = NULL;
+                if (rt)
+                    for (j = 0; j < s_nrt_tex; j++)
+                        if (s_rt_tex[j].off == ti.offset && s_rt_tex[j].w == ti.width
+                            && s_rt_tex[j].h == ti.height)
+                            old = s_rt_tex[j].tex;
+                if (old && vkr_tex_update(s_vk, old, ti.hash, px))
+                    tex = old;
+                else {
+                    tex = vkr_tex_create(s_vk, ti.hash, ti.width, ti.height, px);
+                    if (tex && rt && s_nrt_tex < 16) {
+                        s_rt_tex[s_nrt_tex].off = ti.offset; s_rt_tex[s_nrt_tex].w = ti.width;
+                        s_rt_tex[s_nrt_tex].h = ti.height; s_rt_tex[s_nrt_tex].tex = tex;
+                        s_nrt_tex++;
+                    }
+                }
+            }
             free(px);
             if (s_stats) { s_t[2] += now_ms() - t1; s_n[1]++; }
         }

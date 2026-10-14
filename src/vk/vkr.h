@@ -58,6 +58,8 @@ void vkr_clear_depth(VkrContext *c, float depth);
 VkrTex *vkr_tex_find(VkrContext *c, uint64_t key);
 VkrTex *vkr_tex_create(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
                        const uint32_t *pixels);
+int vkr_tex_update(VkrContext *c, VkrTex *t, uint64_t key, const uint32_t *pixels);
+uint32_t vkr_tex_generation(VkrContext *c);   /* changes when all textures were freed */
 
 /* Draw an indexed triangle list. */
 int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
