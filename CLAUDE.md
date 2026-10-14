@@ -496,6 +496,21 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   left) and, when it is 2, in sub_00178800 (from sub_001789B0 and
   sub_0018FE30) -- next: check whether those hold the lock and whether a
   request queued in between is ever kicked (suspected lost wake-up).
+  UPDATE (later 2026-10-14) -- IT IS A STREAM PARSE FAILURE. The reader
+  does get its data (EA STRM manager, ring full: avail 0x48000); it retries
+  forever because sub_0020D6B0 (place an asset) returns -1: the first asset
+  header of the first world stream (entry #10 ASKY, slot 36, BAM.xsb +
+  0x01390000) is garbage (type 156, bank 222, size 16 MB), so its bank pool
+  ([pool+0x3C+bank*4], created per request entry i by sub_0020C9B0, destroyed
+  by sub_0020D2A0) is NULL. The real first block there (CBXS, 0x8000 bytes,
+  RefPack 10 FB) decompresses to 0x14000 bytes with a valid header (type 24,
+  size 0x334, bank 10); the stalled reader got 0xA16E bytes from sub_0020DA80.
+  Both caught stalls are byte-identical (same ring pointers, same 0xA16E). The
+  pool itself is fine (wrappers: sub_0020C6A0 [POOL] exhausted -- only ever
+  seen for the NULL bank pool, RECOMP_STREAM_POOL_EXTRA=N knob). bam.big
+  holds bam.xsb at +0x8680. Next: [CHUNK] log (sub_0020DA80 wrapper,
+  RECOMP_STREAM_CHECK=1: src bytes/len/result) to see which bytes the
+  decompressor was given in a stall.
 - ASYNC GPU FREEZE (map select / rules / loading 31-33%): main thread loops in
   D3D BlockOnTime: the idle wake does reach it (KeSetEvent on 0x0024CE9C,
   ~10/s) but the time it waits for never completes; 0x5C bytes are written

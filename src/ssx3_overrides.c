@@ -328,6 +328,160 @@ void sub_000E0490(void)
     strm_leave();
 }
 
+/*
+ * Streaming pool (sub_0020C740 builds it per world: three block lists of
+ * count x size from 0x3432E0.. -- 0 x 16 KB, 2 x 32 KB, 53 x 128 KB in the
+ * image -- record per block 0x18 bytes: +0 memory, +4 size, +8 used, +0x10
+ * in-use byte, +0x14 next free; list: +0 block size, +4 count, +8 free count,
+ * +0xC records, +0x10 free head). sub_0020C6A0 pops a block with no empty
+ * check: on an empty list it reads the next pointer from guest 0x14, installs
+ * that as the free head and returns 0 -- the allocation then fails (the
+ * streamer retries forever: the 43% stall) and every later pop hands out
+ * garbage (suspected source of the streamer crashes). On the Xbox page 0 is
+ * unmapped, so the title must never run out there.
+ *
+ * The wrapper logs [POOL] exhausted (list, caller) and returns 0 without
+ * touching the list. RECOMP_STREAM_POOL_EXTRA=N gives each non-empty list N
+ * more blocks when the pool is built.
+ */
+extern void sub_0020C6A0_gen(void);
+extern void sub_0020C740_gen(void);
+static volatile uint32_t s_pool_obj;
+
+void sub_0020C6A0(void)
+{
+    uint32_t list = g_ecx;
+    if (MEM32(list + 0x10) == 0) {
+        static volatile LONG n;
+        if (InterlockedIncrement(&n) <= 20) {
+            fprintf(stderr, "[POOL] exhausted: list %08X (%u x 0x%X, free %d) caller %08X t%lu\n",
+                    list, MEM32(list + 4), MEM32(list), (int)MEM32(list + 8), MEM32(g_esp),
+                    (unsigned long)GetCurrentThreadId());
+            fflush(stderr);
+        }
+        g_eax = 0;
+        g_esp += 4;
+        return;
+    }
+    sub_0020C6A0_gen();
+}
+
+void sub_0020C740(void)
+{
+    static int extra = -1;
+    if (extra < 0) {
+        const char *e = getenv("RECOMP_STREAM_POOL_EXTRA");
+        extra = e ? atoi(e) : 0;
+    }
+    if (extra > 0) {
+        static const uint32_t counts[3] = { 0x003432E0u, 0x003432ECu, 0x003432F8u };
+        static int done;
+        int k;
+        if (!done++)
+            for (k = 0; k < 3; k++)
+                if (MEM32(counts[k]))
+                    MEM32(counts[k]) += (uint32_t)extra;
+    }
+    s_pool_obj = g_ecx;
+    sub_0020C740_gen();
+    fprintf(stderr, "[POOL] streaming pool %08X: %u x 0x%X, %u x 0x%X, %u x 0x%X\n", s_pool_obj,
+            MEM32(s_pool_obj + 4), MEM32(s_pool_obj), MEM32(s_pool_obj + 0x18), MEM32(s_pool_obj + 0x14),
+            MEM32(s_pool_obj + 0x2C), MEM32(s_pool_obj + 0x28));
+    fflush(stderr);
+}
+
+/*
+ * Banks. Request entry i of the streamer owns bank i: sub_0020C9B0(i, kind)
+ * creates its pool ([pool + 0x3C + i*4]) and bank object when the request
+ * starts (entry state 1 -> 2), sub_0020D2A0(i) destroys both when the entry
+ * is unloaded (3 -> 0). A streamed asset names its bank in the low byte of
+ * its id; sub_0020D6B0(slot, type, id, size) places it and returns -1 when it
+ * cannot -- which the reader retries forever (the 43% stall: the bank's pool
+ * pointer was NULL). Logged: every failure ([BANK] place failed, with the
+ * bank's entry state) and, with RECOMP_STREAM_CHECK=1, every create/destroy.
+ */
+extern void sub_0020D6B0_gen(void);
+extern void sub_0020C9B0_gen(void);
+extern void sub_0020D2A0_gen(void);
+
+static int strm_check_on(void)
+{
+    static int on = -1;
+    if (on < 0)
+        on = getenv("RECOMP_STREAM_CHECK") != NULL || getenv("RECOMP_STREAM_SERIAL") != NULL;
+    return on;
+}
+
+void sub_0020D6B0(void)
+{
+    uint32_t S = g_ecx, slot = MEM32(g_esp + 4), type = MEM32(g_esp + 8),
+             id = MEM32(g_esp + 12), size = MEM32(g_esp + 16);
+    sub_0020D6B0_gen();
+    if (g_eax == 0xFFFFFFFFu) {
+        static volatile LONG n;
+        LONG k = InterlockedIncrement(&n);
+        if (k <= 10 || k % 1000000 == 0) {
+            uint32_t bank = id & 0xFF, mgr = S + 0x10;
+            fprintf(stderr, "[BANK] place failed #%ld t=%lu: slot %u type %u id %06X bank %u size 0x%X"
+                    " | bank entry state %u, pool %08X, bank obj %08X\n", (long)k,
+                    (unsigned long)GetTickCount(), slot, type, id >> 8, bank, size,
+                    bank < 89 ? MEM32(mgr + 0x14 + 8 * bank) : 0xFFFFFFFFu,
+                    bank != 0xFF ? MEM32(MEM32(S + 0xC) + 0x3C + bank * 4) : 0,
+                    bank != 0xFF ? MEM32(MEM32(S + 8) + bank * 4) : 0);
+            fflush(stderr);
+        }
+    }
+}
+
+void sub_0020C9B0(void)
+{
+    if (strm_check_on())
+        fprintf(stderr, "[BANK] create %u (kind %u) t=%lu\n", MEM32(g_esp + 4), MEM32(g_esp + 8),
+                (unsigned long)GetTickCount());
+    sub_0020C9B0_gen();
+}
+
+void sub_0020D2A0(void)
+{
+    if (strm_check_on())
+        fprintf(stderr, "[BANK] destroy %u t=%lu ret %08X\n", MEM32(g_esp + 4),
+                (unsigned long)GetTickCount(), MEM32(g_esp));
+    sub_0020D2A0_gen();
+}
+
+/*
+ * Chunk decompression (sub_0020DA80(dst, src, srclen) -> RefPack via
+ * sub_0017C840, returns the decompressed size). The stall's first asset
+ * header was garbage although the stream's first CBXS block decompresses to a
+ * valid one (0x14000 bytes, type 24, bank 10): the reader returned 0xA16E.
+ * With RECOMP_STREAM_CHECK=1 every call is logged ([CHUNK] src bytes, length,
+ * result, first header) so the delivered block can be found in the file.
+ */
+extern void sub_0020DA80_gen(void);
+
+void sub_0020DA80(void)
+{
+    uint32_t dst = MEM32(g_esp + 4), src = MEM32(g_esp + 8), len = MEM32(g_esp + 12);
+    int log = strm_check_on();
+    uint8_t head[16];
+    int k;
+    if (log)
+        for (k = 0; k < 16; k++)
+            head[k] = MEM8(src + k);
+    sub_0020DA80_gen();
+    if (log) {
+        static volatile LONG n;
+        if (InterlockedIncrement(&n) <= 4000) {
+            fprintf(stderr, "[CHUNK] t=%lu src %08X len 0x%X -> 0x%X | src", (unsigned long)GetTickCount(),
+                    src, len, g_eax);
+            for (k = 0; k < 16; k++)
+                fprintf(stderr, " %02X", head[k]);
+            fprintf(stderr, " | hdr %08X %08X\n", MEM32(dst), MEM32(dst + 4));
+            fflush(stderr);
+        }
+    }
+}
+
 static volatile uint32_t s_block_t;     /* BlockOnTime: time being waited for */
 static volatile DWORD    s_block_since; /* when that call began, 0 = none */
 
@@ -382,6 +536,53 @@ void ssx3_StreamDump(void)
                 slot < 4096 ? MEM32(so + 8) : 0, slot < 4096 ? MEM32(so + 12) : 0,
                 slot < 4096 ? MEM32(so + 16) : 0, slot < 4096 ? MEM32(so + 20) : 0);
         shown++;
+    }
+    {
+        /* The reader (streamer+0x300) and EA's 'STRM' stream manager behind
+         * it: handle [R+0x88] -> [h] = manager M (lock M+4, busy M+0x48,
+         * request list from M+0x6C linked by +0xC, current M+0x70; each
+         * request: +4 state, +0x10 kind, +0x14 file name, +0x118/+0x11C
+         * offset/size). */
+        uint32_t R = S + 0x300, h = MEM32(R + 0x88), M = 0, q, k;
+        fprintf(stderr, "[STREAMDUMP] reader busy %u slot %d +8C %08X +9C %08X +AC %u +B0 %08X +B4 %08X"
+                " +D0 %u | handle %08X", MEM8(R + 0x90), (int)MEM32(R + 0x94), MEM32(R + 0x8C),
+                MEM32(R + 0x9C), MEM8(R + 0xAC), MEM32(R + 0xB0), MEM32(R + 0xB4), MEM8(R + 0xD0), h);
+        if (h >= 0x10000u && h < 0x84000000u) {
+            M = MEM32(h);
+            fprintf(stderr, " -> M %08X id %u avail %d cur %08X", M, MEM32(h + 4),
+                    (int)MEM32(h + 8), MEM32(h + 12));
+        }
+        fprintf(stderr, "\n");
+        if (M >= 0x10000u && M < 0x84000000u && MEM32(M) == 0x4D525453u) {
+            for (k = 0x3C; k < 0x80; k += 0x20)
+                fprintf(stderr, "[STREAMDUMP] M+%02X %08X %08X %08X %08X %08X %08X %08X %08X\n", k,
+                        MEM32(M + k), MEM32(M + k + 4), MEM32(M + k + 8), MEM32(M + k + 12),
+                        MEM32(M + k + 16), MEM32(M + k + 20), MEM32(M + k + 24), MEM32(M + k + 28));
+            fprintf(stderr, "[STREAMDUMP] M+17C %08X %08X %08X lock %08X %08X %08X %08X\n",
+                    MEM32(M + 0x17C), MEM32(M + 0x180), MEM32(M + 0x184), MEM32(M + 4),
+                    MEM32(M + 8), MEM32(M + 12), MEM32(M + 16));
+            for (q = MEM32(M + 0x6C), k = 0; q >= 0x10000u && q < 0x84000000u && k < 24;
+                 q = MEM32(q + 0xC), k++) {
+                char nm[33];
+                int c;
+                for (c = 0; c < 32; c++) {
+                    uint8_t b = MEM8(q + 0x14 + c);
+                    if (!b) break;
+                    nm[c] = b >= 32 && b <= 126 ? (char)b : '.';
+                }
+                nm[c] = 0;
+                fprintf(stderr, "[STREAMDUMP] req %08X%s state %u kind %u +0 %08X +8 %08X off %08X size %08X"
+                        " +120 %08X %s\n", q, q == MEM32(M + 0x70) ? "*" : " ", MEM32(q + 4),
+                        MEM32(q + 0x10), MEM32(q), MEM32(q + 8), MEM32(q + 0x118), MEM32(q + 0x11C),
+                        MEM32(q + 0x120), nm);
+            }
+        }
+    }
+    if (s_pool_obj) {
+        uint32_t P = s_pool_obj;
+        fprintf(stderr, "[STREAMDUMP] pool %08X lists (count/free x size): %u/%d x %X, %u/%d x %X, %u/%d x %X\n",
+                P, MEM32(P + 4), (int)MEM32(P + 8), MEM32(P), MEM32(P + 0x18), (int)MEM32(P + 0x1C),
+                MEM32(P + 0x14), MEM32(P + 0x2C), (int)MEM32(P + 0x30), MEM32(P + 0x28));
     }
     fprintf(stderr, "[STREAMDUMP] %u busy entries; resource states 0x312AC8:", shown);
     for (i = 0; i < 64; i++)
