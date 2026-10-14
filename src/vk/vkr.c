@@ -63,6 +63,7 @@ struct VkrContext {
     VkBuffer rb;
     VkDeviceMemory rb_mem;
     uint8_t *rb_map;
+    int rb_noncoherent;             /* cached but not coherent: invalidate before reading */
 };
 
 #define CK(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) { \
@@ -78,8 +79,24 @@ static int find_mem(VkrContext *c, uint32_t bits, VkMemoryPropertyFlags want)
     return -1;
 }
 
+/* readback: the CPU reads it back. Host-visible coherent memory is write-
+ * combined (or the GPU's own BAR) on discrete GPUs -- fine for uploads, but
+ * reading 1.2 MB of it took ~10 ms per flip (240 ms/s in a race). A readback
+ * buffer takes HOST_CACHED memory, coherent if there is such a type, else
+ * non-coherent (*noncoherent = 1: invalidate before reading). */
+static int make_buffer_ex(VkrContext *c, VkDeviceSize size, VkBufferUsageFlags usage,
+                          VkBuffer *b, VkDeviceMemory *m, void **map, int readback,
+                          int *noncoherent);
+
 static int make_buffer(VkrContext *c, VkDeviceSize size, VkBufferUsageFlags usage,
                        VkBuffer *b, VkDeviceMemory *m, void **map)
+{
+    return make_buffer_ex(c, size, usage, b, m, map, 0, NULL);
+}
+
+static int make_buffer_ex(VkrContext *c, VkDeviceSize size, VkBufferUsageFlags usage,
+                          VkBuffer *b, VkDeviceMemory *m, void **map, int readback,
+                          int *noncoherent)
 {
     VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     VkMemoryRequirements mr;
@@ -88,8 +105,21 @@ static int make_buffer(VkrContext *c, VkDeviceSize size, VkBufferUsageFlags usag
     bi.size = size; bi.usage = usage; bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     CK(vkCreateBuffer(c->dev, &bi, NULL, b));
     vkGetBufferMemoryRequirements(c->dev, *b, &mr);
-    t = find_mem(c, mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-                                       | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    t = -1;
+    if (noncoherent) *noncoherent = 0;
+    if (readback) {
+        t = find_mem(c, mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                                           | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+                                           | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+        if (t < 0) {
+            t = find_mem(c, mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                                               | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+            if (t >= 0 && noncoherent) *noncoherent = 1;
+        }
+    }
+    if (t < 0)
+        t = find_mem(c, mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                                           | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (t < 0) { fprintf(stderr, "[VKR] no host-visible memory\n"); return 0; }
     ai.allocationSize = mr.size; ai.memoryTypeIndex = (uint32_t)t;
     CK(vkAllocateMemory(c->dev, &ai, NULL, m));
@@ -455,8 +485,8 @@ int vkr_set_target(VkrContext *c, uint32_t w, uint32_t h, float zmax)
     if (!make_image(c, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT, &c->depth, &c->depth_mem, &c->depth_view))
         return 0;
-    if (!make_buffer(c, (VkDeviceSize)w * h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                     &c->rb, &c->rb_mem, &map))
+    if (!make_buffer_ex(c, (VkDeviceSize)w * h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                        &c->rb, &c->rb_mem, &map, 1, &c->rb_noncoherent))
         return 0;
     c->rb_map = (uint8_t *)map;
     c->recording = c->in_pass = c->color_valid = 0;
@@ -726,6 +756,11 @@ int vkr_read_back(VkrContext *c, uint8_t *out)
     CK(vkWaitForFences(c->dev, 1, &c->fence, VK_TRUE, UINT64_MAX));
     CK(vkResetFences(c->dev, 1, &c->fence));
     CK(vkResetCommandBuffer(c->cmd, 0));
+    if (c->rb_noncoherent) {
+        VkMappedMemoryRange mr = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+        mr.memory = c->rb_mem; mr.offset = 0; mr.size = VK_WHOLE_SIZE;
+        vkInvalidateMappedMemoryRanges(c->dev, 1, &mr);
+    }
     memcpy(out, c->rb_map, (size_t)c->w * c->h * 4);
     c->buf_used = 0;
     if (c->tex_bytes > (768ull << 20))    /* nothing in flight now: drop the cache */

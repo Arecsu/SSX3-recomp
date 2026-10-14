@@ -93,6 +93,12 @@ part of the race (docs/screenshots/25).
   index) rather than by state.
 - [ ] 2.0c Flip without the readback: present the Vulkan image directly
   (swapchain on the game window) instead of copying it to guest memory.
+  Step 1 done (2026-10-14): the readback buffer is HOST_CACHED memory --
+  flip 240 -> 100-140 ms/s (~5 ms per flip). Race frame (~44 ms, 22 FPS):
+  renderer ~13 ms (texture decode+upload 100-140 ms/s for 70-100 new
+  textures/s -- the six rider shadow maps, re-rendered every frame and
+  created anew each time: update them in place; flip ~5 ms), the other
+  ~31 ms guest code + CPU vertex programs (2.0d, Phase 3).
 - [ ] 2.0d Vertex programs on the GPU (SPIR-V), the next big CPU cost.
 - [ ] 2.1 Device and presentation: D3D11 device + swap chain in the game window; flips present the front surface; vsync-paced at 60 Hz. **Done (opt-in `RECOMP_D3D_PRESENT=1`, toolkit `src/video/gpu_present.c`):** device + DISCARD swap chain on the window, each flipped frame uploaded to the back buffer and presented with vsync (`RECOMP_VSYNC=0` off). Screenshots now come from inside the process (`RECOMP_SNAP_TRIGGER`, used by `live.ps1 snap`), since PrintWindow cannot read a swap chain. Left: make it the default after a visual check; share the device with the renderer (2.2+).
 - [ ] 2.2 Surfaces: colour/depth render targets as D3D11 textures keyed by guest address and format, including **swizzled RTs** (rider shadow maps) and clear rects; Z24S8/Z16 depth, stencil.
