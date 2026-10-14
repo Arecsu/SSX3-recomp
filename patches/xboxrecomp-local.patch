@@ -3888,7 +3888,7 @@ index 8acb0af..117695d 100644
  /* Direct access, for the self-test. */
  void nv2a_vsh_set_constant(uint32_t index, const float v[4]);
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
-index 72d5131..c9940b4 100644
+index 72d5131..cd72fcb 100644
 --- a/src/kernel/xbox_memory_layout.c
 +++ b/src/kernel/xbox_memory_layout.c
 @@ -15,6 +15,10 @@
@@ -3991,7 +3991,7 @@ index 72d5131..c9940b4 100644
      for (int i = 0; i < g_fence_mirror_count; i++) {
          uint32_t dev, get_ptr;
  
-@@ -873,6 +936,56 @@ static void framebuffer_probe_tick(void)
+@@ -873,6 +936,71 @@ static void framebuffer_probe_tick(void)
      fflush(stderr);
  }
  
@@ -4017,6 +4017,17 @@ index 72d5131..c9940b4 100644
 +{
 +    volatile uint32_t *regs = (volatile uint32_t *)param;
 +    unsigned spin = 0;
++    LARGE_INTEGER freq, now, last;
++    LONGLONG idle_ticks;
++    const char *e = getenv("RECOMP_ACK_IDLE_US");
++    /* Spinning flat out kept a whole core busy for a handful of kickoffs a
++     * frame. Spin only while kickoffs are coming (within RECOMP_ACK_IDLE_US,
++     * default 2000 us, of the last one); after that sleep 1 ms at a time.
++     * The first kickoff after a quiet spell then waits up to ~1 ms (the
++     * clock runs at 1 ms resolution, timeBeginPeriod). 0 = always spin. */
++    QueryPerformanceFrequency(&freq);
++    idle_ticks = freq.QuadPart * (e ? atoi(e) : 2000) / 1000000;
++    QueryPerformanceCounter(&last);
 +
 +    while (!InterlockedCompareExchange(&g_nv2a_ack_stop, 0, 0)) {
 +        /* Only the PFB flush bit (NV2A_ACK[0]). The interrupt status
@@ -4028,8 +4039,10 @@ index 72d5131..c9940b4 100644
 +        {
 +            volatile uint32_t *r =
 +                (volatile uint32_t *)((char *)regs + NV2A_ACK[0].offset);
-+            if (*r & NV2A_ACK[0].busy_mask)
++            if (*r & NV2A_ACK[0].busy_mask) {
 +                *r &= ~NV2A_ACK[0].busy_mask;
++                QueryPerformanceCounter(&last);
++            }
 +        }
 +        for (size_t i = 0; i < sizeof(NV2A_IDLE) / sizeof(NV2A_IDLE[0]); i++) {
 +            volatile uint32_t *r =
@@ -4039,8 +4052,10 @@ index 72d5131..c9940b4 100644
 +        }
 +        if (++spin & 63)
 +            YieldProcessor();
-+        else
-+            Sleep(0);
++        else {
++            QueryPerformanceCounter(&now);
++            Sleep(idle_ticks > 0 && now.QuadPart - last.QuadPart > idle_ticks ? 1 : 0);
++        }
 +    }
 +    return 0;
 +}
@@ -4048,7 +4063,7 @@ index 72d5131..c9940b4 100644
  static DWORD WINAPI nv2a_ack_thread(LPVOID param)
  {
      volatile uint32_t *regs = (volatile uint32_t *)param;
-@@ -931,6 +1044,45 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+@@ -931,6 +1059,45 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
              static uint32_t last_put;
              DWORD now_ms = GetTickCount();
              uint32_t put = *(volatile uint32_t *)((char *)regs + NV2A_USER_DMA_PUT);
@@ -4094,7 +4109,7 @@ index 72d5131..c9940b4 100644
              if (put != last_put || (now_ms - last_put_ms) > 2000) {
                  /* Survey the segment the title just submitted, once. */
                  {
-@@ -1034,8 +1186,10 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+@@ -1034,8 +1201,10 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
              static uint32_t last_start = 0xFFFFFFFFu;
              uint32_t start = *(volatile uint32_t *)((char *)regs + 0x600800);
              if (start != last_start) {
@@ -4106,7 +4121,7 @@ index 72d5131..c9940b4 100644
                  fflush(stderr);
              }
          }
-@@ -1062,13 +1216,50 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+@@ -1062,13 +1231,50 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
      return 0;
  }
  
@@ -4157,7 +4172,7 @@ index 72d5131..c9940b4 100644
      if (g_nv2a_ack_thread) {
          fprintf(stderr, "  NV2A busy-bit ack: %zu register(s) acknowledged\n",
                  sizeof(NV2A_ACK) / sizeof(NV2A_ACK[0]));
-@@ -1790,7 +1981,14 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+@@ -1790,7 +1996,14 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
           * this on Windows needs placeholder reservations (VirtualAlloc2). */
  #ifndef _WIN32
          g_span_size = g_memory_size * (size_t)(1 + XBOX_NUM_MIRRORS);

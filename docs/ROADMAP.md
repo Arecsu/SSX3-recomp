@@ -56,7 +56,9 @@ Fix the known failures before the renderer changes so regressions stay visible.
 - [ ] Guest-thread priority scheduling in the guest lock (Xbox is single-CPU, strict priority) — only if Phase 1 bugs point at ordering.
 - [ ] Title-screen movie freeze (was filed as "USB enumeration under load": the pad is fine, the frontend's background movie stream stops -- EA STRM ring, CLAUDE.md "TITLE-SCREEN MOVIE FREEZE"); the only failure class left at 8 parallel instances (~1 in 6). Same code as the main-thread crash at 0x00173B36.
 - [ ] Crash in EA movie/stream code on the main thread (2026-10-14, 1 in 16 parallel runs): read fault at 0xE0220705, guest stack 0x00173B36 <- 0x00173C05 <- 0x001731CD <- 0x001740C4; log kept as `logs/crash_20261014_i8_stderr.txt` (Windows build dir).
-- [ ] Gate: 20/20 boot→race on both GPU modes.
+- [x] Gate: 20/20 boot→race (2026-10-14: race_par 4x5 on Vulkan, 20/20 in 3.4 min). Vulkan only by
+  decision: the software renderer stays as the fallback, the reference and for the surfaces Vulkan
+  still hands to it (shadow maps, offscreen), but is no longer gated or batch-tested.
 
 ## Phase 2 — GPU renderer (Vulkan), the big one
 
@@ -193,6 +195,8 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — GPU ack thread sleeps between kickoff bursts (RECOMP_ACK_IDLE_US, default 2000): race CPU 2.92 → 2.15 cores, FPS unchanged (55.9 vs 53.7).
+- 2026-10-14 — Phase 1 gate passed: 20/20 boot→race on Vulkan (race_par 4x5, 3.4 min); software renderer no longer gated.
 - 2026-10-14 — Playtest fixes: Options menu crash (stub for a shared `pop esi; ret 8` epilogue never restored esi -- toolkit stub generator), audio crackle (output queue cushion, wait instead of drop), Vulkan cube maps.
 - 2026-10-14 — Black race shapes FIXED (executor ARRAY_ELEMENT32, both renderers; found by a subagent on its own instance).
 - 2026-10-14 — MR !3 (Corné's vulkan-race-perf) merged: two frames in flight, pre-decoded vertex programs, LensFX nowait; race 53-58 FPS.
