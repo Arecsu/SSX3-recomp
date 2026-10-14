@@ -4,11 +4,12 @@
 # (-Dir: run in an instance directory, see live.ps1; tools\race_par.ps1 runs
 # several of these at once.)
 # -RaceSec N: after a run reaches the race, stay N s (A taps keep riding;
-# -NoTaps: ride without them, the same path every time),
+# -NoTaps: ride without them, the same path every time), -Profile samples
+# every thread for 3 s at the end (tools/profile_tally.py sums it),
 # then -Snap <file> takes a screenshot before the run is stopped -- a whole
 # single-instance check in one command.
 param([int]$Runs = 3, [int]$TimeoutSec = 480, [hashtable]$Env = @{}, [string]$Dir = "",
-      [int]$RaceSec = 0, [string]$Snap = "", [switch]$NoTaps)
+      [int]$RaceSec = 0, [string]$Snap = "", [switch]$NoTaps, [switch]$Profile)
 
 $root = if ($Dir) { $Dir } else { Split-Path -Parent $PSScriptRoot }
 $live = Join-Path $PSScriptRoot "live.ps1"
@@ -42,6 +43,12 @@ for ($i = 1; $i -le $Runs; $i++) {
             Start-Sleep -Seconds 3
         }
         if ($Snap) { & $live snap -Out $Snap -Dir $Dir }
+        if ($Profile) {
+            # Sampling profile of every thread (src/thread_dump.c: 300 x 10 ms)
+            # into stderr.txt; tools/profile_tally.py <map> stderr.txt sums it.
+            & $live dump -Mem profile -Dir $Dir | Out-Null
+            Start-Sleep -Seconds 12
+        }
     }
     if ($result -like "FAIL*") {
         # A stall: dump every thread (and the RECOMP_JOB_TRACE ring) before

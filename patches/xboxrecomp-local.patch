@@ -234,7 +234,7 @@ index a91edbe..a18661a 100644
  }
  
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
-index c65ba43..d7679a3 100644
+index c65ba43..9cb39d8 100644
 --- a/src/kernel/kernel_bridge.c
 +++ b/src/kernel/kernel_bridge.c
 @@ -1514,6 +1514,31 @@ static HANDLE bridge_resolve_handle(uint32_t token);
@@ -348,7 +348,7 @@ index c65ba43..d7679a3 100644
      BRIDGE_MEM32(XBOX_NV2A_REG_BASE + NV2A_PMC_INTR_0)   |= NV2A_PMC_INTR_PCRTC;
  
      {
-@@ -2284,6 +2345,212 @@ static void kernel_vblank_tick(void)
+@@ -2284,6 +2345,224 @@ static void kernel_vblank_tick(void)
      }
  }
  
@@ -372,6 +372,10 @@ index c65ba43..d7679a3 100644
 + * a second, and waiting out the 10 ms tick for each kept the executor waiting
 + * the whole time. */
 +static HANDLE g_nv2a_swm_event;
++/* Set when a software method has been handled (kernel_swm_done), so the
++ * waiting executor wakes at once instead of on its next Sleep(1) tick -- at
++ * ~55 traps a second that polling was a fifth of the executor's time. */
++static HANDLE g_nv2a_swm_done_event;
 +static uint32_t g_nv2a_swm_addr, g_nv2a_swm_data;
 +static volatile LONG64 g_nv2a_swm_raised_ms;
 +/* Wake-chain counters for xbox_Nv2aSwmDiag: idle wakes posted / skipped
@@ -447,8 +451,14 @@ index c65ba43..d7679a3 100644
 +        SetEvent(g_nv2a_swm_event);
 +    /* The pushbuffer stalls until the ISR has run, as on hardware. Bounded,
 +     * so a title with no ISR connected costs a moment, not the process. */
-+    while (g_nv2a_swm_pending && GetTickCount() - t0 < 500)
-+        Sleep(1);
++    if (!g_nv2a_swm_done_event)
++        g_nv2a_swm_done_event = CreateEventA(NULL, FALSE, FALSE, NULL);
++    while (g_nv2a_swm_pending && GetTickCount() - t0 < 500) {
++        if (g_nv2a_swm_done_event)
++            WaitForSingleObject(g_nv2a_swm_done_event, 2);
++        else
++            Sleep(1);
++    }
 +    {
 +        /* Rate and cost, once a second (RECOMP_SWM_STATS). */
 +        static int stats = -1;
@@ -556,12 +566,14 @@ index c65ba43..d7679a3 100644
 +        return;
 +    swm_clear_regs();
 +    InterlockedExchange(&g_nv2a_swm_pending, 0);
++    if (g_nv2a_swm_done_event)
++        SetEvent(g_nv2a_swm_done_event);
 +}
 +
  /* Run whatever is queued. Called from the timer thread, which has the guest
   * stack and TIB that a deferred routine needs. */
  static void kernel_drain_dpcs(void)
-@@ -2566,13 +2833,19 @@ static DWORD WINAPI kernel_timer_thread(LPVOID unused)
+@@ -2566,13 +2845,19 @@ static DWORD WINAPI kernel_timer_thread(LPVOID unused)
          g_fs_base = tib;
      }
  
@@ -582,7 +594,7 @@ index c65ba43..d7679a3 100644
          now = (long long)GetTickCount64();
  
          for (i = 0; i < XBOX_MAX_TIMERS; i++) {
-@@ -2635,6 +2908,23 @@ static void kernel_set_timer(uint32_t timer_va, long long due_100ns,
+@@ -2635,6 +2920,23 @@ static void kernel_set_timer(uint32_t timer_va, long long due_100ns,
      }
      LeaveCriticalSection(&g_timer_lock);
  
@@ -606,7 +618,7 @@ index c65ba43..d7679a3 100644
      /* A freshly set timer starts unsignaled, like the real KeSetTimer. */
      {
          HANDLE ev = ke_shadow_lookup(timer_va);
-@@ -2966,6 +3256,7 @@ static NTSTATUS bridge_create_file_impl(
+@@ -2966,6 +3268,7 @@ static NTSTATUS bridge_create_file_impl(
          bridge_write_handle(handle_va, h);
          bridge_write_iostatus(iostatus_va, ios.Status, (uint32_t)ios.Information);
      } else {
@@ -614,7 +626,7 @@ index c65ba43..d7679a3 100644
          bridge_write_iostatus(iostatus_va, st, 0);
      }
      return st;
-@@ -3159,6 +3450,16 @@ static void bridge_NtOpenFile(void)
+@@ -3159,6 +3462,16 @@ static void bridge_NtOpenFile(void)
   */
  recomp_func_t recomp_lookup_kernel(uint32_t xbox_va);
  
@@ -631,7 +643,7 @@ index c65ba43..d7679a3 100644
  static void deliver_one_apc(uint32_t apc_routine, uint32_t apc_context,
                              uint32_t iostatus)
  {
-@@ -3175,7 +3476,11 @@ static void deliver_one_apc(uint32_t apc_routine, uint32_t apc_context,
+@@ -3175,7 +3488,11 @@ static void deliver_one_apc(uint32_t apc_routine, uint32_t apc_context,
          g_esp -= 4; BRIDGE_MEM32(g_esp) = iostatus;
          g_esp -= 4; BRIDGE_MEM32(g_esp) = apc_context;
          g_esp -= 4; BRIDGE_MEM32(g_esp) = 0;   /* dummy return address */
@@ -644,7 +656,7 @@ index c65ba43..d7679a3 100644
          g_esp += 12;
      } else {
          uint32_t ord = 0;
-@@ -3399,6 +3704,20 @@ static int bridge_async_io_enabled(void)
+@@ -3399,6 +3716,20 @@ static int bridge_async_io_enabled(void)
      return on;
  }
  
@@ -665,7 +677,7 @@ index c65ba43..d7679a3 100644
  /* ── NtReadFile (ordinal 219, 8 args = 32 bytes) ──────── */
  static void bridge_NtReadFile(void)
  {
-@@ -3436,7 +3755,9 @@ static void bridge_NtReadFile(void)
+@@ -3436,7 +3767,9 @@ static void bridge_NtReadFile(void)
           * whatever precedes the file it actually wants, and a read that stops
           * early looks identical to one that never started -- until you can
           * see where each one landed. */
@@ -676,7 +688,7 @@ index c65ba43..d7679a3 100644
              fprintf(stderr, "  [READ] from=0x%08X ev=%08X apc=%08X @%lld want=%u got=%u st=0x%08X  %02X %02X %02X %02X\n",
                      g_xbox_kernel_caller, STACK_ARG(1), STACK_ARG(2),
                      (long long)off.QuadPart, length, got,
-@@ -4155,8 +4476,31 @@ static void bridge_KeQueryBasePriorityThread(void)
+@@ -4155,8 +4488,31 @@ static void bridge_KeQueryBasePriorityThread(void)
          XBOX_TO_NATIVE(STACK_ARG(0)));
  }
  
@@ -708,7 +720,7 @@ index c65ba43..d7679a3 100644
      g_eax = (uint32_t)xbox_KeSetBasePriorityThread(
          XBOX_TO_NATIVE(STACK_ARG(0)), (LONG)STACK_ARG(1));
  }
-@@ -4472,15 +4816,49 @@ static void bridge_KeWaitForMultipleObjects(void)
+@@ -4472,15 +4828,49 @@ static void bridge_KeWaitForMultipleObjects(void)
      }
      if (count > BRIDGE_MAXIMUM_WAIT_OBJECTS)
          count = BRIDGE_MAXIMUM_WAIT_OBJECTS;
@@ -761,7 +773,7 @@ index c65ba43..d7679a3 100644
  }
  
  #undef BRIDGE_MAXIMUM_WAIT_OBJECTS
-@@ -7349,8 +7727,7 @@ static void bridge_KeSetPriorityProcess(void)
+@@ -7349,8 +7739,7 @@ static void bridge_KeSetPriorityProcess(void)
  /* --- KeSetPriorityThread (ordinal 148, 2 args = 8 bytes) --- */
  static void bridge_KeSetPriorityThread(void)
  {
@@ -771,7 +783,7 @@ index c65ba43..d7679a3 100644
      g_eax = 0;
  }
  
-@@ -9371,14 +9748,218 @@ static int guest_cpu_enabled(void)
+@@ -9371,14 +9760,218 @@ static int guest_cpu_enabled(void)
      return g_guest_cpu_on;
  }
  
@@ -990,7 +1002,7 @@ index c65ba43..d7679a3 100644
      }
  }
  
-@@ -9391,11 +9972,78 @@ void guest_cpu_part(void)
+@@ -9391,11 +9984,78 @@ void guest_cpu_part(void)
      t_guest_thread = 0;
  }
  
@@ -1070,7 +1082,7 @@ index c65ba43..d7679a3 100644
      if (held) {                        /* let other guest threads run meanwhile */
          t_guest_held = 0;
          LeaveCriticalSection(&g_guest_cpu);
-@@ -9403,11 +10051,16 @@ static void kernel_thunk_dispatch(void)
+@@ -9403,11 +10063,16 @@ static void kernel_thunk_dispatch(void)
      t_dispatch_depth++;
      kernel_thunk_dispatch_body();
      t_dispatch_depth--;
@@ -1088,7 +1100,7 @@ index c65ba43..d7679a3 100644
          t_guest_held = 1;
      }
      (void)held;
-@@ -9449,7 +10102,7 @@ static void kernel_thunk_dispatch_body(void)
+@@ -9449,7 +10114,7 @@ static void kernel_thunk_dispatch_body(void)
          static DWORD last_summary_tick = 0;
          DWORD now = GetTickCount();
          if (last_summary_tick == 0) last_summary_tick = now;

@@ -99,6 +99,14 @@ part of the race (docs/screenshots/25).
   textures/s -- the six rider shadow maps, re-rendered every frame and
   created anew each time: update them in place; flip ~5 ms), the other
   ~31 ms guest code + CPU vertex programs (2.0d, Phase 3).
+  Step 2 done: profile (race_test -Profile) showed the main thread waiting
+  on the executor 75% of the time and the executor split between CPU vertex
+  programs (~45%), the flip wait (~28%) and software-method waits (~20%,
+  Sleep(1) polling). Now: the executor wakes by event when a trap is
+  handled, and the frame's GPU work is submitted in pieces every 64 draws
+  so the flip waits only for the tail. Race 22 -> 34-36 FPS (p50 26 ms),
+  flip ~60 ms/s. Next biggest: texture decode+upload ~200 ms/s (shadow maps
+  recreated every frame), then CPU vertex programs.
 - [ ] 2.0d Vertex programs on the GPU (SPIR-V), the next big CPU cost.
 - [ ] 2.1 Device and presentation: D3D11 device + swap chain in the game window; flips present the front surface; vsync-paced at 60 Hz. **Done (opt-in `RECOMP_D3D_PRESENT=1`, toolkit `src/video/gpu_present.c`):** device + DISCARD swap chain on the window, each flipped frame uploaded to the back buffer and presented with vsync (`RECOMP_VSYNC=0` off). Screenshots now come from inside the process (`RECOMP_SNAP_TRIGGER`, used by `live.ps1 snap`), since PrintWindow cannot read a swap chain. Left: make it the default after a visual check; share the device with the renderer (2.2+).
 - [ ] 2.2 Surfaces: colour/depth render targets as D3D11 textures keyed by guest address and format, including **swizzled RTs** (rider shadow maps) and clear rects; Z24S8/Z16 depth, stencil.
@@ -171,6 +179,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — Race 22 -> 34-36 FPS on Vulkan: trap waits by event, GPU work submitted in pieces, cached readback memory.
 - 2026-10-14 — Vulkan: target = surface with the clip as scissor, only flipped surfaces drawn on the GPU; black race shapes shown to be shared with software (not fixed). race_test -RaceSec/-NoTaps/-Snap for one-command checks.
 - 2026-10-14 — to_race.ps1 navigates from game state only; intro movies skipped by default (boot -> briefing ~25 s).
 - 2026-10-14 — Vulkan renderer (MR !1, Corné) merged with MR !2 (APC guest-CPU fix); builds and runs on Windows with the Vulkan SDK: race 22-28 FPS vs 9-12 software.

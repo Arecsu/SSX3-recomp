@@ -35,7 +35,10 @@ def main():
         for x in parts[2:]:
             if not x.startswith("0x"):
                 break
-            rips.append(int(x, 16))
+            try:
+                rips.append(int(x, 16))
+            except ValueError:      # another thread's line ran into this one
+                break
         if not rips:
             continue
         total += 1

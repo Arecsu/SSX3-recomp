@@ -25,7 +25,9 @@ struct VkrContext {
     VkQueue queue;
     uint32_t qfam;
     VkCommandPool pool;
-    VkCommandBuffer cmd;
+    VkCommandBuffer cmd;            /* the one being recorded: cmds[ncmd] */
+    VkCommandBuffer cmds[16];
+    uint32_t ncmd, draws_in_cmd;
     VkFence fence;
     VkPhysicalDeviceMemoryProperties mem;
 
@@ -404,8 +406,9 @@ VkrContext *vkr_create(void)
     pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     if (vkCreateCommandPool(c->dev, &pci, NULL, &c->pool) != VK_SUCCESS) goto fail;
     cai.commandPool = c->pool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cai.commandBufferCount = 1;
-    if (vkAllocateCommandBuffers(c->dev, &cai, &c->cmd) != VK_SUCCESS) goto fail;
+    cai.commandBufferCount = 16;
+    if (vkAllocateCommandBuffers(c->dev, &cai, c->cmds) != VK_SUCCESS) goto fail;
+    c->cmd = c->cmds[0];
     if (vkCreateFence(c->dev, &fi, NULL, &c->fence) != VK_SUCCESS) goto fail;
     if (!make_buffer(c, VKR_BUF_BYTES, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
                      | VK_BUFFER_USAGE_INDEX_BUFFER_BIT
@@ -475,6 +478,16 @@ void vkr_destroy(VkrContext *c)
 int vkr_set_target(VkrContext *c, uint32_t w, uint32_t h, float zmax)
 {
     void *map;
+    uint32_t i;
+    /* Pieces of the frame may still be on the GPU (submit_partial). */
+    vkDeviceWaitIdle(c->dev);
+    if (c->recording) {
+        vkEndCommandBuffer(c->cmd);
+        c->recording = c->in_pass = 0;
+    }
+    for (i = 0; i <= c->ncmd && i < 16; i++)
+        vkResetCommandBuffer(c->cmds[i], 0);
+    c->cmd = c->cmds[0]; c->ncmd = 0; c->draws_in_cmd = 0;
     free_target(c);
     c->w = w; c->h = h; c->zmax = zmax;
     c->sc.offset.x = c->sc.offset.y = 0; c->sc.extent.width = w; c->sc.extent.height = h;
@@ -656,6 +669,27 @@ VkrTex *vkr_tex_create(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
     return t;
 }
 
+/* Hand the frame's work to the GPU in pieces (every 64 draws), so it runs
+ * while the CPU builds the rest of the frame; the flip then waits only for
+ * the tail instead of the whole frame. Queue order keeps them in sequence;
+ * the upload buffer is not reused until the flip, so nothing is overwritten
+ * under the GPU. */
+static void submit_partial(VkrContext *c)
+{
+    VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    if (!c->recording || c->ncmd + 1 >= 16)
+        return;
+    end_pass(c);
+    if (vkEndCommandBuffer(c->cmd) != VK_SUCCESS)
+        return;
+    si.commandBufferCount = 1; si.pCommandBuffers = &c->cmd;
+    if (vkQueueSubmit(c->queue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS)
+        return;
+    c->recording = 0;
+    c->cmd = c->cmds[++c->ncmd];
+    c->draws_in_cmd = 0;
+}
+
 int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
              const uint32_t *idx, uint32_t nidx, const VkrDrawState *st)
 {
@@ -724,6 +758,8 @@ int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
     vkCmdBindVertexBuffers(c->cmd, 0, 1, &c->buf, &off);
     vkCmdBindIndexBuffer(c->cmd, c->buf, ib, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(c->cmd, nidx, 1, 0, 0, 0);
+    if (++c->draws_in_cmd >= 64)
+        submit_partial(c);
     return 1;
 }
 
@@ -755,7 +791,12 @@ int vkr_read_back(VkrContext *c, uint8_t *out)
     CK(vkQueueSubmit(c->queue, 1, &si, c->fence));
     CK(vkWaitForFences(c->dev, 1, &c->fence, VK_TRUE, UINT64_MAX));
     CK(vkResetFences(c->dev, 1, &c->fence));
-    CK(vkResetCommandBuffer(c->cmd, 0));
+    {
+        uint32_t i;                     /* the fence covers every earlier piece */
+        for (i = 0; i <= c->ncmd; i++)
+            CK(vkResetCommandBuffer(c->cmds[i], 0));
+    }
+    c->cmd = c->cmds[0]; c->ncmd = 0; c->draws_in_cmd = 0;
     if (c->rb_noncoherent) {
         VkMappedMemoryRange mr = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
         mr.memory = c->rb_mem; mr.offset = 0; mr.size = VK_WHOLE_SIZE;
