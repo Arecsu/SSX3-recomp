@@ -23,7 +23,11 @@ notes in docs/LINUX.md). Windows needs the Vulkan SDK (`winget install
 KhronosGroup.VulkanSDK`; `tools\build.bat` finds it). Race 53-58 FPS on
 Windows (p50 17 ms) vs ~12 in software -- see ROADMAP 2.0c for the steps
 (readback memory, trap waits, piecewise submits, render-target textures in
-place, vertex cache, and the vblank clock that capped it at ~43).
+place, vertex cache, and the vblank clock that capped it at ~43). MR !3
+(two frames in flight, pre-decoded vertex programs, LensFX nowait) is
+merged; `src/vk/vkr_thread.h` maps its pthread calls on Windows. The black
+shapes over the race backdrop were the executor dropping ARRAY_ELEMENT32
+(0x1808, the odd last index of an index list) -- fixed in the toolkit patch.
 
 **Roadmap:** [docs/ROADMAP.md](docs/ROADMAP.md) is the plan and tracker (phases,
 gates, checkboxes, progress log). Work from it: pick the next unchecked item of

@@ -73,25 +73,22 @@ path below (2.1) is superseded except for its presentation work.
 Windows, first numbers (RTX 4080 SUPER, one instance): title 43 FPS, race
 briefing 13, race 22-28 (software: 5-8 menus, ~3 briefing, 9-12 race).
 Per second in a race: renderer draws ~80 ms, flip readback ~240 ms; the rest
-is guest code and CPU vertex programs. Known: black polygons in the sky in
-part of the race (docs/screenshots/25).
+is guest code and CPU vertex programs. The black polygons in the sky
+(docs/screenshots/25) are fixed (2.0b, docs/screenshots/28).
 
 - [x] 2.0 Vulkan by default (2026-10-14; `RECOMP_GPU=sw` = software, also the
   fallback without a Vulkan device): race_par 6x2 with Vulkan 12/12 OK in
   1.9 min; title, menus, briefing and races checked by screenshot.
-- [ ] 2.0b Black shapes in races (docs/screenshots/25): NOT Vulkan-specific --
-  the software path shows them too (user report), so the cause is in the
-  shared executor. Reproducible: `tools\race_test.ps1 -Runs 1 -RaceSec 22
-  -NoTaps -Snap x.png -Env @{RECOMP_GPU='vk'}` (00:00:15, airborne over the
-  first jump). Ruled out: shadow receivers (RECOMP_VKR_NO_SHADOW=1), fog
-  (RECOMP_VKR_NO_FOG=1), textures not yet streamed / the DXT block cache
-  (texture bytes are loaded), sampler address modes, projective lookup.
-  Fixed on the way (Vulkan): the target was sized by the clip rectangle and
-  recreated mid-frame (now the surface, clip = scissor), and offscreen
-  640x480 surfaces were drawn into the main image (now only flipped
-  surfaces). Next: RECOMP_VKR_TRACE_AT=<ms> lists every large draw of one
-  frame -- find the draw that covers the shapes by bisecting draws (skip by
-  index) rather than by state.
+- [x] 2.0b Black shapes in races (docs/screenshots/25), FIXED 2026-10-14:
+  not Vulkan-specific (software showed them too). The executor had no case
+  for ARRAY_ELEMENT32 (0x1808), which D3D uses for the last index of an
+  odd-length index list, so every such batch lost its last vertex. The
+  mountain backdrop is a ring of 15- and 33-index strips; each lost its last
+  triangle and the black clear colour showed through. Check:
+  `tools\race_test.ps1 -Runs 1 -TimeoutSec 150 -RaceSec 22 -NoTaps -Snap x.png`
+  (airborne over the first jump, docs/screenshots/28). Diagnostics from the
+  hunt: RECOMP_VKR_TRACE_EVERY, RECOMP_VKR_TRACE_BLACK=<n> (vkr_black.txt),
+  RECOMP_VKR_TRACE_VSH=a-b.
 - [ ] 2.0c Flip without the readback: present the Vulkan image directly
   (swapchain on the game window) instead of copying it to guest memory.
   Step 1 done (2026-10-14): the readback buffer is HOST_CACHED memory --
@@ -196,6 +193,8 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — Black race shapes FIXED (executor ARRAY_ELEMENT32, both renderers; found by a subagent on its own instance).
+- 2026-10-14 — MR !3 (Corné's vulkan-race-perf) merged: two frames in flight, pre-decoded vertex programs, LensFX nowait; race 53-58 FPS.
 - 2026-10-14 — Vulkan is the default renderer (6x2 batch 12/12).
 - 2026-10-14 — Race 53-58 FPS on Vulkan: vblank/timers on the performance counter (the ~43 FPS ceiling was a ~43 Hz vblank).
 - 2026-10-14 — Race 42-45 FPS (post-transform vertex cache).
