@@ -149,7 +149,7 @@ index cd69e57..86d2428 100644
      idx = g_xa2_next_buf;
      copy_samples = (num_samples > XA2_BUF_SAMPLES) ? XA2_BUF_SAMPLES : num_samples;
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
-index c65ba43..e5ce52f 100644
+index c65ba43..dc1d21f 100644
 --- a/src/kernel/kernel_bridge.c
 +++ b/src/kernel/kernel_bridge.c
 @@ -1514,6 +1514,31 @@ static HANDLE bridge_resolve_handle(uint32_t token);
@@ -470,7 +470,33 @@ index c65ba43..e5ce52f 100644
      /* A freshly set timer starts unsignaled, like the real KeSetTimer. */
      {
          HANDLE ev = ke_shadow_lookup(timer_va);
-@@ -4472,15 +4718,49 @@ static void bridge_KeWaitForMultipleObjects(void)
+@@ -4155,8 +4401,25 @@ static void bridge_KeQueryBasePriorityThread(void)
+         XBOX_TO_NATIVE(STACK_ARG(0)));
+ }
+ 
++/* RECOMP_PRIO_TRACE=1: which thread asks for which priority (the guest lock
++ * hands the CPU over in arrival order; the Xbox runs the highest-priority
++ * ready thread). */
++static void prio_trace(const char *what, uint32_t thread, uint32_t value)
++{
++    static int on = -1;
++    if (on < 0)
++        on = getenv("RECOMP_PRIO_TRACE") != NULL;
++    if (on) {
++        fprintf(stderr, "  [PRIO] t%lu %s thread %08X value %d (caller %08X)\n",
++                (unsigned long)GetCurrentThreadId(), what, thread, (int)value,
++                g_xbox_kernel_caller);
++        fflush(stderr);
++    }
++}
++
+ static void bridge_KeSetBasePriorityThread(void)
+ {
++    prio_trace("KeSetBasePriorityThread", STACK_ARG(0), STACK_ARG(1));
+     g_eax = (uint32_t)xbox_KeSetBasePriorityThread(
+         XBOX_TO_NATIVE(STACK_ARG(0)), (LONG)STACK_ARG(1));
+ }
+@@ -4472,15 +4735,49 @@ static void bridge_KeWaitForMultipleObjects(void)
      }
      if (count > BRIDGE_MAXIMUM_WAIT_OBJECTS)
          count = BRIDGE_MAXIMUM_WAIT_OBJECTS;
@@ -523,7 +549,17 @@ index c65ba43..e5ce52f 100644
  }
  
  #undef BRIDGE_MAXIMUM_WAIT_OBJECTS
-@@ -9382,6 +9662,61 @@ void guest_cpu_join(void)
+@@ -7349,8 +7646,7 @@ static void bridge_KeSetPriorityProcess(void)
+ /* --- KeSetPriorityThread (ordinal 148, 2 args = 8 bytes) --- */
+ static void bridge_KeSetPriorityThread(void)
+ {
+-    (void)STACK_ARG(0);
+-    (void)STACK_ARG(1);
++    prio_trace("KeSetPriorityThread", STACK_ARG(0), STACK_ARG(1));
+     g_eax = 0;
+ }
+ 
+@@ -9382,6 +9678,61 @@ void guest_cpu_join(void)
      }
  }
  

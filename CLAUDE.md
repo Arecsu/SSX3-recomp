@@ -437,8 +437,17 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   i = 0x171B2880 -> read of [this + i*24 + 0x3EC] faults. The streamer's
   chunk list holds garbage. Same object as the stalls (resources 0/40 stuck
   "streaming", sub_0020DB60 polling). Callers: sub_0020BB10 / BE60 / C120 /
-  C290. Next: find who writes the chunk indices (watchpoint on the list once
-  located) and whether a second thread touches the object.
+  C290. RECOMP_STREAM_CHECK=1 (sub_0020CAB0 wrapper) logs a bad index with
+  the guest call chain and the object and answers "not ready"; in the
+  following 6-run round it never fired (no crashes; 2 load stalls, loader in
+  sub_0020C290 <- sub_0020AF20). Timing-sensitive (more frequent with
+  RECOMP_BLOCK_TRACE's logging), both GPU modes.
+  Hypothesis being tested: thread priorities. RECOMP_PRIO_TRACE=1 shows XAPI
+  thread start (0x00182719) calling KeSetBasePriorityThread(current, n): one
+  thread +16 (time-critical), another 2 -> 1 -> 0 during the load. The guest
+  lock ignores priority (arrival order); KeSetPriorityThread is a no-op and
+  KeGetCurrentThread returns 0. On the Xbox the highest-priority ready thread
+  always runs, so lower ones never see its updates half done.
 - ASYNC GPU FREEZE (map select / rules / loading 31-33%): main thread loops in
   D3D BlockOnTime: the idle wake does reach it (KeSetEvent on 0x0024CE9C,
   ~10/s) but the time it waits for never completes; 0x5C bytes are written

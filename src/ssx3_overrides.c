@@ -172,6 +172,50 @@ void sub_0017BDA0(void)
 }
 
 /*
+ * World streamer slot check (sub_0020CAB0(i), thiscall: ecx = streamer,
+ * [esp+4] = slot): returns [this + i*24 + 0x3EC] == 3. Crashes 3 runs in 6
+ * (with RECOMP_BLOCK_TRACE on) with i = 0x171B2880 -- a garbage slot index
+ * from the streamer's own lists; the 43% load stall is the same object.
+ * RECOMP_STREAM_CHECK=1: an index past MAX_SLOTS is logged with the guest
+ * call chain and the object, and answered "not ready" (0) instead of read.
+ */
+#define STREAM_MAX_SLOTS 4096u
+extern void sub_0020CAB0_gen(void);
+
+void sub_0020CAB0(void)
+{
+    static int on = -1;
+    static volatile LONG reports;
+    uint32_t i = MEM32(g_esp + 4), self = g_ecx;
+    if (on < 0)
+        on = getenv("RECOMP_STREAM_CHECK") != NULL;
+    if (on && i >= STREAM_MAX_SLOTS) {
+        if (InterlockedIncrement(&reports) <= 5) {
+            int k;
+            fprintf(stderr, "[STREAM] bad slot %08X (this %08X) t%lu | ret", i, self,
+                    (unsigned long)GetCurrentThreadId());
+            for (k = 0; k < 24; k++) {          /* return addresses into .text */
+                uint32_t w = MEM32(g_esp + 4 * k);
+                if (w >= 0x00011000u && w < 0x00280000u)
+                    fprintf(stderr, " %08X", w);
+            }
+            fprintf(stderr, "\n[STREAM] regs eax %08X ebx %08X edx %08X esi %08X edi %08X ebp %08X\n",
+                    g_eax, g_ebx, g_edx, g_esi, g_edi, g_ebp);
+            for (k = 0; k < 0x400; k += 32)
+                fprintf(stderr, "[STREAM] +%03X %08X %08X %08X %08X %08X %08X %08X %08X\n", k,
+                        MEM32(self + k), MEM32(self + k + 4), MEM32(self + k + 8),
+                        MEM32(self + k + 12), MEM32(self + k + 16), MEM32(self + k + 20),
+                        MEM32(self + k + 24), MEM32(self + k + 28));
+            fflush(stderr);
+        }
+        g_eax = 0;
+        g_esp += 8;                             /* ret 4 */
+        return;
+    }
+    sub_0020CAB0_gen();
+}
+
+/*
  * D3D BlockOnTime (sub_00234BE0(time, flags), stdcall-ish: args at esp+4/+8),
  * wrapped for RECOMP_BLOCK_TRACE=1: logs the time waited for against the GPU
  * fence, the device's current time, its write pointer and PUT/GET -- once
