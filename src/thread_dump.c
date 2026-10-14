@@ -125,6 +125,7 @@ static char s_mem_spec[512];  /* from the trigger file, if it had content */
 
 static unsigned long g_cpu_tid, g_cpu_ms;
 static long g_cpu_waiting;
+static char g_draw_info[200];
 
 static void td_dump(const char *why)
 {
@@ -143,7 +144,9 @@ static void td_dump(const char *why)
      * holds), so the stacks no longer showed the hang. */
     {
         extern void xbox_GuestCpuInfo(unsigned long *, unsigned long *, long *);
+        extern void xbox_Nv2aDrawInfo(char *, size_t);
         xbox_GuestCpuInfo(&g_cpu_tid, &g_cpu_ms, &g_cpu_waiting);
+        xbox_Nv2aDrawInfo(g_draw_info, sizeof g_draw_info);
     }
 
     snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
@@ -232,6 +235,7 @@ static void td_dump(const char *why)
     }
     fprintf(stderr, "[GUESTCPU] held by thread %lu for %lu ms, %ld waiting (at the start of the dump)\n",
             g_cpu_tid, g_cpu_ms, g_cpu_waiting);
+    fprintf(stderr, "[GPUDRAW] %s\n", g_draw_info);
     {
         /* EA job-queue ring (RECOMP_JOB_TRACE), streamer and STRM traces
          * (ssx3_overrides.c). After the snapshot: they take the stderr lock. */

@@ -149,7 +149,7 @@ index cd69e57..86d2428 100644
      idx = g_xa2_next_buf;
      copy_samples = (num_samples > XA2_BUF_SAMPLES) ? XA2_BUF_SAMPLES : num_samples;
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
-index c65ba43..f854376 100644
+index c65ba43..33b5500 100644
 --- a/src/kernel/kernel_bridge.c
 +++ b/src/kernel/kernel_bridge.c
 @@ -1514,6 +1514,31 @@ static HANDLE bridge_resolve_handle(uint32_t token);
@@ -521,7 +521,39 @@ index c65ba43..f854376 100644
      /* A freshly set timer starts unsignaled, like the real KeSetTimer. */
      {
          HANDLE ev = ke_shadow_lookup(timer_va);
-@@ -4155,8 +4445,31 @@ static void bridge_KeQueryBasePriorityThread(void)
+@@ -3399,6 +3689,20 @@ static int bridge_async_io_enabled(void)
+     return on;
+ }
+ 
++/* RECOMP_IO_LOG=1: the high-volume progress lines -- every file read
++ * ([READ]), the kernel-call summary every 2 s, the GPU draw counter and every
++ * flip. Off by default: they are thousands of synchronous stderr writes per
++ * run, and under host load a single one took over a second while the writer
++ * held the guest CPU or the GPU executor (measured: [SLOWDRAW] on exactly the
++ * draws that print the counter). */
++int xbox_io_log(void)
++{
++    static int on = -1;
++    if (on < 0)
++        on = getenv("RECOMP_IO_LOG") != NULL;
++    return on;
++}
++
+ /* ── NtReadFile (ordinal 219, 8 args = 32 bytes) ──────── */
+ static void bridge_NtReadFile(void)
+ {
+@@ -3436,7 +3740,9 @@ static void bridge_NtReadFile(void)
+          * whatever precedes the file it actually wants, and a read that stops
+          * early looks identical to one that never started -- until you can
+          * see where each one landed. */
+-        if (poff)
++        if (!xbox_io_log())
++            ;
++        else if (poff)
+             fprintf(stderr, "  [READ] from=0x%08X ev=%08X apc=%08X @%lld want=%u got=%u st=0x%08X  %02X %02X %02X %02X\n",
+                     g_xbox_kernel_caller, STACK_ARG(1), STACK_ARG(2),
+                     (long long)off.QuadPart, length, got,
+@@ -4155,8 +4461,31 @@ static void bridge_KeQueryBasePriorityThread(void)
          XBOX_TO_NATIVE(STACK_ARG(0)));
  }
  
@@ -553,7 +585,7 @@ index c65ba43..f854376 100644
      g_eax = (uint32_t)xbox_KeSetBasePriorityThread(
          XBOX_TO_NATIVE(STACK_ARG(0)), (LONG)STACK_ARG(1));
  }
-@@ -4472,15 +4785,49 @@ static void bridge_KeWaitForMultipleObjects(void)
+@@ -4472,15 +4801,49 @@ static void bridge_KeWaitForMultipleObjects(void)
      }
      if (count > BRIDGE_MAXIMUM_WAIT_OBJECTS)
          count = BRIDGE_MAXIMUM_WAIT_OBJECTS;
@@ -606,7 +638,7 @@ index c65ba43..f854376 100644
  }
  
  #undef BRIDGE_MAXIMUM_WAIT_OBJECTS
-@@ -7349,8 +7696,7 @@ static void bridge_KeSetPriorityProcess(void)
+@@ -7349,8 +7712,7 @@ static void bridge_KeSetPriorityProcess(void)
  /* --- KeSetPriorityThread (ordinal 148, 2 args = 8 bytes) --- */
  static void bridge_KeSetPriorityThread(void)
  {
@@ -616,7 +648,7 @@ index c65ba43..f854376 100644
      g_eax = 0;
  }
  
-@@ -9371,17 +9717,181 @@ static int guest_cpu_enabled(void)
+@@ -9371,17 +9733,181 @@ static int guest_cpu_enabled(void)
      return g_guest_cpu_on;
  }
  
@@ -799,7 +831,7 @@ index c65ba43..f854376 100644
  void guest_cpu_part(void)
  {
      if (t_guest_held) {
-@@ -9391,11 +9901,60 @@ void guest_cpu_part(void)
+@@ -9391,11 +9917,60 @@ void guest_cpu_part(void)
      t_guest_thread = 0;
  }
  
@@ -861,7 +893,7 @@ index c65ba43..f854376 100644
      if (held) {                        /* let other guest threads run meanwhile */
          t_guest_held = 0;
          LeaveCriticalSection(&g_guest_cpu);
-@@ -9403,11 +9962,16 @@ static void kernel_thunk_dispatch(void)
+@@ -9403,11 +9978,16 @@ static void kernel_thunk_dispatch(void)
      t_dispatch_depth++;
      kernel_thunk_dispatch_body();
      t_dispatch_depth--;
@@ -879,6 +911,15 @@ index c65ba43..f854376 100644
          t_guest_held = 1;
      }
      (void)held;
+@@ -9449,7 +10029,7 @@ static void kernel_thunk_dispatch_body(void)
+         static DWORD last_summary_tick = 0;
+         DWORD now = GetTickCount();
+         if (last_summary_tick == 0) last_summary_tick = now;
+-        if (now - last_summary_tick >= 2000 && g_kernel_call_count > 200) {
++        if (now - last_summary_tick >= 2000 && g_kernel_call_count > 200 && xbox_io_log()) {
+             fprintf(stderr, "  [KERNEL] summary: %lld total calls, latest ordinal %u (slot %d) esp=0x%08X\n",
+                     g_kernel_call_count, ordinal, slot, g_esp);
+             /* And which ones, ranked. "Latest" names whatever the sample
 diff --git a/src/kernel/kernel_hal.c b/src/kernel/kernel_hal.c
 index 1ad4fff..7deb391 100644
 --- a/src/kernel/kernel_hal.c
@@ -934,7 +975,7 @@ index 9760735..4717e28 100644
  {
      /* Creating the shadow here is not required -- Enter does it -- but doing
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index c65632c..b9dcf23 100644
+index c65632c..48eb7ae 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
 @@ -240,10 +240,13 @@ typedef struct {
@@ -1394,7 +1435,7 @@ index c65632c..b9dcf23 100644
          if (InterlockedDecrement(&s_pool.pending) == 0)
              SetEvent(s_pool.done);
      }
-@@ -1985,6 +2279,89 @@ static void xf_rows_parallel(const XfTri *T, XfCount *total)
+@@ -1985,6 +2279,94 @@ static void xf_rows_parallel(const XfTri *T, XfCount *total)
  }
  #endif
  
@@ -1402,6 +1443,10 @@ index c65632c..b9dcf23 100644
 +static struct XfQueued *s_queue;
 +static int  s_queue_n, s_defer;
 +static long s_queue_px;
++/* The draw in progress (draw_primitive, xbox_Nv2aDrawInfo). */
++static volatile DWORD s_draw_t0;
++static volatile uint32_t s_draw_no, s_draw_prim, s_draw_n, s_draw_cw, s_draw_ch, s_draw_px;
++
 +
 +/* Flush accounting for RECOMP_EXEC_STATS: how much of the raster work went
 + * through the pool, and in how many flushes. */
@@ -1422,6 +1467,7 @@ index c65632c..b9dcf23 100644
 +
 +    if (!s_queue_n)
 +        return;
++    s_draw_px = (uint32_t)s_queue_px;
 +#if defined(_WIN32)
 +    n = raster_pool_size();
 +#endif
@@ -1484,7 +1530,7 @@ index c65632c..b9dcf23 100644
  static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
                                 const Nv2aVshOutput *vc)
  {
-@@ -1994,10 +2371,17 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
+@@ -1994,10 +2376,17 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
      const float *a, *b, *c;
      float area, su = 1.0f, sv = 1.0f;
      int k;
@@ -1503,7 +1549,7 @@ index c65632c..b9dcf23 100644
      memset(&T, 0, sizeof T);
      T.mem = (uint8_t *)xbox_GetMemoryOffset();
      T.bpp = surface_bpp();
-@@ -2070,6 +2454,11 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
+@@ -2070,6 +2459,11 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
      s_gpu.xf_drawn++;
      T.inv_area = 1.0f / area;
  
@@ -1515,7 +1561,7 @@ index c65632c..b9dcf23 100644
      xf_rows_parallel(&T, &cnt);
      s_gpu.xf_depth_fail += cnt.depth_fail;
      s_gpu.xf_pixels += cnt.pixels;
-@@ -2088,24 +2477,22 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
+@@ -2088,24 +2482,22 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
   * race frame's triangles went this way.
   *
   * Clipping has to happen in clip space, but the D3D epilogue has already
@@ -1553,7 +1599,7 @@ index c65632c..b9dcf23 100644
  static void xf_lerp(const Nv2aVshOutput *a, const Nv2aVshOutput *b, float t,
                      Nv2aVshOutput *out)
  {
-@@ -2116,52 +2503,74 @@ static void xf_lerp(const Nv2aVshOutput *a, const Nv2aVshOutput *b, float t,
+@@ -2116,52 +2508,74 @@ static void xf_lerp(const Nv2aVshOutput *a, const Nv2aVshOutput *b, float t,
          po[i] = pa[i] + (pb[i] - pa[i]) * t;
  }
  
@@ -1661,7 +1707,7 @@ index c65632c..b9dcf23 100644
  }
  
  static Nv2aVshOutput s_xf[NV_MAX_INDICES];
-@@ -2171,18 +2580,288 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
+@@ -2171,18 +2585,288 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
      float in[NV2A_VSH_INPUTS][4];
      uint32_t a;
  
@@ -1952,7 +1998,7 @@ index c65632c..b9dcf23 100644
      s_gpu.batches_program++;
      s_gpu.verts_program += n;
      if (s_gpu.blend_enable) {
-@@ -2202,8 +2881,11 @@ static void raster_batch_program(void)
+@@ -2202,8 +2886,11 @@ static void raster_batch_program(void)
              left = t ? atoi(t) : 0;
          }
          /* Spread out: one every 20000 program batches, so a run that spends
@@ -1966,7 +2012,62 @@ index c65632c..b9dcf23 100644
              float in[4];
              left--;
              fprintf(stderr, "[VTRACE] prim %u n %u idx %u %u %u\n", s_gpu.prim,
-@@ -2814,9 +3496,11 @@ static void tex_stage_method(uint32_t method, uint32_t param)
+@@ -2409,7 +3096,45 @@ static void frame_trace_flip(void)
+     }
+ }
+ 
++/* The draw in progress, for hang reports (xbox_Nv2aDrawInfo, printed with a
++ * title's thread dump) and [SLOWDRAW] (any draw over a second): a frame that
++ * never finishes because one draw rasterises for minutes looks, from the
++ * title's side, exactly like a GPU that stopped. */
++static void draw_primitive_body(void);
++int xbox_io_log(void);
++
++void xbox_Nv2aDrawInfo(char *buf, size_t n)
++{
++    DWORD t0 = s_draw_t0;
++    if (!t0) {
++        snprintf(buf, n, "no draw in progress (%u draws so far)", s_gpu.draws);
++        return;
++    }
++    snprintf(buf, n, "draw #%u running %lu ms: prim %u, %u indices, clip %ux%u, %u px queued",
++             s_draw_no, (unsigned long)(GetTickCount() - t0), s_draw_prim, s_draw_n,
++             s_draw_cw, s_draw_ch, s_draw_px);
++}
++
+ static void draw_primitive(void)
++{
++    DWORD t0 = GetTickCount(), dt;
++    s_draw_no = s_gpu.draws + 1; s_draw_prim = s_gpu.prim; s_draw_n = s_gpu.idx_count;
++    s_draw_cw = s_gpu.clip_w; s_draw_ch = s_gpu.clip_h; s_draw_px = 0;
++    s_draw_t0 = t0 ? t0 : 1;
++    draw_primitive_body();
++    s_draw_t0 = 0;
++    dt = GetTickCount() - t0;
++    if (dt >= 1000) {
++        static int said;
++        if (said++ < 20) {
++            fprintf(stderr, "  [SLOWDRAW] draw #%u took %lu ms: prim %u, %u indices, clip %ux%u, %u px queued\n",
++                    s_draw_no, (unsigned long)dt, s_draw_prim, s_draw_n, s_draw_cw, s_draw_ch, s_draw_px);
++            fflush(stderr);
++        }
++    }
++}
++
++static void draw_primitive_body(void)
+ {
+     float v[4];
+     uint32_t i;
+@@ -2417,7 +3142,7 @@ static void draw_primitive(void)
+     if (!s_gpu.prim || !s_gpu.idx_count)
+         return;
+     s_gpu.draws++;
+-    if ((s_gpu.draws % 200) == 0)
++    if ((s_gpu.draws % 200) == 0 && xbox_io_log())
+         fprintf(stderr, "  [GPU] draw #%u\n", s_gpu.draws);
+     s_gpu.verts += s_gpu.idx_count;
+ 
+@@ -2814,9 +3539,11 @@ static void tex_stage_method(uint32_t method, uint32_t param)
          /* A DMA-object offset like a surface's: physical, reached through
           * the contiguous window when it names contiguous memory. */
          t->offset = dma_resolve(param);
@@ -1978,7 +2079,7 @@ index c65632c..b9dcf23 100644
          t->cube = (param >> 2) & 1;
          t->levels = (param >> 16) & 0xF;
          /* A swizzled texture carries its own dimensions here, as log2 in
-@@ -2832,8 +3516,8 @@ static void tex_stage_method(uint32_t method, uint32_t param)
+@@ -2832,8 +3559,8 @@ static void tex_stage_method(uint32_t method, uint32_t param)
          t->palette = dma_resolve(param & ~0x3Fu);
          break;
      case NV097_SET_TEXTURE_ADDRESS:
@@ -1989,7 +2090,7 @@ index c65632c..b9dcf23 100644
          t->addr_u =  param        & 0xF;
          t->addr_v = (param >>  8) & 0xF;
          break;
-@@ -2847,6 +3531,9 @@ static void tex_stage_method(uint32_t method, uint32_t param)
+@@ -2847,6 +3574,9 @@ static void tex_stage_method(uint32_t method, uint32_t param)
      case 0x1B14:                                  /* SET_TEXTURE_FILTER */
          t->filter = param;
          break;
@@ -1999,7 +2100,7 @@ index c65632c..b9dcf23 100644
      default:
          break;
      }
-@@ -2910,10 +3597,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -2910,10 +3640,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
          return;
      }
      if (subch != 0) {                      /* 3D class lives on subchannel 0 */
@@ -2019,7 +2120,7 @@ index c65632c..b9dcf23 100644
      case NV097_SET_SURFACE_CLIP_HORIZONTAL:
          s_gpu.clip_x = param & 0xFFFF;
          s_gpu.clip_w = (param >> 16) & 0xFFFF;
-@@ -2925,6 +3620,14 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -2925,6 +3663,14 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
      case NV097_SET_SURFACE_FORMAT:
          s_gpu.format = param;
          break;
@@ -2034,7 +2135,7 @@ index c65632c..b9dcf23 100644
      case NV097_SET_SURFACE_PITCH:
          s_gpu.pitch = param & 0xFFFF;      /* colour pitch; zeta is the top half */
          break;
-@@ -3179,8 +3882,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3179,8 +3925,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
      case 0x030C: s_gpu.depth_test = param; break; /* DEPTH_TEST_ENABLE */
      case 0x0354: s_gpu.depth_func = param; break; /* DEPTH_FUNC */
      case 0x035C: s_gpu.depth_mask = param; break; /* DEPTH_MASK */
@@ -2053,7 +2154,7 @@ index c65632c..b9dcf23 100644
  
      default:
          if (method >= 0x0260 && method < 0x0280) {         /* ALPHA_ICW(i) */
-@@ -3220,6 +3933,21 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3220,6 +3976,21 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
              nv2a_vsh_constant_component(58, (method - 0x0AF0) / 4, param);
              break;
          }
@@ -2075,7 +2176,7 @@ index c65632c..b9dcf23 100644
          if (method >= 0x0B00 && method < 0x0B80) {    /* TRANSFORM_PROGRAM(i) */
              nv2a_vsh_program_word(param);
              break;
-@@ -3406,6 +4134,7 @@ static void peek_chain(void)
+@@ -3406,6 +4177,7 @@ static void peek_chain(void)
  
  void nv2a_pb_exec_report(void)
  {
@@ -2083,7 +2184,7 @@ index c65632c..b9dcf23 100644
      peek_addresses();
      peek_chain();
      if (getenv("RECOMP_FIND_NAN")) {
-@@ -3534,7 +4263,7 @@ void nv2a_pb_exec_report(void)
+@@ -3534,7 +4306,7 @@ void nv2a_pb_exec_report(void)
               * is using. */
              union { uint32_t u; float f; } v;
              v.u = s_unhandled[i].last_param;
@@ -2325,7 +2426,7 @@ index 7fae74c..c7a2e88 100644
  {
      static int dump = -1;
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
-index 72d5131..1913972 100644
+index 72d5131..2da98ac 100644
 --- a/src/kernel/xbox_memory_layout.c
 +++ b/src/kernel/xbox_memory_layout.c
 @@ -191,11 +191,11 @@ static const struct { uint32_t offset; uint32_t busy_mask; } NV2A_ACK[] = {
@@ -2520,7 +2621,19 @@ index 72d5131..1913972 100644
              if (put != last_put || (now_ms - last_put_ms) > 2000) {
                  /* Survey the segment the title just submitted, once. */
                  {
-@@ -1062,13 +1210,50 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+@@ -1034,8 +1182,10 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+             static uint32_t last_start = 0xFFFFFFFFu;
+             uint32_t start = *(volatile uint32_t *)((char *)regs + 0x600800);
+             if (start != last_start) {
++                extern int xbox_io_log(void);
+                 last_start = start;
+-                fprintf(stderr, "  [NV2A] PCRTC_START = 0x%08X\n", start);
++                if (xbox_io_log())
++                    fprintf(stderr, "  [NV2A] PCRTC_START = 0x%08X\n", start);
+                 fflush(stderr);
+             }
+         }
+@@ -1062,13 +1212,50 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
      return 0;
  }
  
