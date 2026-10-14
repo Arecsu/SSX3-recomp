@@ -511,6 +511,23 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   holds bam.xsb at +0x8680. Next: [CHUNK] log (sub_0020DA80 wrapper,
   RECOMP_STREAM_CHECK=1: src bytes/len/result) to see which bytes the
   decompressor was given in a stall.
+  FOUND WHERE (2026-10-14, [CHUNK] log, good vs stalled run): the reader's
+  chunks 1-5 are identical in both (xsb +0x1390000..+0x13B0000; block 5 at
+  +0x13B0000 is the 'CEND' block that ends the ASKY request). Next, the good
+  run gets the next request's data (xsb +0x0, +0x8000: bank 0 = TRAN); the
+  stalled run gets xsb +0x13B8000, +0x13C0000 -- the blocks that merely
+  follow on disk. EA's STRM manager read the next request at the OLD file
+  position (a seek was skipped). EA's file layer sub_0017A5A0 (file table
+  [0x39E884], 20-byte entries: +0 handle, +4 cached position, +8 size, +0xC
+  archive base) seeks only when it thinks the position differs; for a file
+  inside an archive (base != 0) it compares base - cached with the wanted
+  position, so for position 0 the seek is skipped whenever cached == base --
+  suspect a stale cached position. RESUME HERE: [EAREAD] (sub_0017A5A0
+  wrapper: fd, pos, len, cached, base, result) and [STRM] (sub_00177990
+  request start: request, pos, tag, open file) are built and log with
+  RECOMP_STREAM_CHECK=1; run `tools\race_test.ps1 -Runs 12 -Env
+  @{RECOMP_STREAM_CHECK='1'}` until a stall (~1 in 10) and compare its
+  EAREAD/STRM sequence around the ASKY CEND with a good run's.
 - ASYNC GPU FREEZE (map select / rules / loading 31-33%): main thread loops in
   D3D BlockOnTime: the idle wake does reach it (KeSetEvent on 0x0024CE9C,
   ~10/s) but the time it waits for never completes; 0x5C bytes are written

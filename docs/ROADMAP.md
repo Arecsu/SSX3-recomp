@@ -131,6 +131,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — 43% stall traced to EA's STRM manager reading the next request at the old file position (skipped seek after a 'CEND'); [EAREAD]/[STRM] logging built, next: catch a stall with it (resume note in CLAUDE.md).
 - 2026-10-14 — 43% stall = the first world-stream block decodes to a garbage asset header (reader retries forever); not pool exhaustion, not a thread race. Bank/pool/chunk wrappers added.
 - 2026-10-14 — Async GPU freeze caught and worked around (fence-wake rescue watchdog); streamer stall traced to EA's STRM stream manager never delivering the world stream (suspected lost wake-up). race_test 8/10 (both failures streamer stalls).
 - 2026-10-14 — Streamer: two-thread race ruled out; [STREAMDUMP] in thread dumps; "43%" split into streamer stall vs GPU freeze. race_test 6/6 then.

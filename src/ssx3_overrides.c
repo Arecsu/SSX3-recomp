@@ -482,6 +482,55 @@ void sub_0020DA80(void)
     }
 }
 
+/*
+ * EA file layer and STRM request start, logged with RECOMP_STREAM_CHECK=1.
+ * In a stall the world stream continued past the 'CEND' block that ends a
+ * request (xsb +0x13B8000.. instead of the next request's +0x0): the next
+ * request was read at the old file position. sub_0017A5A0(~fd, ?, buf, pos,
+ * len) reads through EA's file table [0x39E884] (20-byte entries: +0 handle,
+ * +4 cached position, +8 size, +0xC base in the archive) and seeks only when
+ * it thinks it must; sub_00177990 (esi = manager) starts the next request.
+ */
+extern void sub_0017A5A0_gen(void);
+extern void sub_00177990_gen(void);
+
+void sub_0017A5A0(void)
+{
+    uint32_t fd = ~MEM32(g_esp + 4), pos = MEM32(g_esp + 16), len = MEM32(g_esp + 20);
+    uint32_t tab = MEM32(0x0039E884u), ent = tab + fd * 20;
+    uint32_t cached = tab ? MEM32(ent + 4) : 0, base = tab ? MEM32(ent + 12) : 0;
+    int log = strm_check_on() && tab && fd < 64;
+    sub_0017A5A0_gen();
+    if (log) {
+        static volatile LONG n;
+        if (InterlockedIncrement(&n) <= 20000) {
+            fprintf(stderr, "[EAREAD] t=%lu t%lu fd %u pos 0x%X len 0x%X | cached 0x%X base 0x%X -> got 0x%X"
+                    " cached now 0x%X\n", (unsigned long)GetTickCount(), (unsigned long)GetCurrentThreadId(),
+                    fd, pos, len, cached, base, g_eax, MEM32(ent + 4));
+            fflush(stderr);
+        }
+    }
+}
+
+void sub_00177990(void)
+{
+    uint32_t M = g_esi, req = MEM32(M + 0x70);
+    if (strm_check_on()) {
+        char a[40], b[40];
+        int c;
+        for (c = 0; c < 39; c++) { uint8_t x = req ? MEM8(req + 0x14 + c) : 0; if (!x) break; a[c] = (char)x; }
+        a[c] = 0;
+        for (c = 0; c < 39; c++) { uint8_t x = MEM8(M + 0x7C + c); if (!x) break; b[c] = (char)x; }
+        b[c] = 0;
+        fprintf(stderr, "[STRM] t=%lu start: M %08X busy %u req %08X state %u pos 0x%X tag %08X '%s'"
+                " | open fd %08X '%s' pos 0x%X\n", (unsigned long)GetTickCount(), M, MEM32(M + 0x48),
+                req, req ? MEM32(req + 4) : 0, req ? MEM32(req + 0x118) : 0, req ? MEM32(req + 0x11C) : 0,
+                a, MEM32(M + 0x17C), b, MEM32(M + 0x180));
+        fflush(stderr);
+    }
+    sub_00177990_gen();
+}
+
 static volatile uint32_t s_block_t;     /* BlockOnTime: time being waited for */
 static volatile DWORD    s_block_since; /* when that call began, 0 = none */
 
