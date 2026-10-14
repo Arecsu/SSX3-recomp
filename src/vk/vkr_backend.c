@@ -51,6 +51,24 @@ static int is_main(const Nv2aTarget *t)
     return s_px != NULL;
 }
 
+static void fill_state(const Nv2aTarget *t, VkrDrawState *st)
+{
+    st->depth_test = t->depth_test; st->depth_write = t->depth_write;
+    st->depth_func = t->depth_func;
+    st->blend_enable = t->blend_enable;
+    st->blend_src = t->blend_sfactor; st->blend_dst = t->blend_dfactor;
+    st->blend_eq = t->blend_equation;
+    st->blend_color[0] = (float)((t->blend_color >> 16) & 0xFF) / 255.0f;
+    st->blend_color[1] = (float)((t->blend_color >> 8) & 0xFF) / 255.0f;
+    st->blend_color[2] = (float)(t->blend_color & 0xFF) / 255.0f;
+    st->blend_color[3] = (float)(t->blend_color >> 24) / 255.0f;
+    st->write_mask = ((t->color_mask >> 16) & 0xFF ? 1u : 0u) | ((t->color_mask >> 8) & 0xFF ? 2u : 0u)
+                   | (t->color_mask & 0xFF ? 4u : 0u) | (t->color_mask >> 24 ? 8u : 0u);
+    st->alpha_func = t->alpha_test ? t->alpha_func : 0;
+    st->alpha_ref = t->alpha_ref & 0xFF;
+    st->tex_scale[0] = st->tex_scale[1] = 1.0f;
+}
+
 static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, uint32_t n)
 {
     static uint32_t *idx;
@@ -102,8 +120,26 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
         return 1;
     /* The vertex program output is relative to the surface origin, and the
      * target is the clip rectangle, which on a frame buffer is the surface. */
-    vkr_draw(s_vk, (const VkrVertex *)v, n, idx, k, t->depth_test, t->depth_write,
-             t->depth_func);
+    {
+        VkrDrawState st;
+        Nv2aTexInfo ti;
+        VkrTex *tex = NULL;
+        memset(&st, 0, sizeof st);
+        fill_state(t, &st);
+        if (nv2a_exec_tex_info(0, &ti)) {
+            tex = vkr_tex_find(s_vk, ti.hash);
+            if (!tex) {
+                uint32_t *px = (uint32_t *)malloc((size_t)ti.width * ti.height * 4);
+                if (px && nv2a_exec_tex_decode(0, px))
+                    tex = vkr_tex_create(s_vk, ti.hash, ti.width, ti.height, px);
+                free(px);
+            }
+            st.addr_u = ti.addr_u; st.addr_v = ti.addr_v; st.linear = ti.linear_filter;
+            st.tex_scale[0] = ti.normalised ? 1.0f : 1.0f / (float)ti.width;
+            st.tex_scale[1] = ti.normalised ? 1.0f : 1.0f / (float)ti.height;
+        }
+        vkr_draw(s_vk, (const VkrVertex *)v, n, idx, k, &st, tex);
+    }
     s_dirty = 1;
     return 1;
 }
