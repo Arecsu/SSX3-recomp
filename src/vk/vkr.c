@@ -38,6 +38,7 @@ struct VkrContext {
     struct SamplerEntry { uint32_t key; VkSampler s; } samplers[16];
     int nsamplers;
 
+    VkrTex *white;                  /* 1x1 fallback for unbound stages */
     VkrTex **texs;                  /* every texture, for lookup and teardown */
     uint32_t ntexs, captexs;
     uint64_t tex_bytes;
@@ -186,18 +187,20 @@ static VkBlendOp blend_op(uint32_t e)
 
 static int make_layout(VkrContext *c)
 {
-    VkDescriptorSetLayoutBinding b = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-                                      VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
+    VkDescriptorSetLayoutBinding b[2] = {
+        {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+        {4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+    };
     VkDescriptorSetLayoutCreateInfo di = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    VkPushConstantRange pcr[2] = {{VK_SHADER_STAGE_VERTEX_BIT, 0, 16},
-                                  {VK_SHADER_STAGE_FRAGMENT_BIT, 16, 24}};
+    VkPushConstantRange pcr[2] = {{VK_SHADER_STAGE_VERTEX_BIT, 0, 32},
+                                  {VK_SHADER_STAGE_FRAGMENT_BIT, 32, 8}};
     VkPipelineLayoutCreateInfo li = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
 
     c->vs = shader(c, xbox_vert_spv, xbox_vert_spv_len);
     c->fs = shader(c, xbox_frag_spv, xbox_frag_spv_len);
     if (!c->vs || !c->fs) { fprintf(stderr, "[VKR] shader module failed\n"); return 0; }
     di.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT;
-    di.bindingCount = 1; di.pBindings = &b;
+    di.bindingCount = 2; di.pBindings = b;
     CK(vkCreateDescriptorSetLayout(c->dev, &di, NULL, &c->dsl));
     li.setLayoutCount = 1; li.pSetLayouts = &c->dsl;
     li.pushConstantRangeCount = 2; li.pPushConstantRanges = pcr;
@@ -282,12 +285,12 @@ static VkPipeline get_pipeline(VkrContext *c, const VkrDrawState *st)
     return pipe;
 }
 
-static VkSampler get_sampler(VkrContext *c, const VkrDrawState *st)
+static VkSampler get_sampler(VkrContext *c, uint32_t au, uint32_t av, int linear)
 {
-    uint32_t key = (st->addr_u & 7) | (st->addr_v & 7) << 3 | (uint32_t)(st->linear != 0) << 6;
+    uint32_t key = (au & 7) | (av & 7) << 3 | (uint32_t)(linear != 0) << 6;
     VkSamplerCreateInfo si = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     VkSamplerAddressMode m[2];
-    uint32_t a[2] = {st->addr_u, st->addr_v}, k;
+    uint32_t a[2] = {au, av}, k;
     int i;
 
     for (i = 0; i < c->nsamplers; i++)
@@ -302,7 +305,7 @@ static VkSampler get_sampler(VkrContext *c, const VkrDrawState *st)
         case 4:  m[k] = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER; break;
         default: m[k] = VK_SAMPLER_ADDRESS_MODE_REPEAT; break;
         }
-    si.magFilter = si.minFilter = st->linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+    si.magFilter = si.minFilter = linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
     si.addressModeU = m[0]; si.addressModeV = m[1]; si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     si.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     if (vkCreateSampler(c->dev, &si, NULL, &c->samplers[c->nsamplers].s) != VK_SUCCESS)
@@ -374,7 +377,8 @@ VkrContext *vkr_create(void)
     if (vkAllocateCommandBuffers(c->dev, &cai, &c->cmd) != VK_SUCCESS) goto fail;
     if (vkCreateFence(c->dev, &fi, NULL, &c->fence) != VK_SUCCESS) goto fail;
     if (!make_buffer(c, VKR_BUF_BYTES, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
-                     | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, &c->buf, &c->buf_mem, &map))
+                     | VK_BUFFER_USAGE_INDEX_BUFFER_BIT
+                     | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &c->buf, &c->buf_mem, &map))
         goto fail;
     c->buf_map = (uint8_t *)map;
     if (!make_layout(c)) goto fail;
@@ -411,7 +415,7 @@ static void tex_free_all(VkrContext *c)
         free(t);
     }
     free(c->texs);
-    c->texs = NULL; c->ntexs = c->captexs = 0; c->tex_bytes = 0;
+    c->texs = NULL; c->ntexs = c->captexs = 0; c->tex_bytes = 0; c->white = NULL;
 }
 
 void vkr_destroy(VkrContext *c)
@@ -605,23 +609,30 @@ VkrTex *vkr_tex_create(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
 }
 
 int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
-             const uint32_t *idx, uint32_t nidx, const VkrDrawState *st,
-             VkrTex *tex)
+             const uint32_t *idx, uint32_t nidx, const VkrDrawState *st)
 {
-    uint32_t vb, ib, end;
+    uint32_t vb, ib, ub, end, k;
     VkDeviceSize off;
     VkPipeline pipe;
-    VkSampler smp;
-    float pcv[4];
-    uint32_t pcf[6];
+    float pcv[8];
+    uint32_t pcf[2];
+    VkDescriptorImageInfo di[4];
+    VkDescriptorBufferInfo bi;
+    VkWriteDescriptorSet w[2];
 
     pipe = get_pipeline(c, st);
     if (!pipe) return 0;
+    if (!c->white) {
+        static const uint32_t white = 0xFFFFFFFFu;
+        c->white = vkr_tex_create(c, 0x77686974ull, 1, 1, &white);
+        if (!c->white) return 0;
+    }
     if (!begin_cmd(c)) return 0;
     begin_pass(c);
     vb = (c->buf_used + 15) & ~15u;
     ib = vb + nverts * (uint32_t)sizeof *v;
-    end = ib + nidx * 4;
+    ub = (ib + nidx * 4 + 255) & ~255u;
+    end = ub + (uint32_t)sizeof st->u;
     if (end > VKR_BUF_BYTES) {
         fprintf(stderr, "[VKR] upload buffer full\n");
         return 0;
@@ -629,35 +640,33 @@ int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
     off = vb;
     memcpy(c->buf_map + vb, v, nverts * sizeof *v);
     memcpy(c->buf_map + ib, idx, nidx * 4);
+    memcpy(c->buf_map + ub, &st->u, sizeof st->u);
     c->buf_used = end;
 
     vkCmdBindPipeline(c->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
     pcv[0] = 1.0f / (float)c->w; pcv[1] = 1.0f / (float)c->h;
-    pcv[2] = 1.0f / c->zmax; pcv[3] = 0.0f;
-    vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, pcv);
-    memcpy(&pcf[0], &st->tex_scale[0], 4);
-    memcpy(&pcf[1], &st->tex_scale[1], 4);
-    pcf[2] = st->alpha_func; pcf[3] = st->alpha_ref; pcf[4] = tex != NULL; pcf[5] = 0;
-    vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 16, 24, pcf);
-    if (tex) {
-        VkDescriptorImageInfo di = {0};
-        VkWriteDescriptorSet w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        smp = get_sampler(c, st);
-        di.sampler = smp; di.imageView = tex->view;
-        di.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        w.dstBinding = 0; w.descriptorCount = 1;
-        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &di;
-        vkCmdPushDescriptorSet(c->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, c->layout, 0, 1, &w);
-    } else if (c->ntexs) {
-        /* The layout needs a binding even when the shader skips it. */
-        VkDescriptorImageInfo di = {0};
-        VkWriteDescriptorSet w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        di.sampler = get_sampler(c, st); di.imageView = c->texs[0]->view;
-        di.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        w.dstBinding = 0; w.descriptorCount = 1;
-        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &di;
-        vkCmdPushDescriptorSet(c->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, c->layout, 0, 1, &w);
+    pcv[2] = 1.0f / c->zmax;
+    pcv[3] = st->u.fog_enable ? st->u.fog_param[2] : 0.0f;
+    pcv[4] = st->u.fog_param[0]; pcv[5] = st->u.fog_param[1]; pcv[6] = pcv[7] = 0.0f;
+    vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pcv);
+    pcf[0] = st->alpha_func; pcf[1] = st->alpha_ref;
+    vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 32, 8, pcf);
+
+    for (k = 0; k < 4; k++) {
+        VkrTex *t = st->tex[k] ? st->tex[k] : c->white;
+        di[k].sampler = get_sampler(c, st->addr_u[k], st->addr_v[k], st->linear[k]);
+        di[k].imageView = t->view;
+        di[k].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
+    bi.buffer = c->buf; bi.offset = ub; bi.range = sizeof st->u;
+    memset(w, 0, sizeof w);
+    w[0].sType = w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w[0].dstBinding = 0; w[0].descriptorCount = 4;
+    w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = di;
+    w[1].dstBinding = 4; w[1].descriptorCount = 1;
+    w[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[1].pBufferInfo = &bi;
+    vkCmdPushDescriptorSet(c->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, c->layout, 0, 2, w);
+
     vkCmdSetDepthTestEnable(c->cmd, st->depth_test ? VK_TRUE : VK_FALSE);
     vkCmdSetDepthWriteEnable(c->cmd, st->depth_write ? VK_TRUE : VK_FALSE);
     vkCmdSetDepthCompareOp(c->cmd, st->depth_func >= 0x200 && st->depth_func <= 0x207

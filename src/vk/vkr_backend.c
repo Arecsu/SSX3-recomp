@@ -54,6 +54,8 @@ static int is_main(const Nv2aTarget *t)
 
 static void fill_state(const Nv2aTarget *t, VkrDrawState *st)
 {
+    VkrUniforms *u = &st->u;
+    int k;
     st->depth_test = t->depth_test; st->depth_write = t->depth_write;
     st->depth_func = t->depth_func;
     st->blend_enable = t->blend_enable;
@@ -67,7 +69,55 @@ static void fill_state(const Nv2aTarget *t, VkrDrawState *st)
                    | (t->color_mask & 0xFF ? 4u : 0u) | (t->color_mask >> 24 ? 8u : 0u);
     st->alpha_func = t->alpha_test ? t->alpha_func : 0;
     st->alpha_ref = t->alpha_ref & 0xFF;
-    st->tex_scale[0] = st->tex_scale[1] = 1.0f;
+
+    memcpy(u->color_icw, t->rc.color_icw, sizeof u->color_icw);
+    memcpy(u->alpha_icw, t->rc.alpha_icw, sizeof u->alpha_icw);
+    memcpy(u->color_ocw, t->rc.color_ocw, sizeof u->color_ocw);
+    memcpy(u->alpha_ocw, t->rc.alpha_ocw, sizeof u->alpha_ocw);
+    memcpy(u->factor0, t->rc.factor0, sizeof u->factor0);
+    memcpy(u->factor1, t->rc.factor1, sizeof u->factor1);
+    u->final0 = t->rc.final0; u->final1 = t->rc.final1;
+    u->final_c0 = t->rc.final_c0; u->final_c1 = t->rc.final_c1;
+    u->control = t->rc.control; u->stage_program = t->rc.stage_program;
+    u->rc_seen = (uint32_t)t->rc_seen;
+    u->fog_enable = t->fog_enable;
+    /* FOG_COLOR is R in bits 0-7, the reverse of a D3DCOLOR. */
+    u->fog_color[0] = (float)(t->fog_color & 0xFF) / 255.0f;
+    u->fog_color[1] = (float)((t->fog_color >> 8) & 0xFF) / 255.0f;
+    u->fog_color[2] = (float)((t->fog_color >> 16) & 0xFF) / 255.0f;
+    u->fog_color[3] = (float)(t->fog_color >> 24) / 255.0f;
+    u->fog_param[0] = t->fog_param[0]; u->fog_param[1] = t->fog_param[1];
+    u->fog_param[2] = (float)t->fog_mode;
+    for (k = 0; k < 4; k++) {
+        u->tex_scale[k][0] = u->tex_scale[k][1] = 1.0f;
+        st->addr_u[k] = st->addr_v[k] = 3;
+    }
+}
+
+/* Bind the texture stages the combiners use. */
+static void bind_textures(VkrDrawState *st)
+{
+    int k;
+    for (k = 0; k < 4; k++) {
+        Nv2aTexInfo ti;
+        VkrTex *tex;
+        if (!((st->u.stage_program >> (k * 5)) & 0x1F))
+            continue;
+        if (!nv2a_exec_tex_info(k, &ti))
+            continue;
+        tex = vkr_tex_find(s_vk, ti.hash);
+        if (!tex) {
+            uint32_t *px = (uint32_t *)malloc((size_t)ti.width * ti.height * 4);
+            if (px && nv2a_exec_tex_decode(k, px))
+                tex = vkr_tex_create(s_vk, ti.hash, ti.width, ti.height, px);
+            free(px);
+        }
+        st->tex[k] = tex;
+        st->addr_u[k] = ti.addr_u; st->addr_v[k] = ti.addr_v;
+        st->linear[k] = ti.linear_filter;
+        st->u.tex_scale[k][0] = ti.normalised ? 1.0f : 1.0f / (float)ti.width;
+        st->u.tex_scale[k][1] = ti.normalised ? 1.0f : 1.0f / (float)ti.height;
+    }
 }
 
 static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, uint32_t n)
@@ -123,52 +173,10 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
      * target is the clip rectangle, which on a frame buffer is the surface. */
     {
         VkrDrawState st;
-        Nv2aTexInfo ti;
-        VkrTex *tex = NULL;
         memset(&st, 0, sizeof st);
         fill_state(t, &st);
-        /* stage_program 0 = stage 0 off: the bound texture is stale. */
-        if (nv2a_exec_tex_info(0, &ti) && (ti.stage_program & 0x1F)) {
-            tex = vkr_tex_find(s_vk, ti.hash);
-            if (!tex) {
-                uint32_t *px = (uint32_t *)malloc((size_t)ti.width * ti.height * 4);
-                if (px && nv2a_exec_tex_decode(0, px))
-                    tex = vkr_tex_create(s_vk, ti.hash, ti.width, ti.height, px);
-                free(px);
-            }
-            st.addr_u = ti.addr_u; st.addr_v = ti.addr_v; st.linear = ti.linear_filter;
-            st.tex_scale[0] = ti.normalised ? 1.0f : 1.0f / (float)ti.width;
-            st.tex_scale[1] = ti.normalised ? 1.0f : 1.0f / (float)ti.height;
-        }
-        {
-            static const char *flag = (const char *)-1;
-            static int left;
-            if (flag == (const char *)-1) flag = getenv("RECOMP_VKR_TRACE");
-            /* RECOMP_VKR_TRACE=<file>: while it exists, log 500 draws, then delete it. */
-            if (flag && !left && access(flag, F_OK) == 0)
-                left = 4000;
-            if (flag && left > 0) {
-                if (--left == 0)
-                    unlink(flag);
-                float mnx = 1e30f, mny = 1e30f, mxx = -1e30f, mxy = -1e30f;
-                uint32_t q;
-                for (q = 0; q < n; q++) {
-                    if (v[q].pos[0] < mnx) mnx = v[q].pos[0];
-                    if (v[q].pos[0] > mxx) mxx = v[q].pos[0];
-                    if (v[q].pos[1] < mny) mny = v[q].pos[1];
-                    if (v[q].pos[1] > mxy) mxy = v[q].pos[1];
-                }
-                if ((mxx - mnx) * (mxy - mny) > 60000.0f)
-                fprintf(stderr, "[VKRDRAW] box %.0f,%.0f-%.0f,%.0f prim %u n %u tex %s %ux%u fmt %02X prog %05X addr %u/%u"
-                        " | blend %d %X/%X | at %u f %X r %02X | depth %d/%d f %X | cmask %08X"
-                        " | d0 %.2f %.2f %.2f %.2f\n",
-                        mnx, mny, mxx, mxy, prim, n, tex ? "Y" : "-", ti.width, ti.height, ti.format, ti.stage_program,
-                        ti.addr_u, ti.addr_v, st.blend_enable, st.blend_src, st.blend_dst,
-                        t->alpha_test, st.alpha_func, st.alpha_ref, st.depth_test, st.depth_write,
-                        st.depth_func, t->color_mask, v[0].d0[0], v[0].d0[1], v[0].d0[2], v[0].d0[3]);
-            }
-        }
-        vkr_draw(s_vk, (const VkrVertex *)v, n, idx, k, &st, tex);
+        bind_textures(&st);
+        vkr_draw(s_vk, (const VkrVertex *)v, n, idx, k, &st);
     }
     s_dirty = 1;
     return 1;

@@ -43,8 +43,8 @@ int main(int argc, char **argv)
         VkrDrawState st;
         memset(&st, 0, sizeof st);
         st.depth_test = st.depth_write = 1; st.depth_func = 0x203; st.write_mask = 0xF;
-        st.tex_scale[0] = st.tex_scale[1] = 1.0f;
-        vkr_draw(c, v, 6, idx, 6, &st, NULL);
+        
+        vkr_draw(c, v, 6, idx, 6, &st);
     }
     if (!vkr_read_back(c, px)) return 1;
 

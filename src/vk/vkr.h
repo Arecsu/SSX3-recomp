@@ -15,7 +15,19 @@ typedef struct {
 typedef struct VkrContext VkrContext;
 typedef struct VkrTex VkrTex;
 
-/* Per-draw fixed-function state. GL enums as the NV2A takes them. */
+/* Combiner + fog + per-stage state, uploaded as a uniform buffer. Layout is
+ * std140: eight-dword arrays are two uvec4s. Mirrors Nv2aCombiner. */
+typedef struct {
+    uint32_t color_icw[8], alpha_icw[8], color_ocw[8], alpha_ocw[8];
+    uint32_t factor0[8], factor1[8];
+    uint32_t final0, final1, final_c0, final_c1;
+    uint32_t control, stage_program, rc_seen, fog_enable;
+    float    fog_color[4];          /* r, g, b already in order */
+    float    tex_scale[4][4];       /* per stage: xy multiplier to normalised coords */
+    float    fog_param[4];          /* x, y; z = mode (as float), w unused */
+} VkrUniforms;
+
+/* Per-draw state. GL enums as the NV2A takes them. */
 typedef struct {
     int      depth_test, depth_write;
     uint32_t depth_func;            /* 0x200 NEVER .. 0x207 ALWAYS */
@@ -26,10 +38,10 @@ typedef struct {
     uint32_t write_mask;            /* bit0 R, bit1 G, bit2 B, bit3 A */
     uint32_t alpha_func;            /* 0 = alpha test off, else 0x200..0x207 */
     uint32_t alpha_ref;             /* 0..255 */
-    /* stage 0 sampler */
-    uint32_t addr_u, addr_v;        /* 1 wrap 2 mirror 3 clamp 4 border 5 clamp-to-edge */
-    int      linear;
-    float    tex_scale[2];          /* multiplies tex0.xy to normalised coords */
+    VkrUniforms u;
+    VkrTex  *tex[4];                /* NULL = white */
+    uint32_t addr_u[4], addr_v[4];  /* 1 wrap 2 mirror 3 clamp 4 border 5 clamp-to-edge */
+    int      linear[4];
 } VkrDrawState;
 
 /* Headless device (no window). Returns NULL and prints why on failure. */
@@ -46,10 +58,9 @@ VkrTex *vkr_tex_find(VkrContext *c, uint64_t key);
 VkrTex *vkr_tex_create(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
                        const uint32_t *pixels);
 
-/* Draw an indexed triangle list; tex may be NULL (untextured). */
+/* Draw an indexed triangle list. */
 int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
-             const uint32_t *idx, uint32_t nidx, const VkrDrawState *st,
-             VkrTex *tex);
+             const uint32_t *idx, uint32_t nidx, const VkrDrawState *st);
 
 uint32_t vkr_width(const VkrContext *c);
 uint32_t vkr_height(const VkrContext *c);
