@@ -709,6 +709,19 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
     wrappers on the list select sub_00205D40 and the screen restore-focus
     sub_0008C540). Lesson: check recomp_stubs_unresolved.c for stubs whose
     target is the middle of a real function.
+    GENERALISED (2026-10-15, Equip Gear hang/crash): of 87 unresolved
+    stubs most were real code -- jump targets inside a function that
+    tools.disasm split in two, or code it left in no function at all. A
+    returning stub skips that code silently. Toolkit translator
+    `entry_stub`: a target inside a known function is emitted as that
+    function's translation entered with `goto loc_<target>` (registers are
+    globals, ebp = g_seh_ebp as for any tail jump) -- 61 stubs. Code in no
+    function is seeded in analysis/icall_seeds.json (0x000877B1 was the
+    Equip Gear screen's setup, after sub_00087706's early end; plus four
+    CRT/DSOUND/thunk pieces). Seeding targets *inside* functions instead
+    splits them and makes it worse (more stubs; loops become calls). The 19
+    stubs left are mid-instruction or outside the image. RECOMP_UI_TRACE=2
+    logs every screen state change with the screen's children.
     `tools\menu_test.ps1 -Steps "y,wait,down,a"` drives the menus with a
     screenshot per step (Start on the title is sometimes missed -- rerun).
   * Audio crackle: the output queue kept whatever depth it started with --

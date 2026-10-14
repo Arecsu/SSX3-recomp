@@ -221,6 +221,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-15 — Equip Gear fixed (its screen setup code was outside every function); unresolved jump targets now run as entries into their function (61 of 87 stubs). Options, races 8/8, no bad indirect calls.
 - 2026-10-14 — Frontend screens identified (game_state.txt screen field); race_test -Rider/-Mode/-Event: Metro-City, Happiness and Freestyle verified at 60 FPS.
 - 2026-10-14 — 32/32 boot→race at 8 parallel instances, no watchdog rescues: title-movie freeze closed. Phase 2 gate passed; D3D11-era items folded into the Vulkan status.
 - 2026-10-14 — D3D11 vsync presentation is the default (GDI presented at ~59 Hz with tearing); 8 parallel instances 16/16 OK, no watchdog rescues.
