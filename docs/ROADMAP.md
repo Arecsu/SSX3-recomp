@@ -194,7 +194,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 - [ ] Every peak (1–3) and course; Race, Freestyle, Slopestyle, Superpipe, Big Air, Backcountry. **2026-10-14:** Peak 1 races Snow Jam, Metro-City, Happiness and the first Freestyle event load and run at 60 FPS (p99 19-20 ms), screenshots checked; riders Zoe, Moby, Psymon.
 - [ ] World Tour / Conquer the Mountain progression; unlocks; character select and customisation; shop.
 - [ ] Single Event, Practice, multiplayer split-screen (2 pads).
-- [ ] Save / load (memory unit and hard disk paths under `UDATA`), options, controller settings, rumble.
+- [ ] Save / load (memory unit and hard disk paths under `UDATA`), options, controller settings, rumble. **2026-10-15:** Save game writes `game\UDATA\4541003c\<id>\` (Data.ssx 39 KB, SaveMeta "PLAYER 1", SaveImage); Load game lists it ("50,000+ blocks free"). Save times show in UTC (no console time zone). Every Options sub-screen (Game, Sound, Controller, HUD, Save/Load, Enter Cheat, Credits), Rider Details, Music, Equip Gear and Conquer the Mountain's intro movie open and close with no bad indirect calls (menu_test sweep).
 - [ ] Credits, all movies, replays, pause menu, quitting back to menus repeatedly (resource leaks).
 
 ## Phase 7 — Native Windows product
@@ -221,6 +221,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-15 — Frontend sweep: every Options sub-screen, Rider Details, Music, Equip Gear, Conquer the Mountain intro; save and load work (hard disk).
 - 2026-10-15 — Equip Gear fixed (its screen setup code was outside every function); unresolved jump targets now run as entries into their function (61 of 87 stubs). Options, races 8/8, no bad indirect calls.
 - 2026-10-14 — Frontend screens identified (game_state.txt screen field); race_test -Rider/-Mode/-Event: Metro-City, Happiness and Freestyle verified at 60 FPS.
 - 2026-10-14 — 32/32 boot→race at 8 parallel instances, no watchdog rescues: title-movie freeze closed. Phase 2 gate passed; D3D11-era items folded into the Vulkan status.

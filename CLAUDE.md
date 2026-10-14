@@ -449,7 +449,9 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   ($gs.Screen "vt:id"; RECOMP_UI_TRACE=1 logs [UI] active screen). Ids: 0
   title, 1 hard-disk check, 2 main menu, 9 Select Character, 12 Setup
   Character, 19 Select Peak/Mode/Event (one screen, three pages), 20 My
-  Rules, 24 Options. to_race.ps1/race_test.ps1 -Rider/-Mode/-Event use them;
+  Rules, 24 Options (28 Game, 29 Sound, 30 HUD, 31 Controller, 32 Save/Load,
+  35 Load game, 36 Credits), 13 Rider Details, 14 Equip Gear, 16 Music.
+  to_race.ps1/race_test.ps1 -Rider/-Mode/-Event use them;
   menu_test.ps1 waits for id 2.
   Inside ingame, state+0xA8 moves with the phase (5 at the briefing, 8 and
   0xC during a race); the remaining values (finish, results, replay) still

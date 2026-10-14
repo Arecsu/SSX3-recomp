@@ -36,6 +36,9 @@ switch ($Cmd) {
         }
         . "$PSScriptRoot\archive_logs.ps1"; Save-PreviousLogs $work
         Set-Content -Path $pad -Value $null
+        # The last run's game_state.txt would read as this one's until the game
+        # writes its own (a script then acts on a screen that is not up yet).
+        Remove-Item -Path (Join-Path $work "game_state.txt") -ErrorAction SilentlyContinue
         $env:RECOMP_PAD_LIVE = $pad
         # Scripted runs ignore the machine's real controllers (someone playing
         # or holding a pad must not steer them); -Env @{RECOMP_NO_HOST_PAD='0'}
