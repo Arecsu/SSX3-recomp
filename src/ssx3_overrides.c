@@ -216,11 +216,186 @@ void sub_0020CAB0(void)
 }
 
 /*
+ * Who is inside the world streamer. Two guest threads drive it: the main
+ * thread's update (sub_000CBB10 -> pump sub_0020AF20, and sub_0020D4C0) and
+ * the loader thread's poll loop (sub_000CC0A0 -> the same pump, and the world
+ * reload sub_0020B3F0). The reload frees the old world file first
+ * (sub_0020D8F0 -> sub_0020D850) -- which holds the request list the pump
+ * walks ([S+0x18] = file+0x50, count at [[S+0x14]+8]) -- and leaves those
+ * two pointers dangling until sub_0020B8B0 re-points them after the new file
+ * has been read, a slow kernel call. A pump on another thread in that window
+ * reads freed memory: garbage slot indices (sub_0020CAB0 crash) and lost
+ * requests (the 43% stall). Game code also enters via sub_0020C4A0/C520,
+ * and the resource poller sub_000E0490 posts requests (sub_0020B700 /
+ * sub_0020B7B0) by writing the per-entry state word the pass reads and later
+ * overwrites -- a request posted mid-pass can be overwritten and lost.
+ *
+ * RECOMP_STREAM_CHECK=1 logs every entry made while another thread is inside
+ * ([STREAM-OVERLAP] with both names); RECOMP_STREAM_SERIAL=1 makes the
+ * second thread wait (yielding the guest CPU) until the first has left, at
+ * most 5 s.
+ */
+static volatile DWORD s_strm_owner;
+static const char    *s_strm_what;
+static int            s_strm_depth;
+
+static void strm_enter(const char *what)
+{
+    static int check = -1, serial = -1;
+    static volatile LONG reports;
+    DWORD me = GetCurrentThreadId();
+    if (check < 0) {
+        const char *s = getenv("RECOMP_STREAM_SERIAL");
+        serial = s && s[0] == '1';
+        check = serial || getenv("RECOMP_STREAM_CHECK") != NULL;
+    }
+    if (!check)
+        return;
+    if (s_strm_owner && s_strm_owner != me) {
+        if (InterlockedIncrement(&reports) <= 40)
+            fprintf(stderr, "[STREAM-OVERLAP] t=%lu %s on t%lu while %s on t%lu%s\n",
+                    (unsigned long)GetTickCount(), what, (unsigned long)me, s_strm_what,
+                    (unsigned long)s_strm_owner, serial ? " (waiting)" : "");
+        if (serial) {
+            DWORD t0 = GetTickCount();
+            while (s_strm_owner && s_strm_owner != me && GetTickCount() - t0 < 5000)
+                recomp_loop_yield();
+            if (s_strm_owner && s_strm_owner != me)
+                fprintf(stderr, "[STREAM-OVERLAP] %s gave up waiting for %s\n", what, s_strm_what);
+        }
+    }
+    if (s_strm_owner != me) {
+        s_strm_owner = me;
+        s_strm_what = what;
+        s_strm_depth = 0;
+    }
+    s_strm_depth++;
+}
+
+static void strm_leave(void)
+{
+    if (s_strm_owner == GetCurrentThreadId() && --s_strm_depth <= 0) {
+        s_strm_depth = 0;
+        s_strm_owner = 0;
+    }
+}
+
+extern void sub_0020AF20_gen(void);
+extern void sub_000E0490_gen(void);
+extern void sub_0020B3F0_gen(void);
+extern void sub_0020D4C0_gen(void);
+extern void sub_0020C4A0_gen(void);
+extern void sub_0020C520_gen(void);
+
+static volatile uint32_t s_strm_obj;   /* the streamer the pump last ran */
+
+void sub_0020AF20(void)
+{
+    s_strm_obj = MEM32(g_ecx);
+    strm_enter("pump");
+    sub_0020AF20_gen();
+    strm_leave();
+}
+void sub_0020B3F0(void)
+{
+    strm_enter("reload");
+    sub_0020B3F0_gen();
+    strm_leave();
+}
+void sub_0020D4C0(void)
+{
+    strm_enter("D4C0");
+    sub_0020D4C0_gen();
+    strm_leave();
+}
+void sub_0020C4A0(void)
+{
+    strm_enter("C4A0");
+    sub_0020C4A0_gen();
+    strm_leave();
+}
+void sub_0020C520(void)
+{
+    strm_enter("C520");
+    sub_0020C520_gen();
+    strm_leave();
+}
+
+void sub_000E0490(void)
+{
+    strm_enter("E0490");
+    sub_000E0490_gen();
+    strm_leave();
+}
+
+static volatile uint32_t s_block_t;     /* BlockOnTime: time being waited for */
+static volatile DWORD    s_block_since; /* when that call began, 0 = none */
+
+/* Printed with every thread dump (src/thread_dump.c): the streamer's request
+ * list (manager at streamer+0x10: [+0] streamer, [+4] world header with the
+ * entry count at +8, [+8] entries of 0x58 bytes -- name at +0, slot at
+ * +0x18 -- and per entry a state/param pair at +0x14 + 8*i), each busy
+ * entry's slot record (streamer + 0x3EC + slot*24), and D3D's fence wait if
+ * the main thread is in one. States: 0 idle, 1 requested, 2 loading,
+ * 3 unloading, 4 off, 5 ready, 6 ready+in use. */
+void ssx3_StreamDump(void)
+{
+    uint32_t S = s_strm_obj, mgr, hdr, ents, n, i, shown = 0;
+    if (s_block_since) {
+        uint32_t dev = MEM32(0x0024B0D8u);
+        fprintf(stderr, "[STREAMDUMP] BlockOnTime waiting %lu ms for time %08X | fence %08X cur %08X"
+                " wr %08X put %08X get %08X\n",
+                (unsigned long)(GetTickCount() - s_block_since), s_block_t,
+                dev ? MEM32(MEM32(dev + 0x30)) : 0, dev ? MEM32(dev + 0x2C) : 0,
+                dev ? MEM32(dev) : 0, MEM32(0xFD800040u), MEM32(0xFD800044u));
+    }
+    if (!S || S < 0x10000u) {
+        fprintf(stderr, "[STREAMDUMP] no streamer seen yet\n");
+        fflush(stderr);
+        return;
+    }
+    mgr = S + 0x10;
+    hdr = MEM32(mgr + 4);
+    ents = MEM32(mgr + 8);
+    n = hdr ? MEM32(hdr + 8) : 0;
+    fprintf(stderr, "[STREAMDUMP] streamer %08X mgr[0] %08X header %08X entries %08X count %u"
+            " | +2E0 %u +2E4 %u | owner t%lu %s\n", S, MEM32(mgr), hdr, ents, n,
+            MEM32(mgr + 0x2E0), MEM32(mgr + 0x2E4), (unsigned long)s_strm_owner,
+            s_strm_owner ? s_strm_what : "-");
+    if (n > 89)
+        n = 89;                                   /* state pairs end at +0x2E0 */
+    for (i = 0; i < n; i++) {
+        uint32_t st = MEM32(mgr + 0x14 + 8 * i), par = MEM32(mgr + 0x18 + 8 * i);
+        uint32_t e = ents + i * 0x58, slot = MEM32(e + 0x18);
+        uint32_t so = MEM32(mgr) + 0x3EC + slot * 24;
+        char name[5];
+        if (st == 0 || st == 4)
+            continue;
+        for (int k = 0; k < 4; k++) {
+            uint8_t c = MEM8(e + k);
+            name[k] = c >= 32 && c <= 126 ? (char)c : '.';
+        }
+        name[4] = 0;
+        fprintf(stderr, "[STREAMDUMP] #%u %s state %u param %08X slot %u -> %08X %08X %08X %08X %08X %08X\n",
+                i, name, st, par, slot,
+                slot < 4096 ? MEM32(so) : 0, slot < 4096 ? MEM32(so + 4) : 0,
+                slot < 4096 ? MEM32(so + 8) : 0, slot < 4096 ? MEM32(so + 12) : 0,
+                slot < 4096 ? MEM32(so + 16) : 0, slot < 4096 ? MEM32(so + 20) : 0);
+        shown++;
+    }
+    fprintf(stderr, "[STREAMDUMP] %u busy entries; resource states 0x312AC8:", shown);
+    for (i = 0; i < 64; i++)
+        fprintf(stderr, " %u", MEM32(0x00312AC8u + i * 16));
+    fprintf(stderr, "\n");
+    fflush(stderr);
+}
+
+/*
  * D3D BlockOnTime (sub_00234BE0(time, flags), stdcall-ish: args at esp+4/+8),
  * wrapped for RECOMP_BLOCK_TRACE=1: logs the time waited for against the GPU
- * fence, the device's current time, its write pointer and PUT/GET -- once
- * per new time, then every 100th repeat of the same one, so a hang that
- * waits for a time which never comes shows it. Device at [0x0024B0D8]:
+ * fence, the device's current time, its write pointer and PUT/GET when the
+ * same time is waited for repeatedly, so a hang that waits for a time which
+ * never comes shows it (and normal running logs nothing). Device at [0x0024B0D8]:
  * +0 write ptr, +0x2C current time, +0x30 -> fence; PUT/GET at 0xFD800040.
  */
 extern void sub_00234BE0_gen(void);
@@ -234,19 +409,34 @@ void sub_00234BE0(void)
     if (on < 0)
         on = getenv("RECOMP_BLOCK_TRACE") != NULL;
     if (on) {
+        /* Quiet while waits complete: only a time waited for again and again
+         * (1st, 2nd, 10th, 100th, ... repeat) is logged, with the fence
+         * record D3D keeps for it (dev+0x60 + ((t >> 1) & 63) * 8: time,
+         * pushbuffer position) and the words at that position, where the
+         * wake-up NOP gets patched in (+0x10..+0x1C). */
         uint32_t dev = MEM32(0x0024B0D8u);
-        if (t != last_t || (++repeats % 100) == 0) {
-            if (t != last_t)
-                repeats = 0;
-            fprintf(stderr, "[BLOCK] %lu t%lu time %08X flags %X | fence %08X cur %08X | wr %08X put %08X get %08X | rep %u\n",
-                    (unsigned long)GetTickCount(), (unsigned long)GetCurrentThreadId(), t, flags,
-                    dev ? MEM32(MEM32(dev + 0x30)) : 0, dev ? MEM32(dev + 0x2C) : 0,
-                    dev ? MEM32(dev) : 0, MEM32(0xFD800040u), MEM32(0xFD800044u), repeats);
-            fflush(stderr);
+        if (t != last_t) {
+            repeats = 0;
             last_t = t;
+        } else if (dev && (++repeats <= 2 || repeats == 10 || repeats == 100
+                           || repeats % 1000 == 0)) {
+            uint32_t rec = dev + 0x60 + ((t >> 1) & 63u) * 8, pos = MEM32(rec + 4);
+            int pos_ok = pos >= 0x80000000u && pos < 0x84000000u;
+            fprintf(stderr, "[BLOCK] %lu time %08X flags %X rep %u | fence %08X cur %08X | wr %08X"
+                    " put %08X get %08X pb %08X-%08X ring %X | rec %08X @%08X: %08X %08X %08X %08X\n",
+                    (unsigned long)GetTickCount(), t, flags, repeats,
+                    MEM32(MEM32(dev + 0x30)), MEM32(dev + 0x2C), MEM32(dev),
+                    MEM32(0xFD800040u), MEM32(0xFD800044u), MEM32(dev + 0x24), MEM32(dev + 0x28),
+                    MEM32(dev + 0x40), MEM32(rec), pos,
+                    pos_ok ? MEM32(pos + 0x10) : 0, pos_ok ? MEM32(pos + 0x14) : 0,
+                    pos_ok ? MEM32(pos + 0x18) : 0, pos_ok ? MEM32(pos + 0x1C) : 0);
+            fflush(stderr);
         }
     }
+    s_block_t = t;
+    s_block_since = GetTickCount();
     sub_00234BE0_gen();
+    s_block_since = 0;
 }
 
 /*

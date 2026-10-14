@@ -461,11 +461,35 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   game code (0x0005B7B1, 0x000D2690, ...). Next: a watchpoint on the
   request-list entry that goes bad (log the list each pass, watch the entry
   whose index field changes to an impossible value).
+  UPDATE 2026-10-14: the two-thread hypothesis is RULED OUT. Two guest
+  threads do drive the streamer -- the main thread's update (sub_000CBB10 ->
+  pump sub_0020AF20, sub_0020D4C0) and the loader (sub_000CC0A0 -> pump, the
+  resource poller sub_000E0490 posting requests via sub_0020B700/B7B0, and
+  the world reload sub_0020B3F0, which frees the world file holding the
+  request list and re-points it only after the new file is read) -- but with
+  every entry wrapped (RECOMP_STREAM_CHECK=1 logs [STREAM-OVERLAP] when a
+  second thread enters; RECOMP_STREAM_SERIAL=1 would make it wait) 16 runs
+  logged no overlap at all, stalls included. Every thread dump now prints
+  [STREAMDUMP]: the request list (entry name, state 0 idle / 1 requested /
+  2 loading / 3 unloading / 4 off / 5 ready / 6 in use, slot and the slot's
+  record), the resource state table 0x312AC8, and D3D's fence wait if the
+  main thread is in one (time, ms waited, fence/cur/wr/PUT/GET). Next: catch
+  a stall with it.
+  NOT EVERY "43%" IS THIS BUG: check whether draws continue after the dump.
+  If the loading screen still renders (draw counter keeps rising) it is the
+  streamer stall (loader thread polling sub_000E0490); if draws stop and the
+  main thread sits in BlockOnTime (sub_00234BE0 <- sub_00234F90) it is the
+  async GPU freeze below.
 - ASYNC GPU FREEZE (map select / rules / loading 31-33%): main thread loops in
   D3D BlockOnTime: the idle wake does reach it (KeSetEvent on 0x0024CE9C,
   ~10/s) but the time it waits for never completes; 0x5C bytes are written
-  past PUT and never kicked. RECOMP_BLOCK_TRACE run pending -- the round with
-  it on saw no freeze.
+  past PUT and never kicked. RECOMP_BLOCK_TRACE (now quiet: logs only a
+  time waited for repeatedly, with D3D's fence record for it -- time, pushbuffer
+  position, the patched words) has not caught one yet. BlockOnTime's far path
+  (0x00234D21) waits on dev+0x1DBC with no timeout and returns after ONE wake
+  without re-checking the time; its near path spins on the fence. The GPU
+  position it uses is DMA_GET ([[dev+0x1C10]+0x44]); positions at or below
+  D3D's write pointer count as the current lap (+ ring size [dev+0x40]).
 - Live driving: `tools\live.ps1 start|snap|press -Buttons a|key -Key 0x0D|dump|stop`
   (`key` posts WM_KEYDOWN/UP to the window, exercising the real keyboard
   path; verified 2026-10-13: Enter presses reach the menus with

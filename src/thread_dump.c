@@ -138,7 +138,9 @@ static void td_dump(const char *why)
         /* EA job-queue ring (RECOMP_JOB_TRACE, ssx3_overrides.c). Printed
          * before any thread is suspended: it takes the CRT's stderr lock. */
         extern void ssx3_JobTraceDump(void);
+        extern void ssx3_StreamDump(void);
         ssx3_JobTraceDump();
+        ssx3_StreamDump();
     }
 
     snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
