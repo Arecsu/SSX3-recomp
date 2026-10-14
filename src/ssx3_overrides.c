@@ -211,6 +211,25 @@ void sub_0017BDA0(void)
  * RECOMP_STREAM_CHECK=1: an index past MAX_SLOTS is logged with the guest
  * call chain and the object, and answered "not ready" (0) instead of read.
  */
+/* D3D's gamma-ramp upload (SetGammaRamp's hardware half, from the vblank
+ * path and the display reset): 256 R, then G, then B bytes at [esp+4],
+ * written through the NV2A's VGA palette port, which our MMIO does not keep.
+ * Hand the ramp to the presenter (toolkit fb_gamma.c), then run the
+ * original. SSX 3's ramp darkens the mid-tones; without it the picture is
+ * washed out next to the console. */
+extern void sub_00239B76_gen(void);
+extern void xbox_FramebufferSetGammaRamp(const uint8_t *r, const uint8_t *g, const uint8_t *b);
+
+void sub_00239B76(void)
+{
+    uint32_t ramp = MEM32(g_esp + 4);
+    if (ramp) {
+        const uint8_t *p = (const uint8_t *)&MEM8(ramp);
+        xbox_FramebufferSetGammaRamp(p, p + 256, p + 512);
+    }
+    sub_00239B76_gen();
+}
+
 /* RECOMP_UI_TRACE=1: the frontend's list widgets (EA UI lib). sub_00205D40
  * selects logical item <index> of a list (this+0x96 items shown through
  * this+0x97 child rows, scrolled by this+0x98); sub_0008C540 is a screen's

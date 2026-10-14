@@ -712,8 +712,17 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
     the shader picks the face. SSX 3's races and character screen use no
     cube maps (RECOMP_VKR_STAGES=1 lists each stage program once), so this
     did not change the character look; character lighting matches the
-    software renderer (both use the CPU vertex programs). Open: what the
-    user sees as wrong lighting -- needs a reference image.
+    software renderer (both use the CPU vertex programs).
+  * Display gamma ramp: D3D uploads one (sub_00239B76, 256 R/G/B bytes
+    through the VGA palette port 0x6813C8/9, which our MMIO drops). Now a
+    _gen wrapper hands it to the toolkit's presenter (fb_gamma.c,
+    xbox_FramebufferSetGammaRamp; [GAMMA] logs it; RECOMP_GAMMA=0 off).
+    SSX 3's ramp is a mild contrast S-curve (64->52, 128->125, 192->198):
+    darker shadows, closer to console captures of the character screen.
+    The user's console captures (TV video) still show riders with stronger
+    directional shading and a more saturated picture; part of that is the
+    capture. Next if it matters: compare against an xemu frame (lossless)
+    and check the vertex-program lighting path (nv2a_vsh_interp.c).
 - Untranslated instructions reached (no-ops): `wbinvd`, `out`/`in`, `ldmxcsr`.
 - Upstream candidates: the toolkit fixes in `patches/`; `tools.split`
   ignoring applied names (docs/DECOMP.md says otherwise); template

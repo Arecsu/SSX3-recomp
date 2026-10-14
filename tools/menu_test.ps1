@@ -4,7 +4,7 @@
 #     [-Env @{...}] [-Dir instance] [-Keep]
 # Steps are RECOMP_PAD_SCRIPT buttons (up/down/left/right/a/b/start/...), one
 # press per step, -WaitSec apart; "wait" sleeps one step. The main menu is
-# reached with one Start 10 s into the title, then 4 s more.
+# reached by pressing Start until the main menu opens (RECOMP_UI_TRACE's screen log).
 # -Keep leaves the game running (stop it with tools\live.ps1 stop).
 param([string]$Steps = "", [string]$ShotDir = "shots\menu", [double]$WaitSec = 2,
       [hashtable]$Env = @{}, [string]$Dir = "", [switch]$Keep, [int]$TimeoutSec = 120)
@@ -19,6 +19,8 @@ function Snap([string]$name) {
     & $live snap -Out (Join-Path $ShotDir "$name.png") -Dir $Dir | Out-Null
 }
 
+$Env = $Env.Clone()
+if (-not $Env.ContainsKey("RECOMP_UI_TRACE")) { $Env["RECOMP_UI_TRACE"] = "1" }
 & $live start -Env $Env -Dir $Dir | Out-Null
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
 $front = $null
@@ -28,9 +30,18 @@ while ((Get-Date) -lt $deadline) {
     if ($gs -and $gs.Name -eq "frontend") { $front = Get-Date; break }
 }
 if (-not $front) { "no frontend after $TimeoutSec s"; if (-not $Keep) { & $live stop -Dir $Dir | Out-Null }; exit 1 }
-# The title ignores input for its first seconds: wait 10 s, then one Start.
-Start-Sleep -Seconds 10
-& $live press -Buttons "start" -Dir $Dir | Out-Null
+# The title ignores input for a while after it appears, for a varying time:
+# press Start until the main menu (screen id 0, logged by RECOMP_UI_TRACE)
+# has opened.
+$err = Join-Path $root "stderr.txt"
+$t0 = Get-Date
+do {
+    Start-Sleep -Seconds 3
+    & $live press -Buttons "start" -Dir $Dir | Out-Null
+    Start-Sleep -Seconds 2
+    $main = Select-String -Path $err -Pattern '\[UI\] screen \S+ vt \S+ id 0 ' -List -ErrorAction SilentlyContinue
+} while (-not $main -and ((Get-Date) - $t0).TotalSeconds -lt 60)
+if (-not $main) { "main menu not reached"; if (-not $Keep) { & $live stop -Dir $Dir | Out-Null }; exit 1 }
 Start-Sleep -Seconds 4
 Snap "00-main"
 $k = 0
