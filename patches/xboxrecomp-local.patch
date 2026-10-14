@@ -149,7 +149,7 @@ index cd69e57..86d2428 100644
      idx = g_xa2_next_buf;
      copy_samples = (num_samples > XA2_BUF_SAMPLES) ? XA2_BUF_SAMPLES : num_samples;
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
-index c65ba43..660c1de 100644
+index c65ba43..f854376 100644
 --- a/src/kernel/kernel_bridge.c
 +++ b/src/kernel/kernel_bridge.c
 @@ -1514,6 +1514,31 @@ static HANDLE bridge_resolve_handle(uint32_t token);
@@ -616,7 +616,7 @@ index c65ba43..660c1de 100644
      g_eax = 0;
  }
  
-@@ -9371,17 +9717,134 @@ static int guest_cpu_enabled(void)
+@@ -9371,17 +9717,181 @@ static int guest_cpu_enabled(void)
      return g_guest_cpu_on;
  }
  
@@ -659,9 +659,24 @@ index c65ba43..660c1de 100644
 +    return 0;
 +}
 +
++/* Guest threads waiting for the guest CPU, and a count of hand-overs: the
++ * loop yield uses them to make sure a waiter actually gets its turn. */
++static volatile LONG g_guest_waiters, g_guest_gen;
++static volatile DWORD g_guest_owner_ms;
++
++/* For hang reports: which host thread holds the guest CPU, since when, and
++ * how many wait for it. */
++void xbox_GuestCpuInfo(unsigned long *tid, unsigned long *held_ms, long *waiters)
++{
++    *tid = (unsigned long)(uintptr_t)g_guest_cpu.OwningThread;
++    *held_ms = *tid ? GetTickCount() - g_guest_owner_ms : 0;
++    *waiters = g_guest_waiters;
++}
++
 +/* Take the guest CPU, letting higher-priority waiters go first. */
 +static void guest_cpu_acquire(int idx)
 +{
++    InterlockedIncrement(&g_guest_waiters);
 +    if (prio_lock_on()) {
 +        DWORD t0 = GetTickCount();
 +        InterlockedIncrement(&g_prio_waiting[idx]);
@@ -672,6 +687,20 @@ index c65ba43..660c1de 100644
 +    } else {
 +        EnterCriticalSection(&g_guest_cpu);
 +    }
++    InterlockedDecrement(&g_guest_waiters);
++    InterlockedIncrement(&g_guest_gen);
++    g_guest_owner_ms = GetTickCount();
++}
++
++/* RECOMP_FAIR_YIELD=0: the old yield (let go, SwitchToThread, take it again). */
++static int fair_yield_on(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char *e = getenv("RECOMP_FAIR_YIELD");
++        on = !(e && e[0] == '0');
++    }
++    return on;
 +}
 +
 +void guest_cpu_set_priority(int prio)
@@ -699,13 +728,31 @@ index c65ba43..660c1de 100644
 +#define RECOMP_LOOP_QUANTUM 4096
 +RECOMP_TLS int g_loop_budget = RECOMP_LOOP_QUANTUM;
 +
++/* A yield must hand the CPU over, not just offer it. A Windows critical
++ * section is not fair: the thread that leaves it and re-enters at once
++ * usually wins against a waiter that has to be woken and scheduled first,
++ * and under host load (other processes, or 8 test instances) it won every
++ * time. SSX 3's title screen then froze: the main thread spins in the movie
++ * player waiting for stream data (sub_00173B20 -> sub_0017B3B0, no kernel
++ * call), and the file worker, its read finished, waited in vain to get the
++ * guest CPU back to deliver it -- reads that took 0.5-1.2 s, then one that
++ * never completed. So with a waiter present the yielding thread waits until
++ * someone else has taken the CPU (at most 5 ms) before taking it back. */
 +void recomp_loop_yield(void)
 +{
 +    g_loop_budget = RECOMP_LOOP_QUANTUM;
 +    if (t_guest_held) {
++        LONG gen = g_guest_gen;
++        int waiting = fair_yield_on() && g_guest_waiters > 0;
 +        t_guest_held = 0;
 +        LeaveCriticalSection(&g_guest_cpu);
-+        SwitchToThread();
++        if (waiting) {
++            DWORD t0 = GetTickCount();
++            while (g_guest_gen == gen && GetTickCount() - t0 < 5)
++                SwitchToThread();
++        } else {
++            SwitchToThread();
++        }
 +        guest_cpu_acquire(prio_index(t_guest_prio));
          t_guest_held = 1;
      }
@@ -752,7 +799,7 @@ index c65ba43..660c1de 100644
  void guest_cpu_part(void)
  {
      if (t_guest_held) {
-@@ -9391,11 +9854,55 @@ void guest_cpu_part(void)
+@@ -9391,11 +9901,60 @@ void guest_cpu_part(void)
      t_guest_thread = 0;
  }
  
@@ -790,7 +837,12 @@ index c65ba43..660c1de 100644
  static void kernel_thunk_dispatch(void)
  {
      int held = t_guest_held;
-+    if (held && cs_keep_cpu()) {
++    LONG gen = g_guest_gen;
++    int waiter = held && fair_yield_on() && g_guest_waiters > 0;
++    /* Only while nobody waits for the guest CPU: a guest thread that wants
++     * it -- the file worker with a finished read, say -- gets it at the next
++     * kernel call, as a ready higher-priority thread would on the Xbox. */
++    if (held && cs_keep_cpu() && !waiter) {
 +        int slot = g_kernel_dispatch_slot;
 +        ULONG ord = (slot >= 0 && slot < XBOX_KERNEL_THUNK_TABLE_SIZE) ? g_slot_ordinals[slot] : 0;
 +        if (ord == 294 || ord == 295) {             /* RtlLeaveCriticalSection(AndRegion) */
@@ -809,7 +861,16 @@ index c65ba43..660c1de 100644
      if (held) {                        /* let other guest threads run meanwhile */
          t_guest_held = 0;
          LeaveCriticalSection(&g_guest_cpu);
-@@ -9407,7 +9914,7 @@ static void kernel_thunk_dispatch(void)
+@@ -9403,11 +9962,16 @@ static void kernel_thunk_dispatch(void)
+     t_dispatch_depth++;
+     kernel_thunk_dispatch_body();
+     t_dispatch_depth--;
++    if (waiter) {                      /* hand over, not just offer (see recomp_loop_yield) */
++        DWORD t0 = GetTickCount();
++        while (g_guest_gen == gen && GetTickCount() - t0 < 5)
++            SwitchToThread();
++    }
+     /* Back to guest code: take the CPU again. Only at the outermost call --
       * a guest callback a bridge runs (an APC) returns into the bridge, not to
       * the thread's own code -- and only if the thread still exists as one. */
      if (t_guest_thread && t_dispatch_depth == 0 && guest_cpu_enabled()) {

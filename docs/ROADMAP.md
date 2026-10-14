@@ -137,6 +137,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — Title freeze = guest-CPU starvation (unfair critical-section handoff at loop yields/kernel calls); fair handoff in the toolkit (RECOMP_FAIR_YIELD). race_par 8x4 29/32; [GUESTCPU] holder report added.
 - 2026-10-14 — The "[no pad]" runs are a title-screen movie stream freeze (EA STRM ring), not USB; ring trace added. RECOMP_PRIO_LOCK=1 still worse (16/24 vs 20/24).
 - 2026-10-14 — Watchdog in to_race.ps1 ([no pad] / [freeze] / [<state> stall]); race_par 8x2 in 4.6 min (was 22).
 - 2026-10-14 — 43% stall FIXED (guest CPU kept across uncontended critical sections): race_par 8x3 = 18 OK, 0 load stalls, 6 title/no-pad (USB under load, new item).

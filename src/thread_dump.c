@@ -139,6 +139,13 @@ static void td_dump(const char *why)
          * before any thread is suspended: it takes the CRT's stderr lock. */
         extern void ssx3_JobTraceDump(void);
         extern void ssx3_StreamDump(void);
+        {
+            extern void xbox_GuestCpuInfo(unsigned long *, unsigned long *, long *);
+            unsigned long tid, ms;
+            long w;
+            xbox_GuestCpuInfo(&tid, &ms, &w);
+            fprintf(stderr, "[GUESTCPU] held by thread %lu for %lu ms, %ld waiting\n", tid, ms, w);
+        }
         ssx3_JobTraceDump();
         ssx3_StreamDump();
         {
@@ -231,6 +238,7 @@ static void td_dump(const char *why)
             fprintf(stderr, "    #%-2d 0x%llX\n", j,
                     (unsigned long long)td_rebase(stacks[i].rip[j]));
     }
+    fprintf(stderr, "[THREADS-END]\n");   /* tools/race_test.ps1 waits for this */
     fflush(stderr);
 }
 

@@ -36,8 +36,13 @@ for ($i = 1; $i -le $Runs; $i++) {
         # A stall: dump every thread (and the RECOMP_JOB_TRACE ring) before
         # the run is killed; the log is kept in logs\ by the next start.
         & $live dump -Dir $Dir | Out-Null
-        # The dump (threads + the 4096-entry job ring) takes a while to write.
-        Start-Sleep -Seconds 20
+        # The dump (job and stream traces, threads) can take a while under
+        # load: wait for its end marker (src/thread_dump.c), at most 90 s.
+        $t0 = Get-Date
+        do {
+            Start-Sleep -Seconds 2
+            $done = Select-String -Path (Join-Path $root "stderr.txt") -SimpleMatch "[THREADS-END]" -List -ErrorAction SilentlyContinue
+        } while (-not $done -and ((Get-Date) - $t0).TotalSeconds -lt 90)
     }
     & $live stop -Dir $Dir | Out-Null
     Start-Sleep -Seconds 3

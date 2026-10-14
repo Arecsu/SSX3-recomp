@@ -576,6 +576,22 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   unscanned tail to the ring start and wrap; else async read via
   sub_00179E40 with completion sub_001781B0. RECOMP_PRIO_LOCK=1 makes it
   worse (16/24 vs 20/24).
+  CAUSE FOUND (2026-10-14): not a stream bug but guest-CPU starvation. In
+  the freezes the file worker has finished its read (kernel_thunk_dispatch
+  after the ReadFile bridge) and waits in guest_cpu_acquire, while the main
+  thread holds the guest CPU spinning in the movie player (sub_00173B20 ->
+  sub_0017B3B0 / sub_00177F80, no blocking kernel call). Windows critical
+  sections are not fair: a loop yield let go and took the CPU straight back
+  before the woken worker ran -- reads took 0.5-1.2 s, then one never
+  finished. Toolkit fixes (RECOMP_FAIR_YIELD=0 off): a loop yield with a
+  waiter present waits (<= 5 ms) until someone else has taken the CPU; and
+  while a guest thread waits, the uncontended-lock fast path is off and every
+  kernel call hands over the same way. race_par 8x4: 29/32 before and after
+  the second step -- failures remain (frontend stall with the worker still
+  waiting for the CPU while the main thread is in a GPU wait, i.e. a third
+  thread held it). [GUESTCPU] in every thread dump now names the holder,
+  how long it has held it and how many wait. Thread dumps end with
+  [THREADS-END]; race_test waits for it (<= 90 s) before killing a run.
 - ASYNC GPU FREEZE (map select / rules / loading 31-33%): main thread loops in
   D3D BlockOnTime: the idle wake does reach it (KeSetEvent on 0x0024CE9C,
   ~10/s) but the time it waits for never completes; 0x5C bytes are written
