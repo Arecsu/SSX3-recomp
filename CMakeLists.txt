@@ -66,10 +66,11 @@ set(GAME_SOURCES
 #   src/recomp/recomp_dispatch.h     - binary search dispatch table
 #   src/recomp/recomp_types.h        - register model, ICALL macros, MEM helpers
 
-add_executable(${PROJECT_NAME} WIN32
-    ${GAME_SOURCES}
-    ${RECOMP_GEN_SOURCES}
-)
+if(WIN32)
+    add_executable(${PROJECT_NAME} WIN32 ${GAME_SOURCES} ${RECOMP_GEN_SOURCES})
+else()
+    add_executable(${PROJECT_NAME} ${GAME_SOURCES} ${RECOMP_GEN_SOURCES})
+endif()
 
 # Link against the xboxrecomp umbrella target (all 6 runtime libraries)
 target_link_libraries(${PROJECT_NAME} PRIVATE xboxrecomp)
@@ -82,16 +83,22 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 # Windows SDK libraries needed at link time
-target_link_libraries(${PROJECT_NAME} PRIVATE
-    d3d11
-    dxgi
-    dxguid
-    xinput
-    winmm
-    # Lets the fault handler resolve the host RIP back to the generated
-    # function's symbol, i.e. to the guest function that faulted.
-    dbghelp
-)
+if(WIN32)
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        d3d11
+        dxgi
+        dxguid
+        xinput
+        winmm
+        # Lets the fault handler resolve the host RIP back to the generated
+        # function's symbol, i.e. to the guest function that faulted.
+        dbghelp
+    )
+else()
+    target_link_libraries(${PROJECT_NAME} PRIVATE m pthread dl)
+    # Symbol names (sub_XXXXXXXX) in the crash handler's backtrace.
+    target_link_options(${PROJECT_NAME} PRIVATE -rdynamic)
+endif()
 
 # MSVC-specific: large address aware, increase section limit for big generated files
 if(MSVC)

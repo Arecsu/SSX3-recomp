@@ -30,8 +30,14 @@
  *   Kernel imports: 159
  */
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "platform/win32_compat.h"
+#endif
+#ifdef _WIN32
 #include <dbghelp.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -82,7 +88,7 @@ extern ptrdiff_t g_xbox_mem_offset;
  * Run: py -3 -m tools.xbe_parser game/default.xbe
  */
 #define YOUR_GAME_ENTRY_POINT   0x00181AD2  /* XBE entry point VA */
-#define YOUR_GAME_XBE_PATH      "game\\default.xbe"
+#define YOUR_GAME_XBE_PATH      "game/default.xbe"
 #define YOUR_GAME_DIR            "game"
 
 /* ── Forward declarations ──────────────────────────────────── */
@@ -128,6 +134,13 @@ extern void xbe_entry_point(void);
  *
  * Requires linking dbghelp and keeping the .pdb beside the .exe.
  */
+typedef struct MCPXAPUState MCPXAPUState;
+extern MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr);
+extern MCPXAPUState *g_apu_state;
+
+static void print_guest_stack(void);
+
+#ifdef _WIN32
 static void print_guest_context(void *rip)
 {
     /* SYMBOL_INFO is variable-length: the name is written past the struct, so
@@ -142,7 +155,12 @@ static void print_guest_context(void *rip)
     if (SymFromAddr(GetCurrentProcess(), (DWORD64)(uintptr_t)rip, &disp, sym))
         fprintf(stderr, "  in %s+0x%llX\n",
                 sym->Name, (unsigned long long)disp);
+    print_guest_stack();
+}
+#endif /* _WIN32 */
 
+static void print_guest_stack(void)
+{
     if (g_xbox_mem_offset && g_esp) {
         const uint32_t *sp =
             (const uint32_t *)((uintptr_t)g_xbox_mem_offset + g_esp);
@@ -202,6 +220,7 @@ static void print_guest_context(void *rip)
     }
 }
 
+#ifdef _WIN32
 /* The emulated APU.
  *
  * Two entry points that had no callers anywhere in the tree. apu_mmio_hook.c
@@ -214,9 +233,6 @@ static void print_guest_context(void *rip)
  *
  * Declared rather than included so this does not depend on src/apu being on
  * the include path. */
-typedef struct MCPXAPUState MCPXAPUState;
-extern MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr);
-extern MCPXAPUState *g_apu_state;
 extern bool apu_hook_handle_mmio(PCONTEXT ctx, uintptr_t fault_addr,
                                  uint32_t fault_xbox_va, int is_write);
 
@@ -324,8 +340,62 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
 
     return EXCEPTION_CONTINUE_SEARCH;
 }
+#else /* !_WIN32 */
+
+#include <signal.h>
+#include <ucontext.h>
+#include <execinfo.h>
+#include <unistd.h>
+
+/* Crash report only. The POSIX shim has no VEH, so nothing here can step over
+ * a trapped MMIO access (NV2A/APU/OHCI registers) -- see docs/LINUX.md. */
+static void segv_handler(int sig, siginfo_t *si, void *uc_)
+{
+    ucontext_t *uc = (ucontext_t *)uc_;
+    void *bt[32];
+    uintptr_t fault = (uintptr_t)si->si_addr;
+    int n;
+#if defined(__aarch64__)
+    uintptr_t pc = (uintptr_t)uc->uc_mcontext.pc;
+#else
+    uintptr_t pc = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
+#endif
+
+    fprintf(stderr, "[CRASH] signal %d at pc=%p, fault addr=%p\n",
+            sig, (void *)pc, (void *)fault);
+    fprintf(stderr, "  Xbox regs: eax=0x%08X ecx=0x%08X edx=0x%08X esp=0x%08X\n",
+            g_eax, g_ecx, g_edx, g_esp);
+    fprintf(stderr, "  Xbox regs: ebx=0x%08X esi=0x%08X edi=0x%08X\n",
+            g_ebx, g_esi, g_edi);
+    fprintf(stderr, "  Xbox VA of fault: 0x%08X\n",
+            (uint32_t)(fault - (uintptr_t)g_xbox_mem_offset));
+    print_guest_stack();
+    n = backtrace(bt, 32);
+    backtrace_symbols_fd(bt, n, 2);
+    _exit(139);
+}
+
+static void install_crash_handler(void)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = segv_handler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+    sigaction(SIGILL, &sa, NULL);
+}
+#endif /* _WIN32 */
 
 /* ── WinMain ───────────────────────────────────────────────── */
+
+#ifndef _WIN32
+/* No SEH/VEH on the POSIX shim: the crash handler below is Windows-only. */
+#define WINAPI
+typedef void *HINSTANCE;
+#define _putenv_s(n, v) setenv((n), (v), 1)
+int recomp_dispatch_init(void);
+#endif
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                    LPSTR lpCmdLine, int nCmdShow)
@@ -386,9 +456,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     /* Load symbols up front rather than from inside the handler: at fault
      * time the process is already in a bad way, and SymInitialize
      * allocates. Failure is not fatal -- the handler prints no name. */
+#ifdef _WIN32
     SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
     SymInitialize(GetCurrentProcess(), NULL, TRUE);
     AddVectoredExceptionHandler(1, veh_handler);
+#else
+    install_crash_handler();
+#endif
 
     /* Step 1: Load XBE */
     if (!load_xbe(YOUR_GAME_XBE_PATH, &xbe_data, &xbe_size)) {
@@ -583,5 +657,9 @@ int main(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
+#ifdef _WIN32
     return WinMain(GetModuleHandle(NULL), NULL, GetCommandLineA(), SW_SHOW);
+#else
+    return WinMain(NULL, NULL, NULL, 0);
+#endif
 }

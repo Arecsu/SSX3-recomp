@@ -149,7 +149,7 @@ index cd69e57..86d2428 100644
      idx = g_xa2_next_buf;
      copy_samples = (num_samples > XA2_BUF_SAMPLES) ? XA2_BUF_SAMPLES : num_samples;
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
-index c65ba43..cb131dd 100644
+index c65ba43..16c1224 100644
 --- a/src/kernel/kernel_bridge.c
 +++ b/src/kernel/kernel_bridge.c
 @@ -1514,6 +1514,31 @@ static HANDLE bridge_resolve_handle(uint32_t token);
@@ -521,7 +521,15 @@ index c65ba43..cb131dd 100644
      /* A freshly set timer starts unsignaled, like the real KeSetTimer. */
      {
          HANDLE ev = ke_shadow_lookup(timer_va);
-@@ -4155,8 +4445,31 @@ static void bridge_KeQueryBasePriorityThread(void)
+@@ -2966,6 +3256,7 @@ static NTSTATUS bridge_create_file_impl(
+         bridge_write_handle(handle_va, h);
+         bridge_write_iostatus(iostatus_va, ios.Status, (uint32_t)ios.Information);
+     } else {
++        fprintf(stderr, "  [FILE] open '%s' failed: 0x%08X\n", name.Buffer, (unsigned)st);
+         bridge_write_iostatus(iostatus_va, st, 0);
+     }
+     return st;
+@@ -4155,8 +4446,31 @@ static void bridge_KeQueryBasePriorityThread(void)
          XBOX_TO_NATIVE(STACK_ARG(0)));
  }
  
@@ -553,7 +561,7 @@ index c65ba43..cb131dd 100644
      g_eax = (uint32_t)xbox_KeSetBasePriorityThread(
          XBOX_TO_NATIVE(STACK_ARG(0)), (LONG)STACK_ARG(1));
  }
-@@ -4472,15 +4785,49 @@ static void bridge_KeWaitForMultipleObjects(void)
+@@ -4472,15 +4786,49 @@ static void bridge_KeWaitForMultipleObjects(void)
      }
      if (count > BRIDGE_MAXIMUM_WAIT_OBJECTS)
          count = BRIDGE_MAXIMUM_WAIT_OBJECTS;
@@ -606,7 +614,7 @@ index c65ba43..cb131dd 100644
  }
  
  #undef BRIDGE_MAXIMUM_WAIT_OBJECTS
-@@ -7349,8 +7696,7 @@ static void bridge_KeSetPriorityProcess(void)
+@@ -7349,8 +7697,7 @@ static void bridge_KeSetPriorityProcess(void)
  /* --- KeSetPriorityThread (ordinal 148, 2 args = 8 bytes) --- */
  static void bridge_KeSetPriorityThread(void)
  {
@@ -616,7 +624,7 @@ index c65ba43..cb131dd 100644
      g_eax = 0;
  }
  
-@@ -9371,17 +9717,134 @@ static int guest_cpu_enabled(void)
+@@ -9371,17 +9718,134 @@ static int guest_cpu_enabled(void)
      return g_guest_cpu_on;
  }
  
@@ -752,7 +760,7 @@ index c65ba43..cb131dd 100644
  void guest_cpu_part(void)
  {
      if (t_guest_held) {
-@@ -9407,7 +9870,7 @@ static void kernel_thunk_dispatch(void)
+@@ -9407,7 +9871,7 @@ static void kernel_thunk_dispatch(void)
       * a guest callback a bridge runs (an APC) returns into the bridge, not to
       * the thread's own code -- and only if the thread still exists as one. */
      if (t_guest_thread && t_dispatch_depth == 0 && guest_cpu_enabled()) {
@@ -761,6 +769,32 @@ index c65ba43..cb131dd 100644
          t_guest_held = 1;
      }
      (void)held;
+diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
+index 42135e0..feec58a 100644
+--- a/src/kernel/kernel_file.c
++++ b/src/kernel/kernel_file.c
+@@ -824,7 +824,12 @@ NTSTATUS __stdcall xbox_NtCreateFile(
+     }
+ 
+     int fd;
+-    if (CreateOptions & XBOX_FILE_DIRECTORY_FILE) {
++    struct stat host_st;
++    if (!(CreateOptions & XBOX_FILE_DIRECTORY_FILE) &&
++        stat(host_path, &host_st) == 0 && S_ISDIR(host_st.st_mode)) {
++        /* A title opening a partition device (a directory here) as a file. */
++        fd = open(host_path, O_RDONLY | O_DIRECTORY);
++    } else if (CreateOptions & XBOX_FILE_DIRECTORY_FILE) {
+         if (CreateDisposition == XBOX_FILE_CREATE || CreateDisposition == XBOX_FILE_OPEN_IF)
+             mkdir(host_path, 0755);   /* EEXIST is fine */
+         fd = open(host_path, O_RDONLY | O_DIRECTORY);
+@@ -835,6 +840,7 @@ NTSTATUS __stdcall xbox_NtCreateFile(
+     if (fd < 0) {
+         int e = errno;
+         XBOX_TRACE(XBOX_LOG_FILE, "NtCreateFile FAILED: %s (errno=%d)", host_path, e);
++        fprintf(stderr, "  [FILE] host open '%s' failed: %s\n", host_path, strerror(e));
+         if (IoStatusBlock) {
+             IoStatusBlock->Status = STATUS_OBJECT_NAME_NOT_FOUND;
+             IoStatusBlock->Information = 0;
 diff --git a/src/kernel/kernel_hal.c b/src/kernel/kernel_hal.c
 index 1ad4fff..7deb391 100644
 --- a/src/kernel/kernel_hal.c
@@ -787,8 +821,100 @@ index 1ad4fff..7deb391 100644
  }
  
  /*
+diff --git a/src/kernel/kernel_path.c b/src/kernel/kernel_path.c
+index caf6390..dc5e1f6 100644
+--- a/src/kernel/kernel_path.c
++++ b/src/kernel/kernel_path.c
+@@ -485,6 +485,8 @@ translate:
+ #include <sys/stat.h>
+ #include <sys/types.h>
+ #include <errno.h>
++#include <fcntl.h>
++#include <stdint.h>
+ 
+ static char s_game_dir[MAX_PATH];
+ static char s_save_dir[MAX_PATH];
+@@ -553,6 +555,68 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
+              s_game_dir, s_save_dir);
+ }
+ 
++/* Raw disk device: Partition0.img carries the partition table at 0x800
++ * (see the Windows branch above for why a title reads it). */
++static void xbox_write_partition_table(const char *path)
++{
++    static const struct { const char *name; uint32_t start, size; } parts[] = {
++        { "XBOX_PART_X",  0x00000400, 0x00177000 },
++        { "XBOX_PART_Y",  0x00177400, 0x00177000 },
++        { "XBOX_PART_Z",  0x002EE400, 0x00177000 },
++        { "XBOX_PART_C",  0x00465400, 0x000FA000 },
++        { "XBOX_PART_E",  0x0055F400, 0x00465400 },
++    };
++    unsigned char sector[512];
++    int fd = open(path, O_WRONLY | O_CREAT, 0644);
++    size_t i;
++
++    if (fd < 0)
++        return;
++    memset(sector, 0, sizeof(sector));
++    memcpy(sector, "****PARTINFO****", 16);
++    for (i = 0; i < sizeof(parts) / sizeof(parts[0]); i++) {
++        unsigned char *e = sector + 48 + i * 32;
++        size_t n = strlen(parts[i].name);
++        uint32_t flags = 0x80000000u, zero = 0;
++        memset(e, ' ', 16);
++        memcpy(e, parts[i].name, n < 16 ? n : 16);
++        memcpy(e + 16, &flags, 4);
++        memcpy(e + 20, &parts[i].start, 4);
++        memcpy(e + 24, &parts[i].size, 4);
++        memcpy(e + 28, &zero, 4);
++    }
++    if (pwrite(fd, sector, sizeof(sector), 0x800) < 0)
++        xbox_log(XBOX_LOG_WARN, XBOX_LOG_PATH, "partition table write: %s", strerror(errno));
++    close(fd);
++}
++
++/* \Device\Harddisk0\PartitionN with nothing below it -> <save>/PartitionN.img */
++static BOOL xbox_partition_device_path(const char *xbox_path, char *out, DWORD n)
++{
++    static const char *prefix = "\\Device\\Harddisk0\\Partition";
++    int len = match_prefix(xbox_path, prefix);
++    int digit;
++    const char *rest;
++
++    if (!len)
++        return FALSE;
++    digit = xbox_path[len];
++    /* Only the raw disk is an image; the others are directories (rules table). */
++    if (digit != '0')
++        return FALSE;
++    rest = xbox_path + len + 1;
++    if (*rest == '\\' || *rest == '/')
++        rest++;
++    if (*rest != '\0')
++        return FALSE;
++
++    mkdir_p(s_save_dir);
++    snprintf(out, n, "%s/Partition%c.img", s_save_dir, digit);
++    if (access(out, F_OK) != 0)
++        xbox_write_partition_table(out);
++    return TRUE;
++}
++
+ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, DWORD buf_size)
+ {
+     const char* remainder = NULL;
+@@ -566,6 +630,9 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+     if (!s_initialized)
+         xbox_path_init(NULL, NULL);
+ 
++    if (xbox_partition_device_path(xbox_path, host_path_buf, buf_size))
++        return TRUE;
++
+     {
+         char linked[512];
+         if (resolve_symlink(xbox_path, linked, sizeof(linked)))
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index c65632c..b9dcf23 100644
+index c65632c..4ab1deb 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
 @@ -240,10 +240,13 @@ typedef struct {
@@ -1022,7 +1148,7 @@ index c65632c..b9dcf23 100644
 + * was stored, and the draw state -- so a wrong colour on screen can be traced
 + * to the pass that produced it. Starts delay_ms after the first write. */
 +static int s_probe = -1, s_probe_x, s_probe_y;
-+static long s_probe_left;
++static LONG s_probe_left;
 +static DWORD s_probe_start, s_probe_delay;
 +
 +static void probe_init(void)
@@ -1033,7 +1159,7 @@ index c65632c..b9dcf23 100644
 +    if (e && sscanf(e, "%d,%d,%lu,%lu", &s_probe_x, &s_probe_y, &d, &m) >= 2) {
 +        s_probe = 1;
 +        s_probe_delay = (DWORD)d;
-+        s_probe_left = (long)m;
++        s_probe_left = (LONG)m;
 +        s_probe_start = GetTickCount();
 +    }
 +}
@@ -1947,11 +2073,11 @@ index c65632c..b9dcf23 100644
                      v.u, v.f);
          }
 diff --git a/src/kernel/nv2a_pb_scan.c b/src/kernel/nv2a_pb_scan.c
-index 65bbedb..1abdb56 100644
+index 65bbedb..a12871f 100644
 --- a/src/kernel/nv2a_pb_scan.c
 +++ b/src/kernel/nv2a_pb_scan.c
 @@ -1,3 +1,4 @@
-+#include <windows.h>
++#include "kernel.h"
  /*
   * Read-only survey of the pushbuffer a title submits.
   *
@@ -2179,10 +2305,21 @@ index 7fae74c..c7a2e88 100644
  {
      static int dump = -1;
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
-index 72d5131..1913972 100644
+index 72d5131..d593f74 100644
 --- a/src/kernel/xbox_memory_layout.c
 +++ b/src/kernel/xbox_memory_layout.c
-@@ -191,11 +191,11 @@ static const struct { uint32_t offset; uint32_t busy_mask; } NV2A_ACK[] = {
+@@ -15,6 +15,10 @@
+ #include "xbox_memory_layout.h"
+ #include "kernel.h"
+ #include "guest_vmem.h"
++#ifndef _WIN32
++#include <sched.h>
++#define YieldProcessor() sched_yield()
++#endif
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -191,11 +195,11 @@ static const struct { uint32_t offset; uint32_t busy_mask; } NV2A_ACK[] = {
       *
       * Holding them at zero is correct rather than convenient: nothing here
       * ever raises a GPU interrupt, so "none pending" is the truth. */
@@ -2196,7 +2333,7 @@ index 72d5131..1913972 100644
  };
  
  /*
-@@ -449,6 +449,23 @@ static void ac97_arm_write_trap(void)
+@@ -449,6 +453,23 @@ static void ac97_arm_write_trap(void)
  static uint32_t g_dsp_ack[XBOX_MAX_DSP_ACK];
  static int g_dsp_ack_count = 0;
  
@@ -2220,7 +2357,7 @@ index 72d5131..1913972 100644
  static void dsp_ack_init(void)
  {
      const char *spec = getenv("RECOMP_DSP_ACK");
-@@ -785,8 +802,50 @@ static void frame_counters_tick(void)
+@@ -785,8 +806,50 @@ static void frame_counters_tick(void)
      }
  }
  
@@ -2271,7 +2408,7 @@ index 72d5131..1913972 100644
      for (int i = 0; i < g_fence_mirror_count; i++) {
          uint32_t dev, get_ptr;
  
-@@ -873,6 +932,56 @@ static void framebuffer_probe_tick(void)
+@@ -873,6 +936,56 @@ static void framebuffer_probe_tick(void)
      fflush(stderr);
  }
  
@@ -2328,7 +2465,7 @@ index 72d5131..1913972 100644
  static DWORD WINAPI nv2a_ack_thread(LPVOID param)
  {
      volatile uint32_t *regs = (volatile uint32_t *)param;
-@@ -931,6 +1040,45 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+@@ -931,6 +1044,45 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
              static uint32_t last_put;
              DWORD now_ms = GetTickCount();
              uint32_t put = *(volatile uint32_t *)((char *)regs + NV2A_USER_DMA_PUT);
@@ -2374,7 +2511,7 @@ index 72d5131..1913972 100644
              if (put != last_put || (now_ms - last_put_ms) > 2000) {
                  /* Survey the segment the title just submitted, once. */
                  {
-@@ -1062,13 +1210,50 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+@@ -1062,13 +1214,50 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
      return 0;
  }
  
@@ -2623,137 +2760,6 @@ index 08bae4b..76c81ec 100644
      ReleaseDC(hwnd, hdc);
      DestroyWindow(hwnd);
      free(s_rgb);
-diff --git a/src/video/gpu_present.c b/src/video/gpu_present.c
-new file mode 100644
-index 0000000..d243871
---- /dev/null
-+++ b/src/video/gpu_present.c
-@@ -0,0 +1,105 @@
-+/*
-+ * D3D11 presentation for the framebuffer window (ROADMAP Phase 2.1).
-+ *
-+ * The window used to show each frame with GDI (StretchDIBits on a 16 ms
-+ * timer). This puts a D3D11 device and a swap chain on the same window and
-+ * presents the flipped frame through it, vsync-paced -- the device the GPU
-+ * renderer will later draw into directly instead of copying from guest
-+ * memory. The frame is uploaded straight into the back buffer (same size,
-+ * B8G8R8A8: the guest's A8R8G8B8 in memory order); DXGI stretches it to the
-+ * window. RECOMP_D3D_PRESENT=1 turns it on; anything that fails falls back to
-+ * GDI.
-+ */
-+#if defined(_WIN32)
-+#define COBJMACROS
-+#include <windows.h>
-+#include <d3d11.h>
-+#include <dxgi.h>
-+#include <stdio.h>
-+#include <stdint.h>
-+#include <stdlib.h>
-+#include "gpu_present.h"
-+
-+#pragma comment(lib, "d3d11.lib")
-+#pragma comment(lib, "dxgi.lib")
-+
-+static ID3D11Device        *s_dev;
-+static ID3D11DeviceContext *s_ctx;
-+static IDXGISwapChain      *s_chain;
-+static ID3D11Texture2D     *s_back;
-+static uint32_t             s_w, s_h;
-+static int                  s_vsync = 1;
-+
-+int gpu_present_enabled(void)
-+{
-+    static int on = -1;
-+    if (on < 0) {
-+        const char *e = getenv("RECOMP_D3D_PRESENT");
-+        on = e && *e && *e != '0';
-+    }
-+    return on;
-+}
-+
-+int gpu_present_init(HWND hwnd, uint32_t width, uint32_t height)
-+{
-+    DXGI_SWAP_CHAIN_DESC sd;
-+    HRESULT hr;
-+    const char *v = getenv("RECOMP_VSYNC");
-+
-+    if (v && v[0] == '0')
-+        s_vsync = 0;
-+    ZeroMemory(&sd, sizeof sd);
-+    sd.BufferDesc.Width  = width;
-+    sd.BufferDesc.Height = height;
-+    sd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-+    sd.SampleDesc.Count  = 1;
-+    sd.BufferUsage       = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-+    sd.BufferCount       = 1;
-+    sd.OutputWindow      = hwnd;
-+    sd.Windowed          = TRUE;
-+    sd.SwapEffect        = DXGI_SWAP_EFFECT_DISCARD;
-+
-+    hr = D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0,
-+                                       NULL, 0, D3D11_SDK_VERSION, &sd,
-+                                       &s_chain, &s_dev, NULL, &s_ctx);
-+    if (FAILED(hr)) {
-+        fprintf(stderr, "  [D3D] device/swap chain failed (0x%08lX); staying on GDI\n",
-+                (unsigned long)hr);
-+        return 0;
-+    }
-+    hr = IDXGISwapChain_GetBuffer(s_chain, 0, &IID_ID3D11Texture2D, (void **)&s_back);
-+    if (FAILED(hr)) {
-+        fprintf(stderr, "  [D3D] no back buffer (0x%08lX); staying on GDI\n",
-+                (unsigned long)hr);
-+        gpu_present_shutdown();
-+        return 0;
-+    }
-+    s_w = width;
-+    s_h = height;
-+    fprintf(stderr, "  [D3D] presenting through D3D11 (%ux%u, vsync %s)\n",
-+            width, height, s_vsync ? "on" : "off");
-+    return 1;
-+}
-+
-+void gpu_present_frame(const uint32_t *pixels)
-+{
-+    if (!s_back || !pixels)
-+        return;
-+    ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)s_back, 0,
-+                                          NULL, pixels, s_w * 4, 0);
-+    IDXGISwapChain_Present(s_chain, (UINT)s_vsync, 0);
-+}
-+
-+void gpu_present_shutdown(void)
-+{
-+    if (s_back)  { ID3D11Texture2D_Release(s_back);      s_back = NULL; }
-+    if (s_chain) { IDXGISwapChain_Release(s_chain);       s_chain = NULL; }
-+    if (s_ctx)   { ID3D11DeviceContext_Release(s_ctx);    s_ctx = NULL; }
-+    if (s_dev)   { ID3D11Device_Release(s_dev);           s_dev = NULL; }
-+}
-+
-+int gpu_present_active(void)
-+{
-+    return s_back != NULL;
-+}
-+#endif
-diff --git a/src/video/gpu_present.h b/src/video/gpu_present.h
-new file mode 100644
-index 0000000..cb0810f
---- /dev/null
-+++ b/src/video/gpu_present.h
-@@ -0,0 +1,14 @@
-+/* D3D11 presentation for the framebuffer window (see gpu_present.c). */
-+#ifndef XBOX_GPU_PRESENT_H
-+#define XBOX_GPU_PRESENT_H
-+#if defined(_WIN32)
-+#include <windows.h>
-+#include <stdint.h>
-+
-+int  gpu_present_enabled(void);                 /* RECOMP_D3D_PRESENT=1 */
-+int  gpu_present_init(HWND hwnd, uint32_t width, uint32_t height);
-+void gpu_present_frame(const uint32_t *pixels); /* width*height B8G8R8A8 */
-+int  gpu_present_active(void);
-+void gpu_present_shutdown(void);
-+#endif
-+#endif
 diff --git a/templates/runtime/recomp_types.h b/templates/runtime/recomp_types.h
 index 8e9325e..cc6b183 100644
 --- a/templates/runtime/recomp_types.h

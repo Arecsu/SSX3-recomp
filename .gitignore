@@ -75,3 +75,5 @@ snap_tmp.bmp
 
 # Local rip / ISO
 disk/
+build-linux/
+/game

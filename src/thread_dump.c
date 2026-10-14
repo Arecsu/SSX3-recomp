@@ -14,6 +14,11 @@
  * Off unless RECOMP_THREAD_DUMP_SECS is set. Addresses inside the exe are
  * printed rebased to 0x140000000, the base the map file is written for.
  */
+#ifndef _WIN32
+/* Windows-only (Toolhelp, CONTEXT, debug registers); no-ops on the POSIX host. */
+void ssx3_ThreadDumpStart(void) {}
+void ssx3_PeekEveryStart(void) {}
+#else
 #include <windows.h>
 #include <tlhelp32.h>
 #include <stdio.h>
@@ -470,3 +475,4 @@ void ssx3_PeekEveryStart(void)
     if (ms)
         CloseHandle(CreateThread(NULL, 0, td_peek_thread, (LPVOID)(uintptr_t)ms, 0, NULL));
 }
+#endif /* _WIN32 */

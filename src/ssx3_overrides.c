@@ -9,7 +9,11 @@
  * the way recomp_manual.c does: the registers are thread-local, and a plain
  * `extern uint32_t g_eax` names the TLS template, not the running thread's copy.
  */
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "platform/win32_compat.h"
+#endif
 #include "recomp/gen/recomp_types.h"
 #include <math.h>
 #include <stdio.h>
@@ -786,7 +790,7 @@ extern void sub_001A9BD0_gen(void);
 
 void sub_001A9BD0(void)
 {
-    static volatile long failures, calls;
+    static volatile LONG failures, calls;
     static volatile long long requested;
     uint32_t ret_va = MEM32(g_esp);
     uint32_t size = MEM32(g_esp + 4);
@@ -794,7 +798,11 @@ void sub_001A9BD0(void)
     uint32_t flags = MEM32(g_esp + 12);
 
     InterlockedIncrement(&calls);
+    #ifdef _WIN32
     InterlockedExchangeAdd64(&requested, size);
+#else
+    __sync_fetch_and_add(&requested, size);
+#endif
     sub_001A9BD0_gen();
     if (g_eax == 0 && InterlockedIncrement(&failures) <= 24)
         fprintf(stderr, "  [ALLOC] FAILED size=0x%X (%u) tag=0x%08X flags=0x%08X "
@@ -823,7 +831,7 @@ extern void sub_000E1AE0(void);   /* app vtbl[6]: sample input into the ring */
 extern void sub_000E1A80(void);   /* app vtbl[5]: is an input frame (update) due */
 extern void sub_000D7460(void);   /* loading state vtbl[6]: render */
 
-static void trace_call(const char *name, void (*fn)(void), volatile long *n)
+static void trace_call(const char *name, void (*fn)(void), volatile LONG *n)
 {
     long k = InterlockedIncrement(n);
     uint32_t ecx = g_ecx;
@@ -837,8 +845,8 @@ static void trace_call(const char *name, void (*fn)(void), volatile long *n)
 /* Same, but logs the return value (al) whenever it changes, with the input
  * ring indices: guest 0x0036952C is the input manager, +0x2EE0 read and
  * +0x2EE4 write. */
-static void trace_ret(const char *name, void (*fn)(void), volatile long *n,
-                      volatile long *last)
+static void trace_ret(const char *name, void (*fn)(void), volatile LONG *n,
+                      volatile LONG *last)
 {
     long k = InterlockedIncrement(n);
     long ret;
@@ -858,11 +866,11 @@ static void trace_ret(const char *name, void (*fn)(void), volatile long *n,
 }
 
 #define TRACED_RET(va)                                                 \
-    static volatile long n_##va, last_##va = -1;                       \
+    static volatile LONG n_##va, last_##va = -1;                       \
     static void traced_##va(void) { trace_ret(#va, va, &n_##va, &last_##va); }
 
 #define TRACED(va)                                                     \
-    static volatile long n_##va;                                       \
+    static volatile LONG n_##va;                                       \
     static void traced_##va(void) { trace_call(#va, va, &n_##va); }
 
 TRACED(sub_001AE020)
