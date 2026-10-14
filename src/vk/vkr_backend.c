@@ -3,6 +3,7 @@
  * Milestone-2 scope: one "main" colour target (the largest non-swizzled
  * 32-bit surface drawn to). Draws and clears on any other target are declined
  * so the software rasteriser still handles them in guest memory. */
+#include "vkr_thread.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,7 +72,45 @@ _Static_assert(sizeof(VkrVertex) == sizeof(Nv2aVshOutput),
 static VkrContext *s_vk;
 static uint32_t s_w, s_h, s_zmax;
 static int s_dirty;                     /* drawn since the last flip */
-static uint8_t *s_px;
+
+/* Flipped frames on their way to guest memory. The executor submits a frame
+ * and goes on with the next one; this thread waits for the GPU and copies
+ * the result into the surface the title flipped, so the executor never
+ * waits for the GPU to finish a frame (it did: ~5 ms a flip, a quarter of
+ * its time in a race). The copy lands a few ms after the flip. */
+typedef struct { int slot; uint32_t offset, pitch, x, y, w, h; } FlipJob;
+static FlipJob s_jobs[4];
+static int s_job_head, s_job_n;
+static pthread_mutex_t s_job_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t s_job_cond = PTHREAD_COND_INITIALIZER;
+
+static void *flip_thread(void *unused)
+{
+    (void)unused;
+    for (;;) {
+        FlipJob j;
+        const uint8_t *px;
+        uint32_t y;
+        pthread_mutex_lock(&s_job_lock);
+        while (!s_job_n)
+            pthread_cond_wait(&s_job_cond, &s_job_lock);
+        j = s_jobs[s_job_head];
+        pthread_mutex_unlock(&s_job_lock);
+        px = vkr_frame_pixels(s_vk, j.slot);
+        if (px) {
+            uint8_t *mem = (uint8_t *)xbox_GetMemoryOffset();
+            for (y = 0; y < j.h; y++)
+                memcpy(mem + j.offset + (size_t)(j.y + y) * j.pitch + (size_t)j.x * 4,
+                       px + (size_t)y * j.w * 4, (size_t)j.w * 4);
+        }
+        pthread_mutex_lock(&s_job_lock);
+        s_job_head = (s_job_head + 1) % 4;
+        s_job_n--;
+        pthread_mutex_unlock(&s_job_lock);
+        vkr_frame_release(s_vk, j.slot);
+    }
+    return NULL;
+}
 
 /* Is t the surface the Vulkan target stands for? Adopts the first one that
  * looks like a frame buffer (>= 320x240 clip, linear, 32-bit). The target
@@ -159,13 +198,11 @@ static int is_main(const Nv2aTarget *t)
     if (w != s_w || h != s_h || t->zmax != s_zmax) {
         if (!vkr_set_target(s_vk, w, h, (float)t->zmax))
             return 0;
-        free(s_px);
-        s_px = (uint8_t *)malloc((size_t)w * h * 4);
         s_w = w; s_h = h; s_zmax = t->zmax;
         fprintf(stderr, "[VKR] target %ux%u zmax %X\n", s_w, s_h, s_zmax);
     }
     vkr_set_scissor(s_vk, t->x, t->y, t->width, t->height);
-    return s_px != NULL;
+    return 1;
 }
 
 static void fill_state(const Nv2aTarget *t, VkrDrawState *st)
@@ -174,6 +211,7 @@ static void fill_state(const Nv2aTarget *t, VkrDrawState *st)
     int k;
     st->depth_test = t->depth_test; st->depth_write = t->depth_write;
     st->depth_func = t->depth_func;
+    st->w_buffer = t->w_buffer;
     st->blend_enable = t->blend_enable;
     st->blend_src = t->blend_sfactor; st->blend_dst = t->blend_dfactor;
     st->blend_eq = t->blend_equation;
@@ -423,8 +461,8 @@ static int be_clear(const Nv2aTarget *t, uint32_t flags, uint32_t argb, float de
 
 static void be_flip(const Nv2aTarget *t)
 {
-    uint8_t *mem = (uint8_t *)xbox_GetMemoryOffset();
-    uint32_t y;
+    FlipJob j;
+    double tf;
     if (s_trace < 0) {
         const char *e = getenv("RECOMP_VKR_TRACE_AT");
         s_trace = e ? 1 : 0;
@@ -449,16 +487,19 @@ static void be_flip(const Nv2aTarget *t)
     }
     if (!s_dirty || t->bpp != 4 || t->pitch / 4 < s_w)
         return;
-    {
-        double tf = s_stats ? now_ms() : 0;
-        int ok = vkr_read_back(s_vk, s_px);
-        if (s_stats) { s_t[4] += now_ms() - tf; s_n[2]++; }
-        if (!ok)
-            return;
-    }
-    for (y = 0; y < s_h; y++)              /* the target is the surface from its origin */
-        memcpy(mem + t->color_offset + (size_t)y * t->pitch,
-               s_px + (size_t)y * s_w * 4, (size_t)s_w * 4);
+    tf = s_stats ? now_ms() : 0;
+    j.slot = vkr_flip_submit(s_vk);
+    if (s_stats) { s_t[4] += now_ms() - tf; s_n[2]++; }
+    if (j.slot < 0)
+        return;
+    /* the target is the surface from its origin (is_main) */
+    j.offset = t->color_offset; j.pitch = t->pitch;
+    j.x = 0; j.y = 0; j.w = s_w; j.h = s_h;
+    pthread_mutex_lock(&s_job_lock);
+    s_jobs[(s_job_head + s_job_n) % 4] = j;  /* <= VKR_FRAMES pending: never full */
+    s_job_n++;
+    pthread_cond_signal(&s_job_cond);
+    pthread_mutex_unlock(&s_job_lock);
     s_dirty = 0;
 }
 
@@ -466,9 +507,13 @@ static const Nv2aBackend s_backend = {be_draw, be_clear, be_flip};
 
 int vkr_backend_install(void)
 {
+    pthread_t th;
     s_vk = vkr_create();
     if (!s_vk)
         return 0;
+    if (pthread_create(&th, NULL, flip_thread, NULL) != 0)
+        return 0;
+    pthread_detach(th);
     nv2a_exec_set_backend(&s_backend);
     fprintf(stderr, "[VKR] backend installed\n");
     return 1;

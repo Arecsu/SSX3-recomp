@@ -1,5 +1,6 @@
 #include "vkr.h"
 
+#include "vkr_thread.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +10,7 @@
 #include "xbox_frag_spv.h"
 
 #define VKR_BUF_BYTES (32u << 20)       /* vertex+index staging per frame */
+#define VKR_FRAMES 2                    /* frames in flight */
 
 struct VkrTex {
     uint64_t key;
@@ -18,6 +20,17 @@ struct VkrTex {
     VkImageView view;
 };
 
+/* What one frame in flight owns: recorded while the previous one renders. */
+typedef struct {
+    VkCommandBuffer cmd;
+    VkFence fence;
+    VkBuffer buf, rb;
+    VkDeviceMemory buf_mem, rb_mem;
+    uint8_t *buf_map, *rb_map;
+    int rb_noncoherent;             /* cached but not coherent: invalidate before reading */
+    int busy;                       /* submitted, read-back not released yet */
+} VkrFrame;
+
 struct VkrContext {
     VkInstance inst;
     VkPhysicalDevice phys;
@@ -25,10 +38,13 @@ struct VkrContext {
     VkQueue queue;
     uint32_t qfam;
     VkCommandPool pool;
-    VkCommandBuffer cmd;            /* the one being recorded: cmds[ncmd] */
-    VkCommandBuffer cmds[16];
-    uint32_t ncmd, draws_in_cmd;
+    VkrFrame fr[VKR_FRAMES];
+    int cur;                        /* the frame being recorded */
+    pthread_mutex_t lock;           /* fr[].busy */
+    pthread_cond_t freed;
     uint32_t tex_gen;               /* bumped when every texture is freed */
+    /* aliases of fr[cur] */
+    VkCommandBuffer cmd;
     VkFence fence;
     VkPhysicalDeviceMemoryProperties mem;
 
@@ -56,18 +72,31 @@ struct VkrContext {
     int recording, in_pass;
     int color_valid;
 
-    /* per-frame upload buffer */
+    /* per-frame upload buffer (alias of fr[cur]) */
     VkBuffer buf;
-    VkDeviceMemory buf_mem;
     uint8_t *buf_map;
     uint32_t buf_used;
-
-    /* readback */
-    VkBuffer rb;
-    VkDeviceMemory rb_mem;
-    uint8_t *rb_map;
-    int rb_noncoherent;             /* cached but not coherent: invalidate before reading */
 };
+
+static void use_frame(VkrContext *c, int i)
+{
+    c->cur = i;
+    c->cmd = c->fr[i].cmd;
+    c->fence = c->fr[i].fence;
+    c->buf = c->fr[i].buf;
+    c->buf_map = c->fr[i].buf_map;
+}
+
+/* Until no frame is in flight or waiting to be read. */
+static void wait_all_free(VkrContext *c)
+{
+    int i;
+    pthread_mutex_lock(&c->lock);
+    for (i = 0; i < VKR_FRAMES; i++)
+        while (c->fr[i].busy)
+            pthread_cond_wait(&c->freed, &c->lock);
+    pthread_mutex_unlock(&c->lock);
+}
 
 #define CK(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) { \
     fprintf(stderr, "[VKR] %s failed: %d (%s:%d)\n", #x, (int)r_, __FILE__, __LINE__); \
@@ -227,7 +256,7 @@ static int make_layout(VkrContext *c)
     };
     VkDescriptorSetLayoutCreateInfo di = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     VkPushConstantRange pcr[2] = {{VK_SHADER_STAGE_VERTEX_BIT, 0, 32},
-                                  {VK_SHADER_STAGE_FRAGMENT_BIT, 32, 8}};
+                                  {VK_SHADER_STAGE_FRAGMENT_BIT, 32, 16}};
     VkPipelineLayoutCreateInfo li = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
 
     c->vs = shader(c, xbox_vert_spv, xbox_vert_spv_len);
@@ -365,6 +394,7 @@ VkrContext *vkr_create(void)
     VkCommandBufferAllocateInfo cai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     VkFenceCreateInfo fi = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     void *map;
+    int f;
 
     if (!c) return NULL;
     app.pApplicationName = "ssx3"; app.apiVersion = VK_API_VERSION_1_4;
@@ -407,15 +437,20 @@ VkrContext *vkr_create(void)
     pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     if (vkCreateCommandPool(c->dev, &pci, NULL, &c->pool) != VK_SUCCESS) goto fail;
     cai.commandPool = c->pool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cai.commandBufferCount = 16;
-    if (vkAllocateCommandBuffers(c->dev, &cai, c->cmds) != VK_SUCCESS) goto fail;
-    c->cmd = c->cmds[0];
-    if (vkCreateFence(c->dev, &fi, NULL, &c->fence) != VK_SUCCESS) goto fail;
-    if (!make_buffer(c, VKR_BUF_BYTES, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
-                     | VK_BUFFER_USAGE_INDEX_BUFFER_BIT
-                     | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &c->buf, &c->buf_mem, &map))
-        goto fail;
-    c->buf_map = (uint8_t *)map;
+    cai.commandBufferCount = 1;
+    for (f = 0; f < VKR_FRAMES; f++) {
+        VkrFrame *fr = &c->fr[f];
+        if (vkAllocateCommandBuffers(c->dev, &cai, &fr->cmd) != VK_SUCCESS) goto fail;
+        if (vkCreateFence(c->dev, &fi, NULL, &fr->fence) != VK_SUCCESS) goto fail;
+        if (!make_buffer(c, VKR_BUF_BYTES, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+                         | VK_BUFFER_USAGE_INDEX_BUFFER_BIT
+                         | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &fr->buf, &fr->buf_mem, &map))
+            goto fail;
+        fr->buf_map = (uint8_t *)map;
+    }
+    pthread_mutex_init(&c->lock, NULL);
+    pthread_cond_init(&c->freed, NULL);
+    use_frame(c, 0);
     if (!make_layout(c)) goto fail;
     return c;
 fail:
@@ -426,7 +461,9 @@ fail:
 
 static void free_target(VkrContext *c)
 {
+    int f;
     if (!c->color) return;
+    wait_all_free(c);
     vkDeviceWaitIdle(c->dev);
     vkDestroyImageView(c->dev, c->color_view, NULL);
     vkDestroyImageView(c->dev, c->depth_view, NULL);
@@ -434,8 +471,10 @@ static void free_target(VkrContext *c)
     vkDestroyImage(c->dev, c->depth, NULL);
     vkFreeMemory(c->dev, c->color_mem, NULL);
     vkFreeMemory(c->dev, c->depth_mem, NULL);
-    vkDestroyBuffer(c->dev, c->rb, NULL);
-    vkFreeMemory(c->dev, c->rb_mem, NULL);
+    for (f = 0; f < VKR_FRAMES; f++) {
+        vkDestroyBuffer(c->dev, c->fr[f].rb, NULL);
+        vkFreeMemory(c->dev, c->fr[f].rb_mem, NULL);
+    }
     c->color = c->depth = VK_NULL_HANDLE;
 }
 
@@ -473,28 +512,42 @@ void vkr_destroy(VkrContext *c)
     vkDestroyShaderModule(c->dev, c->fs, NULL);
     vkDestroyPipelineLayout(c->dev, c->layout, NULL);
     vkDestroyDescriptorSetLayout(c->dev, c->dsl, NULL);
-    vkDestroyBuffer(c->dev, c->buf, NULL);
-    vkFreeMemory(c->dev, c->buf_mem, NULL);
-    vkDestroyFence(c->dev, c->fence, NULL);
+    for (int i = 0; i < VKR_FRAMES; i++) {
+        vkDestroyBuffer(c->dev, c->fr[i].buf, NULL);
+        vkFreeMemory(c->dev, c->fr[i].buf_mem, NULL);
+        vkDestroyFence(c->dev, c->fr[i].fence, NULL);
+    }
     vkDestroyCommandPool(c->dev, c->pool, NULL);
     vkDestroyDevice(c->dev, NULL);
     vkDestroyInstance(c->inst, NULL);
     free(c);
 }
 
+static void end_pass(VkrContext *c);
+
+/* Submit what has been recorded and wait for it. Texture uploads are in
+ * there: dropping the commands left those textures without content, and
+ * they stayed cached that way (magenta HUD in races after a resize). */
+static int flush_wait(VkrContext *c)
+{
+    VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    if (!c->recording) return 1;
+    end_pass(c);
+    CK(vkEndCommandBuffer(c->cmd));
+    c->recording = 0;
+    si.commandBufferCount = 1; si.pCommandBuffers = &c->cmd;
+    CK(vkQueueSubmit(c->queue, 1, &si, c->fence));
+    CK(vkWaitForFences(c->dev, 1, &c->fence, VK_TRUE, UINT64_MAX));
+    c->buf_used = 0;
+    return 1;
+}
+
 int vkr_set_target(VkrContext *c, uint32_t w, uint32_t h, float zmax)
 {
     void *map;
-    uint32_t i;
-    /* Pieces of the frame may still be on the GPU (submit_partial). */
-    vkDeviceWaitIdle(c->dev);
-    if (c->recording) {
-        vkEndCommandBuffer(c->cmd);
-        c->recording = c->in_pass = 0;
-    }
-    for (i = 0; i <= c->ncmd && i < 16; i++)
-        vkResetCommandBuffer(c->cmds[i], 0);
-    c->cmd = c->cmds[0]; c->ncmd = 0; c->draws_in_cmd = 0;
+    int f;
+    if (c->color && !flush_wait(c))
+        return 0;
     free_target(c);
     c->w = w; c->h = h; c->zmax = zmax;
     c->sc.offset.x = c->sc.offset.y = 0; c->sc.extent.width = w; c->sc.extent.height = h;
@@ -505,10 +558,12 @@ int vkr_set_target(VkrContext *c, uint32_t w, uint32_t h, float zmax)
     if (!make_image(c, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT, &c->depth, &c->depth_mem, &c->depth_view))
         return 0;
-    if (!make_buffer_ex(c, (VkDeviceSize)w * h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                        &c->rb, &c->rb_mem, &map, 1, &c->rb_noncoherent))
-        return 0;
-    c->rb_map = (uint8_t *)map;
+    for (f = 0; f < VKR_FRAMES; f++) {
+        if (!make_buffer_ex(c, (VkDeviceSize)w * h * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                            &c->fr[f].rb, &c->fr[f].rb_mem, &map, 1, &c->fr[f].rb_noncoherent))
+            return 0;
+        c->fr[f].rb_map = (uint8_t *)map;
+    }
     c->recording = c->in_pass = c->color_valid = 0;
     return 1;
 }
@@ -517,6 +572,13 @@ static int begin_cmd(VkrContext *c)
 {
     VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     if (c->recording) return 1;
+    /* The frame's previous use must be rendered and read back. */
+    pthread_mutex_lock(&c->lock);
+    while (c->fr[c->cur].busy)
+        pthread_cond_wait(&c->freed, &c->lock);
+    pthread_mutex_unlock(&c->lock);
+    CK(vkResetFences(c->dev, 1, &c->fence));
+    CK(vkResetCommandBuffer(c->cmd, 0));
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     CK(vkBeginCommandBuffer(c->cmd, &bi));
     c->recording = 1;
@@ -705,27 +767,6 @@ VkrTex *vkr_tex_create(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
     return t;
 }
 
-/* Hand the frame's work to the GPU in pieces (every 64 draws), so it runs
- * while the CPU builds the rest of the frame; the flip then waits only for
- * the tail instead of the whole frame. Queue order keeps them in sequence;
- * the upload buffer is not reused until the flip, so nothing is overwritten
- * under the GPU. */
-static void submit_partial(VkrContext *c)
-{
-    VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    if (!c->recording || c->ncmd + 1 >= 16)
-        return;
-    end_pass(c);
-    if (vkEndCommandBuffer(c->cmd) != VK_SUCCESS)
-        return;
-    si.commandBufferCount = 1; si.pCommandBuffers = &c->cmd;
-    if (vkQueueSubmit(c->queue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS)
-        return;
-    c->recording = 0;
-    c->cmd = c->cmds[++c->ncmd];
-    c->draws_in_cmd = 0;
-}
-
 int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
              const uint32_t *idx, uint32_t nidx, const VkrDrawState *st)
 {
@@ -733,7 +774,7 @@ int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
     VkDeviceSize off;
     VkPipeline pipe;
     float pcv[8];
-    uint32_t pcf[2];
+    uint32_t pcf[4];
     VkDescriptorImageInfo di[4];
     VkDescriptorBufferInfo bi;
     VkWriteDescriptorSet w[2];
@@ -768,7 +809,14 @@ int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
     pcv[4] = st->u.fog_param[0]; pcv[5] = st->u.fog_param[1]; pcv[6] = pcv[7] = 0.0f;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pcv);
     pcf[0] = st->alpha_func; pcf[1] = st->alpha_ref;
-    vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 32, 8, pcf);
+    {
+        /* W-buffering: depth is the interpolated clip w in depth-buffer
+         * units, scaled into 0..1 like z. */
+        float ws = st->w_buffer ? 1.0f / c->zmax : 0.0f;
+        memcpy(&pcf[2], &ws, 4);
+    }
+    pcf[3] = 0;
+    vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 32, 16, pcf);
 
     for (k = 0; k < 4; k++) {
         VkrTex *t = st->tex[k] ? st->tex[k] : c->white;
@@ -794,19 +842,18 @@ int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
     vkCmdBindVertexBuffers(c->cmd, 0, 1, &c->buf, &off);
     vkCmdBindIndexBuffer(c->cmd, c->buf, ib, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(c->cmd, nidx, 1, 0, 0, 0);
-    if (++c->draws_in_cmd >= 64)
-        submit_partial(c);
     return 1;
 }
 
 uint32_t vkr_width(const VkrContext *c) { return c->w; }
 uint32_t vkr_height(const VkrContext *c) { return c->h; }
 
-int vkr_read_back(VkrContext *c, uint8_t *out)
+int vkr_flip_submit(VkrContext *c)
 {
     VkBufferImageCopy cp = {0};
     VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    if (!begin_cmd(c)) return 0;
+    int slot = c->cur;
+    if (!begin_cmd(c)) return -1;
     end_pass(c);
     barrier(c, c->color, VK_IMAGE_ASPECT_COLOR_BIT,
             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -815,32 +862,56 @@ int vkr_read_back(VkrContext *c, uint8_t *out)
     cp.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     cp.imageSubresource.layerCount = 1;
     cp.imageExtent.width = c->w; cp.imageExtent.height = c->h; cp.imageExtent.depth = 1;
-    vkCmdCopyImageToBuffer(c->cmd, c->color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, c->rb, 1, &cp);
+    vkCmdCopyImageToBuffer(c->cmd, c->color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           c->fr[slot].rb, 1, &cp);
     barrier(c, c->color, VK_IMAGE_ASPECT_COLOR_BIT,
             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    CK(vkEndCommandBuffer(c->cmd));
+    if (vkEndCommandBuffer(c->cmd) != VK_SUCCESS) return -1;
     c->recording = 0;
     si.commandBufferCount = 1; si.pCommandBuffers = &c->cmd;
-    CK(vkQueueSubmit(c->queue, 1, &si, c->fence));
-    CK(vkWaitForFences(c->dev, 1, &c->fence, VK_TRUE, UINT64_MAX));
-    CK(vkResetFences(c->dev, 1, &c->fence));
-    {
-        uint32_t i;                     /* the fence covers every earlier piece */
-        for (i = 0; i <= c->ncmd; i++)
-            CK(vkResetCommandBuffer(c->cmds[i], 0));
+    if (vkQueueSubmit(c->queue, 1, &si, c->fence) != VK_SUCCESS) return -1;
+    pthread_mutex_lock(&c->lock);
+    c->fr[slot].busy = 1;
+    pthread_mutex_unlock(&c->lock);
+    use_frame(c, (slot + 1) % VKR_FRAMES);
+    c->buf_used = 0;
+    if (c->tex_bytes > (768ull << 20)) {  /* drop the cache once nothing is in flight */
+        vkDeviceWaitIdle(c->dev);
+        tex_free_all(c);
     }
-    c->cmd = c->cmds[0]; c->ncmd = 0; c->draws_in_cmd = 0;
-    if (c->rb_noncoherent) {
+    return slot;
+}
+
+const uint8_t *vkr_frame_pixels(VkrContext *c, int slot)
+{
+    if (vkWaitForFences(c->dev, 1, &c->fr[slot].fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+        return NULL;
+    if (c->fr[slot].rb_noncoherent) {
         VkMappedMemoryRange mr = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
-        mr.memory = c->rb_mem; mr.offset = 0; mr.size = VK_WHOLE_SIZE;
+        mr.memory = c->fr[slot].rb_mem; mr.offset = 0; mr.size = VK_WHOLE_SIZE;
         vkInvalidateMappedMemoryRanges(c->dev, 1, &mr);
     }
-    memcpy(out, c->rb_map, (size_t)c->w * c->h * 4);
-    c->buf_used = 0;
-    if (c->tex_bytes > (768ull << 20))    /* nothing in flight now: drop the cache */
-        tex_free_all(c);
-    return 1;
+    return c->fr[slot].rb_map;
+}
+
+void vkr_frame_release(VkrContext *c, int slot)
+{
+    pthread_mutex_lock(&c->lock);
+    c->fr[slot].busy = 0;
+    pthread_cond_broadcast(&c->freed);
+    pthread_mutex_unlock(&c->lock);
+}
+
+int vkr_read_back(VkrContext *c, uint8_t *out)
+{
+    int slot = vkr_flip_submit(c);
+    const uint8_t *px = slot < 0 ? NULL : vkr_frame_pixels(c, slot);
+    if (px)
+        memcpy(out, px, (size_t)c->w * c->h * 4);
+    if (slot >= 0)
+        vkr_frame_release(c, slot);
+    return px != NULL;
 }

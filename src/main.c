@@ -687,8 +687,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
          * which is also the fallback when no Vulkan device can be opened. */
         const char *gpu = getenv("RECOMP_GPU");
         int want = !(gpu && (!strcmp(gpu, "sw") || !strcmp(gpu, "0")));
-        if (want && !vkr_backend_install())
-            fprintf(stderr, "[VKR] unavailable, software rasteriser stays\n");
+        extern int ssx3_lensfx_nowait;
+        if (want) {
+            if (vkr_backend_install())
+                ssx3_lensfx_nowait = 1;
+            else
+                fprintf(stderr, "[VKR] unavailable, software rasteriser stays\n");
+        }
     }
 #endif
 

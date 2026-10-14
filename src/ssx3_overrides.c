@@ -118,6 +118,26 @@ void sub_0025BD81(void)
 }
 
 /*
+ * Lens flare occlusion (sub_001F8760, called only by LensFX's sub_00152A70):
+ * polls D3D's GetVisibilityTestResult up to 1M times until the GPU has
+ * written the report, so the main thread waits every frame for the executor
+ * to reach it -- title and GPU never overlap (measured: ~80% of the main
+ * thread in this spin in a race). Its own no-wait path answers "not ready,
+ * 0.0" = flare hidden. The Vulkan backend counts no visible pixels, so the
+ * answer there is 0.0 either way; set by main.c when it is installed.
+ * Args: (char *pending, index, total, char wait), stdcall.
+ */
+extern void sub_001F8760_gen(void);
+int ssx3_lensfx_nowait;
+
+void sub_001F8760(void)
+{
+    if (ssx3_lensfx_nowait)
+        MEM8(g_esp + 16) = 0;
+    sub_001F8760_gen();
+}
+
+/*
  * EA job queues (RECOMP_JOB_TRACE=1): the 43% race-load stall leaves a
  * world-stream job unrun with every worker asleep. The queue is
  * {count +0, flags +4, head +8, tail +0xC, compare fn +0x10, ctx +0x14,

@@ -234,7 +234,7 @@ index a91edbe..a18661a 100644
  }
  
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
-index c65ba43..b2a1ae9 100644
+index c65ba43..8205c7f 100644
 --- a/src/kernel/kernel_bridge.c
 +++ b/src/kernel/kernel_bridge.c
 @@ -1514,6 +1514,31 @@ static HANDLE bridge_resolve_handle(uint32_t token);
@@ -392,7 +392,7 @@ index c65ba43..b2a1ae9 100644
      BRIDGE_MEM32(XBOX_NV2A_REG_BASE + NV2A_PMC_INTR_0)   |= NV2A_PMC_INTR_PCRTC;
  
      {
-@@ -2284,6 +2365,224 @@ static void kernel_vblank_tick(void)
+@@ -2284,6 +2365,222 @@ static void kernel_vblank_tick(void)
      }
  }
  
@@ -416,9 +416,9 @@ index c65ba43..b2a1ae9 100644
 + * a second, and waiting out the 10 ms tick for each kept the executor waiting
 + * the whole time. */
 +static HANDLE g_nv2a_swm_event;
-+/* Set when a software method has been handled (kernel_swm_done), so the
-+ * waiting executor wakes at once instead of on its next Sleep(1) tick -- at
-+ * ~55 traps a second that polling was a fifth of the executor's time. */
++/* Set when a posted method has been taken (pending back to 0), so the
++ * executor resumes at once rather than on its next 1 ms poll: D3D posts ~200
++ * a second in a race, and the polls cost the executor a fifth of its time. */
 +static HANDLE g_nv2a_swm_done_event;
 +static uint32_t g_nv2a_swm_addr, g_nv2a_swm_data;
 +static volatile LONG64 g_nv2a_swm_raised_ms;
@@ -495,11 +495,9 @@ index c65ba43..b2a1ae9 100644
 +        SetEvent(g_nv2a_swm_event);
 +    /* The pushbuffer stalls until the ISR has run, as on hardware. Bounded,
 +     * so a title with no ISR connected costs a moment, not the process. */
-+    if (!g_nv2a_swm_done_event)
-+        g_nv2a_swm_done_event = CreateEventA(NULL, FALSE, FALSE, NULL);
 +    while (g_nv2a_swm_pending && GetTickCount() - t0 < 500) {
 +        if (g_nv2a_swm_done_event)
-+            WaitForSingleObject(g_nv2a_swm_done_event, 2);
++            WaitForSingleObject(g_nv2a_swm_done_event, 1);
 +        else
 +            Sleep(1);
 +    }
@@ -617,7 +615,7 @@ index c65ba43..b2a1ae9 100644
  /* Run whatever is queued. Called from the timer thread, which has the guest
   * stack and TIB that a deferred routine needs. */
  static void kernel_drain_dpcs(void)
-@@ -2541,6 +2840,14 @@ static int g_timer_started;
+@@ -2541,6 +2838,14 @@ static int g_timer_started;
  
  static DWORD WINAPI kernel_timer_thread(LPVOID unused)
  {
@@ -632,12 +630,14 @@ index c65ba43..b2a1ae9 100644
      int slot = xbox_worker_stack_alloc();
  
      (void)unused;
-@@ -2566,14 +2873,32 @@ static DWORD WINAPI kernel_timer_thread(LPVOID unused)
+@@ -2566,14 +2871,34 @@ static DWORD WINAPI kernel_timer_thread(LPVOID unused)
          g_fs_base = tib;
      }
  
 +    if (!g_nv2a_swm_event)
 +        g_nv2a_swm_event = CreateEventA(NULL, FALSE, FALSE, NULL);
++    if (!g_nv2a_swm_done_event)
++        g_nv2a_swm_done_event = CreateEventA(NULL, FALSE, FALSE, NULL);
      for (;;) {
          long long now;
          int i;
@@ -1433,10 +1433,10 @@ index 9760735..4717e28 100644
      /* Creating the shadow here is not required -- Enter does it -- but doing
 diff --git a/src/kernel/nv2a_backend.h b/src/kernel/nv2a_backend.h
 new file mode 100644
-index 0000000..602f84f
+index 0000000..34474e7
 --- /dev/null
 +++ b/src/kernel/nv2a_backend.h
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,73 @@
 +/**
 + * Pluggable GPU backend for the pushbuffer executor.
 + *
@@ -1462,6 +1462,7 @@ index 0000000..602f84f
 +    uint32_t zmax;                  /* 0xFFFF (Z16) or 0xFFFFFF (Z24S8) */
 +    int      depth_test, depth_write;
 +    uint32_t depth_func;            /* GL enum, as the NV2A takes it */
++    int      w_buffer;              /* CONTROL0 Z_PERSPECTIVE: depth is w, not z */
 +    /* Per-pixel state (GL enums as the NV2A takes them). */
 +    int      blend_enable;
 +    uint32_t blend_sfactor, blend_dfactor, blend_equation, blend_color; /* ARGB */
@@ -1510,10 +1511,10 @@ index 0000000..602f84f
 +
 +#endif
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index c65632c..08df24c 100644
+index c65632c..2cedf15 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
-@@ -37,6 +37,7 @@
+@@ -37,10 +37,12 @@
  #include "../d3d/d3d8_swizzle.h"
  #include "nv2a_vsh_interp.h"
  #include "nv2a_combiner.h"
@@ -1521,7 +1522,12 @@ index c65632c..08df24c 100644
  #if defined(_WIN32)
  #include <windows.h>
  #define NV_TLS __declspec(thread)
-@@ -240,10 +241,13 @@ typedef struct {
+ #else
++#include <unistd.h>
+ #define NV_TLS __thread
+ #endif
+ 
+@@ -240,10 +242,13 @@ typedef struct {
      uint32_t pitch;                     /* bytes per row, from CONTROL1  */
      uint32_t color;                     /* NV097 colour-format code      */
      uint32_t addr_u, addr_v;            /* wrap mode per axis            */
@@ -1535,7 +1541,7 @@ index c65632c..08df24c 100644
      int      valid;
  } Texture;
  
-@@ -284,6 +288,10 @@ static struct {
+@@ -284,6 +289,10 @@ static struct {
      uint64_t pixels;
      uint32_t pixel_max;   /* brightest value any pixel write carried */
      uint32_t clip_x, clip_w, clip_y, clip_h;
@@ -1546,7 +1552,15 @@ index c65632c..08df24c 100644
      uint32_t clear_color;
      uint32_t clears, unhandled_total;
      uint32_t flip_read, flip_write, flip_modulo, flips;
-@@ -321,6 +329,9 @@ static struct {
+@@ -298,6 +307,7 @@ static struct {
+     /* Visibility tests (D3D's Begin/EndVisibilityTest): pixels that pass the
+      * depth test while counting is on, reported by GET_REPORT. */
+     uint32_t zpass_enable, zpass_count, reports;
++    uint32_t control0;                  /* SET_CONTROL0 (0x0290) */
+     uint32_t blend_pairs[16];   /* sfactor<<16 | dfactor seen, for the report */
+     int blend_npairs;
+     Texture  texs[4];                   /* one per texture stage */
+@@ -321,6 +331,9 @@ static struct {
      uint32_t xf_fmt[16];  /* attribute formats seen: type | size<<4 | slot<<8 */
      int xf_nfmt, xf_seeded;
      uint32_t depth_test, depth_func, depth_mask;
@@ -1556,7 +1570,7 @@ index c65632c..08df24c 100644
      uint32_t zeta_offset, zstencil_clear;
  } s_gpu;
  
-@@ -528,6 +539,8 @@ static int fetch_attr(const VertexAttr *a, uint32_t index, float out[4])
+@@ -528,6 +541,8 @@ static int fetch_attr(const VertexAttr *a, uint32_t index, float out[4])
  }
  
  static uint32_t surface_bpp(void);
@@ -1565,7 +1579,7 @@ index c65632c..08df24c 100644
  
  static void note_drawn(void)
  {
-@@ -660,12 +673,77 @@ static void raster_triangle(const float a[2], const float b[2],
+@@ -660,12 +675,77 @@ static void raster_triangle(const float a[2], const float b[2],
                              const float c[2], uint32_t argb,
                              const float uv[3][2]);
  
@@ -1643,7 +1657,7 @@ index c65632c..08df24c 100644
      if (!(param & NV097_CLEAR_COLOR_MASK))
          return;                            /* depth/stencil only */
      if (!s_gpu.color_offset || !s_gpu.pitch || !s_gpu.clip_h || bpp == 0)
-@@ -679,6 +757,47 @@ static void clear_surface(uint32_t param)
+@@ -679,6 +759,47 @@ static void clear_surface(uint32_t param)
          s_gpu.color_base = base;
      }
  
@@ -1691,7 +1705,7 @@ index c65632c..08df24c 100644
      for (y = 0; y < s_gpu.clip_h; y++) {
          uint8_t *row = mem + s_gpu.color_base
                       + (size_t)(s_gpu.clip_y + y) * s_gpu.pitch;
-@@ -835,6 +954,10 @@ static uint32_t wrap_coord(uint32_t c, uint32_t size, uint32_t mode)
+@@ -835,6 +956,10 @@ static uint32_t wrap_coord(uint32_t c, uint32_t size, uint32_t mode)
          return 0;
      if (mode == 1)                         /* wrap */
          return (uint32_t)(((sc % n) + n) % n);
@@ -1702,7 +1716,7 @@ index c65632c..08df24c 100644
      return sc < 0 ? 0u : (sc >= n ? size - 1 : c);   /* clamp, and the rest */
  }
  
-@@ -875,6 +998,16 @@ static int sample_tex(const Texture *t, uint32_t face_offset,
+@@ -875,6 +1000,16 @@ static int sample_tex(const Texture *t, uint32_t face_offset,
  
      if (!t->valid)
          return 0;
@@ -1719,7 +1733,7 @@ index c65632c..08df24c 100644
      u = wrap_coord(u, t->width,  t->addr_u);
      v = wrap_coord(v, t->height, t->addr_v);
  
-@@ -1127,10 +1260,44 @@ static void dump_texture_bmp(uint32_t seq)
+@@ -1127,10 +1262,44 @@ static void dump_texture_bmp(uint32_t seq)
   * playback rate. */
  static uint8_t *s_surface;          /* host address of surface row 0 */
  
@@ -1764,7 +1778,7 @@ index c65632c..08df24c 100644
      if (surface_hits_image(base, (s_gpu.clip_y + s_gpu.clip_h) * s_gpu.pitch))
          return 0;
      s_surface = (uint8_t *)mem + base;
-@@ -1168,11 +1335,53 @@ static void blend_factor(uint32_t f, const float s[4], const float d[4],
+@@ -1168,11 +1337,53 @@ static void blend_factor(uint32_t f, const float s[4], const float d[4],
      }
  }
  
@@ -1818,7 +1832,7 @@ index c65632c..08df24c 100644
      if (x < (int)s_gpu.clip_x || x >= (int)(s_gpu.clip_x + s_gpu.clip_w))
          return;
      if (y < (int)s_gpu.clip_y || y >= (int)(s_gpu.clip_y + s_gpu.clip_h))
-@@ -1180,7 +1389,7 @@ static void put_pixel(uint8_t *mem, uint32_t bpp, int x, int y, uint32_t argb)
+@@ -1180,7 +1391,7 @@ static void put_pixel(uint8_t *mem, uint32_t bpp, int x, int y, uint32_t argb)
      s_gpu.pixels++;
      if ((argb & 0x00FFFFFFu) > (s_gpu.pixel_max & 0x00FFFFFFu))
          s_gpu.pixel_max = argb;
@@ -1827,7 +1841,7 @@ index c65632c..08df24c 100644
  
      /* Blending, with the GL factor set and equations the NV2A takes.
       *
-@@ -1194,9 +1403,9 @@ static void put_pixel(uint8_t *mem, uint32_t bpp, int x, int y, uint32_t argb)
+@@ -1194,9 +1405,9 @@ static void put_pixel(uint8_t *mem, uint32_t bpp, int x, int y, uint32_t argb)
          float sc[4], dc[4], sf[4], df[4], out[4];
          int k;
          if (bpp == 4) {
@@ -1839,7 +1853,7 @@ index c65632c..08df24c 100644
              dst = 0xFF000000u | ((t & 0xF800u) << 8) | ((t & 0x07E0u) << 5)
                  | ((t & 0x001Fu) << 3);
          }
-@@ -1229,20 +1438,42 @@ static void put_pixel(uint8_t *mem, uint32_t bpp, int x, int y, uint32_t argb)
+@@ -1229,20 +1440,42 @@ static void put_pixel(uint8_t *mem, uint32_t bpp, int x, int y, uint32_t argb)
          if (keep == 0xFFFFFFFFu)
              return;
          if (bpp == 4) {
@@ -1886,7 +1900,7 @@ index c65632c..08df24c 100644
  }
  
  /* Half-space fill. Barycentric edge functions rather than scanline slopes:
-@@ -1550,6 +1781,42 @@ static float zclear_value(void)
+@@ -1550,6 +1783,43 @@ static float zclear_value(void)
                     : (float)(s_gpu.zstencil_clear >> 8);
  }
  
@@ -1908,6 +1922,7 @@ index c65632c..08df24c 100644
 +    t->depth_test = (int)s_gpu.depth_test;
 +    t->depth_write = (int)s_gpu.depth_mask;
 +    t->depth_func = s_gpu.depth_func;
++    t->w_buffer = (s_gpu.control0 >> 16) & 1;
 +    t->blend_enable = (int)s_gpu.blend_enable;
 +    t->blend_sfactor = s_gpu.blend_sfactor;
 +    t->blend_dfactor = s_gpu.blend_dfactor;
@@ -1929,7 +1944,7 @@ index c65632c..08df24c 100644
  static float *zbuf_current(int create)
  {
      int i;
-@@ -1857,6 +2124,55 @@ static void xf_rows(const XfTri *T, int y0, int step, XfCount *cnt)
+@@ -1857,6 +2127,55 @@ static void xf_rows(const XfTri *T, int y0, int step, XfCount *cnt)
                              continue;
                          nv2a_rc_eval(&s_gpu.rc, col, d1, fog,
                                       (const float (*)[4])t, out);
@@ -1985,14 +2000,17 @@ index c65632c..08df24c 100644
                          if (s_gpu.alpha_test && !alpha_test_pass(out[3]))
                              continue;
                          argb = pack_color(out);
-@@ -1901,25 +2217,54 @@ static void xf_rows(const XfTri *T, int y0, int step, XfCount *cnt)
+@@ -1901,25 +2220,59 @@ static void xf_rows(const XfTri *T, int y0, int step, XfCount *cnt)
   * few cores for the title and the host.
   * ponytail: s_gpu.pixels/pixel_max in put_pixel are unsynchronised stats and
   * may undercount; nothing depends on them. */
 -#define NV_RASTER_MAX_THREADS 16
 +#define NV_RASTER_MAX_THREADS 32
  #define NV_RASTER_MT_MIN_PIXELS 8192
- 
++/* A batch flush wakes the pool once for all its triangles, so it pays off
++ * much sooner than splitting a single triangle. */
++#define NV_RASTER_BATCH_MIN_PIXELS 1024
++
 +/* Batch-level parallel rasterising.
 + *
 + * Splitting one triangle across the pool only pays for big triangles
@@ -2012,8 +2030,8 @@ index c65632c..08df24c 100644
 +    if (y0 < T->maxy)
 +        xf_rows(T, y0, n, cnt);
 +}
-+
- #if defined(_WIN32)
+ 
+-#if defined(_WIN32)
  static struct {
      int n;                                  /* threads incl. the caller */
      HANDLE start[NV_RASTER_MAX_THREADS], done;
@@ -2021,6 +2039,7 @@ index c65632c..08df24c 100644
      const XfTri *tri;
 +    const struct XfQueued *q;               /* batch mode: queued triangles */
 +    int qn;
++    void (*job)(int k, int n);              /* anything else (pool_run) */
      XfCount cnt[NV_RASTER_MAX_THREADS];
  } s_pool;
  
@@ -2032,7 +2051,9 @@ index c65632c..08df24c 100644
          WaitForSingleObject(s_pool.start[k], INFINITE);
          memset(&s_pool.cnt[k], 0, sizeof s_pool.cnt[k]);
 -        xf_rows(s_pool.tri, s_pool.tri->miny + k, s_pool.n, &s_pool.cnt[k]);
-+        if (s_pool.qn) {
++        if (s_pool.job) {
++            s_pool.job(k, s_pool.n);
++        } else if (s_pool.qn) {
 +            int i;
 +            for (i = 0; i < s_pool.qn; i++)
 +                xf_rows_band(&s_pool.q[i].T, k, s_pool.n, &s_pool.cnt[k]);
@@ -2042,10 +2063,57 @@ index c65632c..08df24c 100644
          if (InterlockedDecrement(&s_pool.pending) == 0)
              SetEvent(s_pool.done);
      }
-@@ -1985,6 +2330,94 @@ static void xf_rows_parallel(const XfTri *T, XfCount *total)
+@@ -1931,11 +2284,16 @@ static int raster_pool_size(void)
+     static int init;
+     if (!init) {
+         const char *e = getenv("RECOMP_RASTER_THREADS");
++        int n, k, cores;
++#if defined(_WIN32)
+         SYSTEM_INFO si;
+-        int n, k;
+-        init = 1;
+         GetSystemInfo(&si);
+-        n = e ? atoi(e) : (int)si.dwNumberOfProcessors - 4;
++        cores = (int)si.dwNumberOfProcessors;
++#else
++        cores = (int)sysconf(_SC_NPROCESSORS_ONLN);
++#endif
++        init = 1;
++        n = e ? atoi(e) : cores - 4;
+         if (n < 1) n = 1;
+         if (n > NV_RASTER_MAX_THREADS) n = NV_RASTER_MAX_THREADS;
+         s_pool.n = n;
+@@ -1951,6 +2309,23 @@ static int raster_pool_size(void)
+     return s_pool.n;
  }
- #endif
  
++/* Run job(k, n) on every pool thread, k = 0..n-1 (the caller takes n-1). */
++static void pool_run(void (*job)(int k, int n))
++{
++    int n = raster_pool_size(), k;
++    if (n <= 1) {
++        job(0, 1);
++        return;
++    }
++    s_pool.job = job;
++    s_pool.pending = n - 1;
++    for (k = 0; k < n - 1; k++)
++        SetEvent(s_pool.start[k]);
++    job(n - 1, n);
++    WaitForSingleObject(s_pool.done, INFINITE);
++    s_pool.job = NULL;
++}
++
+ static void xf_rows_parallel(const XfTri *T, XfCount *total)
+ {
+     int n = raster_pool_size(), k;
+@@ -1978,12 +2353,90 @@ static void xf_rows_parallel(const XfTri *T, XfCount *total)
+         total->zpass += s_pool.cnt[k].zpass;
+     }
+ }
+-#else
+-static void xf_rows_parallel(const XfTri *T, XfCount *total)
++
 +#define NV_RASTER_QUEUE_MAX 4096
 +static struct XfQueued *s_queue;
 +static int  s_queue_n, s_defer;
@@ -2062,7 +2130,8 @@ index c65632c..08df24c 100644
 +
 +void nv2a_exec_flush_take(unsigned long *par, unsigned long *ser,
 +                          unsigned long long *px_par, unsigned long long *px_ser)
-+{
+ {
+-    xf_rows(T, T->miny, 1, total);
 +    *par = s_flush_par; *ser = s_flush_ser; *px_par = s_px_par; *px_ser = s_px_ser;
 +    s_flush_par = s_flush_ser = 0; s_px_par = s_px_ser = 0;
 +}
@@ -2075,15 +2144,12 @@ index c65632c..08df24c 100644
 +    if (!s_queue_n)
 +        return;
 +    s_draw_px = (uint32_t)s_queue_px;
-+#if defined(_WIN32)
 +    n = raster_pool_size();
-+#endif
-+    if (n <= 1 || s_queue_px < NV_RASTER_MT_MIN_PIXELS) {
++    if (n <= 1 || s_queue_px < NV_RASTER_BATCH_MIN_PIXELS) {
 +        s_flush_ser++; s_px_ser += (unsigned long long)s_queue_px;
 +        for (i = 0; i < s_queue_n; i++)
 +            xf_rows(&s_queue[i].T, s_queue[i].T.miny, 1, &total);
 +    }
-+#if defined(_WIN32)
 +    else {
 +        int k;
 +        XfCount mine = {0, 0, 0};
@@ -2104,7 +2170,6 @@ index c65632c..08df24c 100644
 +            total.zpass += s_pool.cnt[k].zpass;
 +        }
 +    }
-+#endif
 +    s_gpu.xf_depth_fail += total.depth_fail;
 +    s_gpu.xf_pixels += total.pixels;
 +    s_gpu.zpass_count += total.zpass;
@@ -2132,12 +2197,12 @@ index c65632c..08df24c 100644
 +    q->T.a = q->v[0].pos; q->T.b = q->v[1].pos; q->T.c = q->v[2].pos;
 +    s_queue_px += (long)(T->maxx - T->minx) * (T->maxy - T->miny);
 +    return 1;
-+}
-+
+ }
+-#endif
+ 
  static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
                                 const Nv2aVshOutput *vc)
- {
-@@ -1994,10 +2427,17 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
+@@ -1994,10 +2447,17 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
      const float *a, *b, *c;
      float area, su = 1.0f, sv = 1.0f;
      int k;
@@ -2156,7 +2221,7 @@ index c65632c..08df24c 100644
      memset(&T, 0, sizeof T);
      T.mem = (uint8_t *)xbox_GetMemoryOffset();
      T.bpp = surface_bpp();
-@@ -2070,6 +2510,11 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
+@@ -2070,6 +2530,11 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
      s_gpu.xf_drawn++;
      T.inv_area = 1.0f / area;
  
@@ -2168,7 +2233,7 @@ index c65632c..08df24c 100644
      xf_rows_parallel(&T, &cnt);
      s_gpu.xf_depth_fail += cnt.depth_fail;
      s_gpu.xf_pixels += cnt.pixels;
-@@ -2088,24 +2533,22 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
+@@ -2088,24 +2553,22 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
   * race frame's triangles went this way.
   *
   * Clipping has to happen in clip space, but the D3D epilogue has already
@@ -2206,7 +2271,7 @@ index c65632c..08df24c 100644
  static void xf_lerp(const Nv2aVshOutput *a, const Nv2aVshOutput *b, float t,
                      Nv2aVshOutput *out)
  {
-@@ -2116,52 +2559,74 @@ static void xf_lerp(const Nv2aVshOutput *a, const Nv2aVshOutput *b, float t,
+@@ -2116,52 +2579,74 @@ static void xf_lerp(const Nv2aVshOutput *a, const Nv2aVshOutput *b, float t,
          po[i] = pa[i] + (pb[i] - pa[i]) * t;
  }
  
@@ -2314,7 +2379,7 @@ index c65632c..08df24c 100644
  }
  
  static Nv2aVshOutput s_xf[NV_MAX_INDICES];
-@@ -2171,18 +2636,406 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
+@@ -2171,18 +2656,369 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
      float in[NV2A_VSH_INPUTS][4];
      uint32_t a;
  
@@ -2590,116 +2655,77 @@ index c65632c..08df24c 100644
 +}
  
 -    for (i = 0; i < n; i++)
--        if (!transform_vertex(s_gpu.idx[i], &s_xf[i]))
--            return;                                    /* no program loaded */
-+/* Vertex programs in parallel (RECOMP_VSH_THREADS=n, 1 = off; default the
-+ * raster pool's size, at most 8). The interpreter keeps its temporaries on
-+ * the stack and only reads the program, constants and vertex arrays, so the
-+ * vertices of a batch are independent -- unless the program writes c[]
-+ * (CXT write), then they run in order. Profiled: vertex programs were ~45%
-+ * of the executor in a race with the Vulkan renderer, the raster pool idle.
-+ * Chunks of 64 vertices are claimed from a shared counter by the workers
-+ * and the executor thread alike. */
-+#define VSH_POOL_MAX 8
-+#define VSH_CHUNK 64
-+static struct {
-+    int n;                                  /* worker threads, 0 = serial */
-+    HANDLE start[VSH_POOL_MAX], done[VSH_POOL_MAX];
-+    volatile LONG next, failed;
-+    uint32_t count;
-+} s_vp = { -1 };
++/* Post-transform cache: a vertex index repeats within a batch (strips
++ * stitched together, indexed lists), and the same index always gives the same
++ * output, so it is transformed once per batch. Not when programs may write
++ * c[]: then each run can change the next. RECOMP_VSH_CACHE=0 turns it off. */
++static uint32_t s_vc_gen, s_vc_stamp[65536];
++static uint16_t s_vc_slot[65536];
++static int s_vc_on = -1;
 +
-+static void vsh_range_run(void)
-+{
-+    for (;;) {
-+        LONG b = InterlockedExchangeAdd(&s_vp.next, VSH_CHUNK);
-+        uint32_t i, e;
-+        if ((uint32_t)b >= s_vp.count)
-+            return;
-+        e = (uint32_t)b + VSH_CHUNK < s_vp.count ? (uint32_t)b + VSH_CHUNK : s_vp.count;
-+        for (i = (uint32_t)b; i < e; i++)
-+            if (!transform_vertex(s_gpu.idx[i], &s_xf[i]))
-+                InterlockedExchange(&s_vp.failed, 1);
-+    }
-+}
++/* The unique vertices of a batch are independent, so a big batch runs its
++ * vertex programs on the raster pool (only with the cache on: then no
++ * program writes c[]). */
++#define NV_VSH_MT_MIN 128
++static uint16_t s_vc_dup[NV_MAX_INDICES], s_vc_uniq[NV_MAX_INDICES];
++static uint32_t s_vc_nu;
++static volatile int s_vc_fail;
 +
-+static DWORD WINAPI vsh_worker(LPVOID arg)
++static void vsh_job(int k, int n)
 +{
-+    int k = (int)(intptr_t)arg;
-+    for (;;) {
-+        WaitForSingleObject(s_vp.start[k], INFINITE);
-+        vsh_range_run();
-+        SetEvent(s_vp.done[k]);
++    uint32_t j = s_vc_nu * (uint32_t)k / (uint32_t)n;
++    uint32_t end = s_vc_nu * (uint32_t)(k + 1) / (uint32_t)n;
++    for (; j < end; j++) {
++        uint32_t i = s_vc_uniq[j];
+         if (!transform_vertex(s_gpu.idx[i], &s_xf[i]))
++            s_vc_fail = 1;
 +    }
-+    return 0;
-+}
-+
-+static int transform_batch(uint32_t n)
-+{
-+    uint32_t i;
-+    int k;
-+    if (s_vp.n < 0) {
-+        const char *e = getenv("RECOMP_VSH_THREADS");
-+        int want = e ? atoi(e) - 1 : raster_pool_size() - 1;
-+        if (want > VSH_POOL_MAX) want = VSH_POOL_MAX;
-+        s_vp.n = 0;
-+        for (k = 0; k < want; k++) {
-+            HANDLE th;
-+            s_vp.start[k] = CreateEventA(NULL, FALSE, FALSE, NULL);
-+            s_vp.done[k] = CreateEventA(NULL, FALSE, FALSE, NULL);
-+            th = (s_vp.start[k] && s_vp.done[k])
-+               ? CreateThread(NULL, 0, vsh_worker, (LPVOID)(intptr_t)k, 0, NULL) : NULL;
-+            if (!th)
-+                break;
-+            CloseHandle(th);
-+            s_vp.n++;
-+        }
-+    }
-+    if (s_vp.n == 0 || n < 4 * VSH_CHUNK || nv2a_vsh_cxt_write()) {
-+        /* Post-transform cache: a strip or indexed list names most vertices
-+         * more than once, and within one batch a vertex's result depends on
-+         * its index only (constants and arrays cannot change mid-batch). */
-+        static uint32_t tag[1024], pos[1024], gen[1024], batch;
-+        static int stats = -1;
-+        static unsigned long long runs, hits;
-+        int cxt = nv2a_vsh_cxt_write();
-+        batch++;
-+        for (i = 0; i < n; i++) {
-+            uint32_t v = s_gpu.idx[i], slot = v & 1023u;
-+            if (!cxt && gen[slot] == batch && tag[slot] == v) {
-+                s_xf[i] = s_xf[pos[slot]];
-+                hits++;
-+                continue;
-+            }
-+            if (!transform_vertex(v, &s_xf[i]))
-+                return 0;                              /* no program loaded */
-+            runs++;
-+            tag[slot] = v; pos[slot] = i; gen[slot] = batch;
-+        }
-+        if (stats < 0)
-+            stats = getenv("RECOMP_VSH_STATS") != NULL;
-+        if (stats && runs + hits > 2000000) {
-+            fprintf(stderr, "  [VSH] %llu vertices: %llu run, %llu from the post-transform cache\n",
-+                    runs + hits, runs, hits);
-+            runs = hits = 0;
-+        }
-+        return 1;
-+    }
-+    s_vp.count = n; s_vp.next = 0; s_vp.failed = 0;
-+    for (k = 0; k < s_vp.n; k++)
-+        SetEvent(s_vp.start[k]);
-+    vsh_range_run();
-+    WaitForMultipleObjects((DWORD)s_vp.n, s_vp.done, TRUE, INFINITE);
-+    return !s_vp.failed;
 +}
 +
 +static void raster_batch_program_impl(void)
 +{
 +    uint32_t i, n = s_gpu.idx_count;
 +    double tv = s_phase_on > 0 ? phase_now() : 0;
++    int cache;
 +
-+    if (!transform_batch(n))
-+        return;                                        /* no program loaded */
++    if (s_vc_on < 0) {
++        const char *e = getenv("RECOMP_VSH_CACHE");
++        s_vc_on = !(e && *e == '0');
++    }
++    cache = s_vc_on && !nv2a_vsh_cxt_write();
++
++    if (cache && ++s_vc_gen == 0) {
++        memset(s_vc_stamp, 0, sizeof s_vc_stamp);
++        s_vc_gen = 1;
++    }
++    if (!cache) {
++        for (i = 0; i < n; i++)
++            if (!transform_vertex(s_gpu.idx[i], &s_xf[i]))
++                return;                                /* no program loaded */
++    } else {
++        s_vc_nu = 0;
++        for (i = 0; i < n; i++) {
++            uint16_t v = s_gpu.idx[i];
++            if (s_vc_stamp[v] == s_vc_gen) {
++                s_vc_dup[i] = s_vc_slot[v];
++                continue;
++            }
++            s_vc_stamp[v] = s_vc_gen;
++            s_vc_slot[v] = s_vc_dup[i] = (uint16_t)i;
++            s_vc_uniq[s_vc_nu++] = (uint16_t)i;
++        }
++        s_vc_fail = 0;
++        nv2a_vsh_prepare();
++        if (s_vc_nu >= NV_VSH_MT_MIN)
++            pool_run(vsh_job);
++        else
++            vsh_job(0, 1);
++        if (s_vc_fail)
+             return;                                    /* no program loaded */
++        for (i = 0; i < n; i++)
++            if (s_vc_dup[i] != i)
++                s_xf[i] = s_xf[s_vc_dup[i]];
++    }
 +    if (s_phase_on > 0) {
 +        double d = phase_now() - tv;
 +        s_phase_vsh += d;
@@ -2727,7 +2753,7 @@ index c65632c..08df24c 100644
      s_gpu.batches_program++;
      s_gpu.verts_program += n;
      if (s_gpu.blend_enable) {
-@@ -2202,8 +3055,11 @@ static void raster_batch_program(void)
+@@ -2202,8 +3038,11 @@ static void raster_batch_program(void)
              left = t ? atoi(t) : 0;
          }
          /* Spread out: one every 20000 program batches, so a run that spends
@@ -2741,7 +2767,7 @@ index c65632c..08df24c 100644
              float in[4];
              left--;
              fprintf(stderr, "[VTRACE] prim %u n %u idx %u %u %u\n", s_gpu.prim,
-@@ -2289,6 +3145,14 @@ static void raster_batch(void)
+@@ -2289,6 +3128,14 @@ static void raster_batch(void)
          raster_batch_program();
          return;
      }
@@ -2756,7 +2782,7 @@ index c65632c..08df24c 100644
      if (!batch_is_screen_space()) {
          s_gpu.batches_untransformed++;
          return;
-@@ -2409,7 +3273,52 @@ static void frame_trace_flip(void)
+@@ -2409,7 +3256,52 @@ static void frame_trace_flip(void)
      }
  }
  
@@ -2809,7 +2835,7 @@ index c65632c..08df24c 100644
  {
      float v[4];
      uint32_t i;
-@@ -2417,7 +3326,7 @@ static void draw_primitive(void)
+@@ -2417,7 +3309,7 @@ static void draw_primitive(void)
      if (!s_gpu.prim || !s_gpu.idx_count)
          return;
      s_gpu.draws++;
@@ -2818,7 +2844,7 @@ index c65632c..08df24c 100644
          fprintf(stderr, "  [GPU] draw #%u\n", s_gpu.draws);
      s_gpu.verts += s_gpu.idx_count;
  
-@@ -2814,9 +3723,11 @@ static void tex_stage_method(uint32_t method, uint32_t param)
+@@ -2814,9 +3706,11 @@ static void tex_stage_method(uint32_t method, uint32_t param)
          /* A DMA-object offset like a surface's: physical, reached through
           * the contiguous window when it names contiguous memory. */
          t->offset = dma_resolve(param);
@@ -2830,7 +2856,7 @@ index c65632c..08df24c 100644
          t->cube = (param >> 2) & 1;
          t->levels = (param >> 16) & 0xF;
          /* A swizzled texture carries its own dimensions here, as log2 in
-@@ -2832,8 +3743,8 @@ static void tex_stage_method(uint32_t method, uint32_t param)
+@@ -2832,8 +3726,8 @@ static void tex_stage_method(uint32_t method, uint32_t param)
          t->palette = dma_resolve(param & ~0x3Fu);
          break;
      case NV097_SET_TEXTURE_ADDRESS:
@@ -2841,7 +2867,7 @@ index c65632c..08df24c 100644
          t->addr_u =  param        & 0xF;
          t->addr_v = (param >>  8) & 0xF;
          break;
-@@ -2847,6 +3758,9 @@ static void tex_stage_method(uint32_t method, uint32_t param)
+@@ -2847,6 +3741,9 @@ static void tex_stage_method(uint32_t method, uint32_t param)
      case 0x1B14:                                  /* SET_TEXTURE_FILTER */
          t->filter = param;
          break;
@@ -2851,7 +2877,7 @@ index c65632c..08df24c 100644
      default:
          break;
      }
-@@ -2910,10 +3824,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -2910,10 +3807,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
          return;
      }
      if (subch != 0) {                      /* 3D class lives on subchannel 0 */
@@ -2871,7 +2897,7 @@ index c65632c..08df24c 100644
      case NV097_SET_SURFACE_CLIP_HORIZONTAL:
          s_gpu.clip_x = param & 0xFFFF;
          s_gpu.clip_w = (param >> 16) & 0xFFFF;
-@@ -2925,6 +3847,14 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -2925,6 +3830,14 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
      case NV097_SET_SURFACE_FORMAT:
          s_gpu.format = param;
          break;
@@ -2886,7 +2912,7 @@ index c65632c..08df24c 100644
      case NV097_SET_SURFACE_PITCH:
          s_gpu.pitch = param & 0xFFFF;      /* colour pitch; zeta is the top half */
          break;
-@@ -3119,6 +4049,13 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3119,6 +4032,13 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
                                                 : s_gpu.color_offset;
              uint32_t pitch = s_gpu.drawn_offset ? s_gpu.drawn_pitch
                                                  : s_gpu.pitch;
@@ -2900,9 +2926,11 @@ index c65632c..08df24c 100644
              if (done) {
                  xbox_FramebufferWindowSet(dma_resolve(done), pitch);
                  xbox_FramebufferWindowPresent(dma_resolve(done), pitch);
-@@ -3179,8 +4116,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3178,9 +4098,20 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+     /* Depth. */
      case 0x030C: s_gpu.depth_test = param; break; /* DEPTH_TEST_ENABLE */
      case 0x0354: s_gpu.depth_func = param; break; /* DEPTH_FUNC */
++    case 0x0290: s_gpu.control0 = param; break;   /* SET_CONTROL0 */
      case 0x035C: s_gpu.depth_mask = param; break; /* DEPTH_MASK */
 +    case 0x032C: s_gpu.stencil_enable = param; break;
 +    case 0x0360: case 0x0364: case 0x0368: case 0x036C:
@@ -2919,7 +2947,7 @@ index c65632c..08df24c 100644
  
      default:
          if (method >= 0x0260 && method < 0x0280) {         /* ALPHA_ICW(i) */
-@@ -3220,6 +4167,21 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3220,6 +4151,21 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
              nv2a_vsh_constant_component(58, (method - 0x0AF0) / 4, param);
              break;
          }
@@ -2941,7 +2969,7 @@ index c65632c..08df24c 100644
          if (method >= 0x0B00 && method < 0x0B80) {    /* TRANSFORM_PROGRAM(i) */
              nv2a_vsh_program_word(param);
              break;
-@@ -3406,6 +4368,7 @@ static void peek_chain(void)
+@@ -3406,6 +4352,7 @@ static void peek_chain(void)
  
  void nv2a_pb_exec_report(void)
  {
@@ -2949,7 +2977,7 @@ index c65632c..08df24c 100644
      peek_addresses();
      peek_chain();
      if (getenv("RECOMP_FIND_NAN")) {
-@@ -3534,10 +4497,92 @@ void nv2a_pb_exec_report(void)
+@@ -3534,10 +4481,120 @@ void nv2a_pb_exec_report(void)
               * is using. */
              union { uint32_t u; float f; } v;
              v.u = s_unhandled[i].last_param;
@@ -3003,10 +3031,11 @@ index c65632c..08df24c 100644
 +     * cost 70% of a frame on the character screen. A texture rewritten
 +     * mid-frame is picked up at the next flip. */
 +    {
-+        static struct { uint32_t offset, color, w, h, flips; uint64_t hash; } memo[256];
++        static struct { uint32_t offset, color, w, h, palette, flips; uint64_t hash; } memo[256];
 +        uint32_t slot = (t->offset >> 7) * 2654435761u >> 24;
 +        if (memo[slot].offset == t->offset && memo[slot].color == t->color
 +            && memo[slot].w == t->width && memo[slot].h == t->height
++            && memo[slot].palette == t->palette
 +            && memo[slot].flips == s_gpu.flips + 1) {
 +            info->hash = memo[slot].hash;
 +            return 1;
@@ -3015,32 +3044,59 @@ index c65632c..08df24c 100644
 +        n = tex_base_bytes(t) / 8;
 +        for (i = 0; i < n; i++)
 +            h = (h ^ w[i]) * 1099511628211ull;
++        if (t->color == 0x0B) {
++            /* Palettised: the colours are in the CLUT, which changes on its
++             * own (and may not be set yet the first time the texture is
++             * seen -- it then decodes as the unsupported-format fill). */
++            h = (h ^ t->palette) * 1099511628211ull;
++            if (t->palette) {
++                w = (const uint64_t *)((const uint8_t *)xbox_GetMemoryOffset() + t->palette);
++                for (i = 0; i < 128; i++)
++                    h = (h ^ w[i]) * 1099511628211ull;
++            }
++        }
 +        info->hash = h ^ ((uint64_t)t->color << 56) ^ ((uint64_t)t->width << 20) ^ t->height;
 +        memo[slot].offset = t->offset; memo[slot].color = t->color;
 +        memo[slot].w = t->width; memo[slot].h = t->height;
++        memo[slot].palette = t->palette;
 +        memo[slot].flips = s_gpu.flips + 1;
 +        memo[slot].hash = info->hash;
 +    }
 +    return 1;
 +}
 +
++static const Texture *s_dec_tex;
++static uint32_t *s_dec_out;
++
++/* Rows k, k+n, ... of the texture being decoded. */
++static void tex_decode_job(int k, int n)
++{
++    const Texture *t = s_dec_tex;
++    uint32_t x, y;
++    for (y = (uint32_t)k; y < t->height; y += (uint32_t)n)
++        for (x = 0; x < t->width; x++) {
++            uint32_t argb = 0xFFFF00FFu;
++            if (!sample_tex(t, 0, x, y, &argb))
++                argb = 0xFFFF00FFu;          /* unsupported format: magenta */
++            s_dec_out[y * t->width + x] = argb;
++        }
++}
++
 +int nv2a_exec_tex_decode(int stage, uint32_t *out)
 +{
 +    const Texture *t;
-+    uint32_t x, y;
 +
 +    if (stage < 0 || stage > 3)
 +        return 0;
 +    t = &s_gpu.texs[stage];
 +    if (!t->valid)
 +        return 0;
-+    for (y = 0; y < t->height; y++)
-+        for (x = 0; x < t->width; x++) {
-+            uint32_t argb = 0xFFFF00FFu;
-+            if (!sample_tex(t, 0, x, y, &argb))
-+                argb = 0xFFFF00FFu;          /* unsupported format: magenta */
-+            out[y * t->width + x] = argb;
-+        }
++    s_dec_tex = t;
++    s_dec_out = out;
++    if (t->width * t->height >= 4096)
++        pool_run(tex_decode_job);
++    else
++        tex_decode_job(0, 1);
 +    return 1;
 +}
 diff --git a/src/kernel/nv2a_pb_scan.c b/src/kernel/nv2a_pb_scan.c
@@ -3241,19 +3297,38 @@ index 65bbedb..7cc37c7 100644
      uint32_t words, jumps = 0, unknown = 0;
  
 diff --git a/src/kernel/nv2a_vsh_interp.c b/src/kernel/nv2a_vsh_interp.c
-index 7fae74c..c09e57c 100644
+index 7fae74c..ab54b21 100644
 --- a/src/kernel/nv2a_vsh_interp.c
 +++ b/src/kernel/nv2a_vsh_interp.c
-@@ -65,6 +65,8 @@ void nv2a_vsh_program_word(uint32_t word)
+@@ -39,6 +39,7 @@ static float    s_const[NV2A_VSH_CONSTANTS][4];
+ static uint32_t s_load_slot, s_load_word, s_start_slot;
+ static uint32_t s_const_load, s_const_word;
+ static uint32_t s_cxt_write;
++static int      s_dirty = 1;           /* s_program changed since decode */
+ 
+ static uint32_t field(const uint32_t *ins, int dw, int lo, int width)
+ {
+@@ -55,8 +56,10 @@ void nv2a_vsh_set_load_slot(uint32_t slot)
+ 
+ void nv2a_vsh_program_word(uint32_t word)
+ {
+-    if (s_load_slot < NV2A_VSH_SLOTS)
++    if (s_load_slot < NV2A_VSH_SLOTS) {
+         s_program[s_load_slot][s_load_word] = word;
++        s_dirty = 1;
++    }
+     if (++s_load_word == 4) {
+         s_load_word = 0;
+         s_load_slot++;
+@@ -65,6 +68,7 @@ void nv2a_vsh_program_word(uint32_t word)
  
  void nv2a_vsh_set_start_slot(uint32_t slot) { s_start_slot = slot; }
  void nv2a_vsh_set_cxt_write(uint32_t enable) { s_cxt_write = enable; }
-+/* Programs may write c[] (CXT write on): then vertices are not independent. */
-+int nv2a_vsh_cxt_write(void) { return s_cxt_write != 0; }
++int  nv2a_vsh_cxt_write(void) { return s_cxt_write != 0; }
  
  void nv2a_vsh_set_constant_load(uint32_t index)
  {
-@@ -72,8 +74,25 @@ void nv2a_vsh_set_constant_load(uint32_t index)
+@@ -72,8 +76,25 @@ void nv2a_vsh_set_constant_load(uint32_t index)
      s_const_word = 0;
  }
  
@@ -3279,7 +3354,19 @@ index 7fae74c..c09e57c 100644
      if (s_const_load < NV2A_VSH_CONSTANTS)
          memcpy(&s_const[s_const_load][s_const_word], &word, 4);
      if (++s_const_word == 4) {
-@@ -166,6 +185,8 @@ const float *nv2a_vsh_constant(uint32_t index)
+@@ -90,8 +111,10 @@ void nv2a_vsh_set_constant(uint32_t index, const float v[4])
+ 
+ void nv2a_vsh_set_instruction(uint32_t slot, const uint32_t words[4])
+ {
+-    if (slot < NV2A_VSH_SLOTS)
++    if (slot < NV2A_VSH_SLOTS) {
+         memcpy(s_program[slot], words, sizeof s_program[slot]);
++        s_dirty = 1;
++    }
+ }
+ 
+ /* ---- disassembly (RECOMP_VSH_DUMP) --------------------------------------- */
+@@ -166,6 +189,8 @@ const float *nv2a_vsh_constant(uint32_t index)
  
  void nv2a_vsh_constant_component(uint32_t index, uint32_t comp, uint32_t word)
  {
@@ -3288,7 +3375,57 @@ index 7fae74c..c09e57c 100644
      if (index < NV2A_VSH_CONSTANTS && comp < 4)
          memcpy(&s_const[index][comp], &word, 4);
  }
-@@ -305,6 +326,26 @@ static vec4 run_ilu(uint32_t op, vec4 c)
+@@ -174,49 +199,6 @@ void nv2a_vsh_constant_component(uint32_t index, uint32_t comp, uint32_t word)
+ 
+ typedef struct { float v[4]; } vec4;
+ 
+-static vec4 read_src(const uint32_t *ins, int which,
+-                     const float in[NV2A_VSH_INPUTS][4],
+-                     const vec4 *temp, const vec4 *opos, int a0)
+-{
+-    uint32_t neg, swz, mux, reg;
+-    const float *s;
+-    vec4 r;
+-
+-    if (which == 0) {
+-        neg = field(ins, 1, 8, 1); swz = field(ins, 1, 0, 8);
+-        mux = field(ins, 2, 26, 2); reg = field(ins, 2, 28, 4);
+-    } else if (which == 1) {
+-        neg = field(ins, 2, 25, 1); swz = field(ins, 2, 17, 8);
+-        mux = field(ins, 2, 11, 2); reg = field(ins, 2, 13, 4);
+-    } else {
+-        neg = field(ins, 2, 10, 1); swz = field(ins, 2, 2, 8);
+-        mux = field(ins, 3, 28, 2);
+-        reg = (field(ins, 2, 0, 2) << 2) | field(ins, 3, 30, 2);
+-    }
+-
+-    if (mux == 1)
+-        s = (reg == 12) ? opos->v : (reg < 12 ? temp[reg].v : temp[0].v);
+-    else if (mux == 2)
+-        s = in[field(ins, 1, 9, 4)];
+-    else {
+-        int ci = (int)field(ins, 1, 13, 8);
+-        if (field(ins, 3, 1, 1))
+-            ci += a0;
+-        if (ci < 0 || ci >= NV2A_VSH_CONSTANTS)
+-            ci = 0;
+-        s = s_const[ci];
+-    }
+-    r.v[0] = s[(swz >> 6) & 3];
+-    r.v[1] = s[(swz >> 4) & 3];
+-    r.v[2] = s[(swz >> 2) & 3];
+-    r.v[3] = s[swz & 3];
+-    if (neg) {
+-        r.v[0] = -r.v[0]; r.v[1] = -r.v[1];
+-        r.v[2] = -r.v[2]; r.v[3] = -r.v[3];
+-    }
+-    return r;
+-}
+-
+ static void write_masked(float *dst, const vec4 *src, uint32_t mask)
+ {
+     if (mask & 8) dst[0] = src->v[0];
+@@ -305,12 +287,117 @@ static vec4 run_ilu(uint32_t op, vec4 c)
      return r;
  }
  
@@ -3312,21 +3449,205 @@ index 7fae74c..c09e57c 100644
 +    dump_program(s_start_slot);
 +}
 +
++/* Decoded program: the fields of every slot, extracted once per upload
++ * rather than per vertex and instruction. */
++typedef struct {
++    uint8_t mux, reg, in, neg, rel, swz[4];
++    uint16_t ci;
++} DecSrc;
++typedef struct {
++    DecSrc src[3];
++    uint8_t mac, ilu, mac_mask, ilu_mask, tdst, omask, oaddr;
++    uint8_t from_ilu, to_out, final;
++} DecIns;
++static DecIns s_dec[NV2A_VSH_SLOTS];
++
++/* Decode the program memory if it changed. Called before vertices are run on
++ * several threads, so they only ever read s_dec. */
++void nv2a_vsh_prepare(void)
++{
++    uint32_t t;
++    int w, k;
++    if (!s_dirty)
++        return;
++    for (t = 0; t < NV2A_VSH_SLOTS; t++) {
++        const uint32_t *ins = s_program[t];
++        DecIns *d = &s_dec[t];
++        for (w = 0; w < 3; w++) {
++            DecSrc *x = &d->src[w];
++            uint32_t neg, swz, mux, reg;
++            if (w == 0) {
++                neg = field(ins, 1, 8, 1); swz = field(ins, 1, 0, 8);
++                mux = field(ins, 2, 26, 2); reg = field(ins, 2, 28, 4);
++            } else if (w == 1) {
++                neg = field(ins, 2, 25, 1); swz = field(ins, 2, 17, 8);
++                mux = field(ins, 2, 11, 2); reg = field(ins, 2, 13, 4);
++            } else {
++                neg = field(ins, 2, 10, 1); swz = field(ins, 2, 2, 8);
++                mux = field(ins, 3, 28, 2);
++                reg = (field(ins, 2, 0, 2) << 2) | field(ins, 3, 30, 2);
++            }
++            x->mux = (uint8_t)mux;
++            x->reg = (uint8_t)(reg <= 12 ? reg : 0);  /* 12 = oPos, see run */
++            x->in = (uint8_t)field(ins, 1, 9, 4);
++            x->neg = (uint8_t)neg;
++            x->ci = (uint16_t)field(ins, 1, 13, 8);
++            x->rel = (uint8_t)field(ins, 3, 1, 1);
++            for (k = 0; k < 4; k++)
++                x->swz[k] = (uint8_t)((swz >> (6 - 2 * k)) & 3);
++        }
++        d->mac = (uint8_t)field(ins, 1, 21, 4);
++        d->ilu = (uint8_t)field(ins, 1, 25, 3);
++        d->mac_mask = (uint8_t)field(ins, 3, 24, 4);
++        d->ilu_mask = (uint8_t)field(ins, 3, 16, 4);
++        d->tdst = (uint8_t)field(ins, 3, 20, 4);
++        d->omask = (uint8_t)field(ins, 3, 12, 4);
++        d->oaddr = (uint8_t)field(ins, 3, 3, 8);
++        d->from_ilu = (uint8_t)field(ins, 3, 2, 1);
++        d->to_out = (uint8_t)field(ins, 3, 11, 1);
++        d->final = (uint8_t)field(ins, 3, 0, 1);
++    }
++    s_dirty = 0;
++}
++
++static inline vec4 dec_src(const DecSrc *x, const float in[NV2A_VSH_INPUTS][4],
++                           const vec4 *reg, int a0)
++{
++    const float *s;
++    vec4 r;
++    if (x->mux == 1)
++        s = reg[x->reg].v;
++    else if (x->mux == 2)
++        s = in[x->in];
++    else {
++        int ci = x->ci + (x->rel ? a0 : 0);
++        if (ci < 0 || ci >= NV2A_VSH_CONSTANTS)
++            ci = 0;
++        s = s_const[ci];
++    }
++    r.v[0] = s[x->swz[0]]; r.v[1] = s[x->swz[1]];
++    r.v[2] = s[x->swz[2]]; r.v[3] = s[x->swz[3]];
++    if (x->neg) {
++        r.v[0] = -r.v[0]; r.v[1] = -r.v[1];
++        r.v[2] = -r.v[2]; r.v[3] = -r.v[3];
++    }
++    return r;
++}
++
  int nv2a_vsh_run(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out)
  {
      static int dump = -1;
+     static uint32_t dumped[16];
+     static int ndumped;
+-    vec4 temp[12], opos;
++    vec4 reg[13];                  /* R0..R11, and R12 = oPos */
+     float outregs[13][4];
+     int a0 = 0;
+     uint32_t s;
+@@ -335,8 +422,8 @@ int nv2a_vsh_run(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out)
+         }
+     }
+ 
+-    memset(temp, 0, sizeof temp);
+-    memset(&opos, 0, sizeof opos);
++    nv2a_vsh_prepare();
++    memset(reg, 0, sizeof reg);
+     memset(outregs, 0, sizeof outregs);
+     outregs[3][3] = outregs[4][3] = 1.0f;      /* colours default opaque */
+     /* Unwritten texture coordinates are (0,0,0,1), as xemu initialises them:
+@@ -345,48 +432,42 @@ int nv2a_vsh_run(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out)
+     outregs[9][3] = outregs[10][3] = outregs[11][3] = outregs[12][3] = 1.0f;
+ 
+     for (s = s_start_slot; s < NV2A_VSH_SLOTS; s++) {
+-        const uint32_t *ins = s_program[s];
+-        uint32_t mac = field(ins, 1, 21, 4), ilu = field(ins, 1, 25, 3);
+-        uint32_t mac_mask = field(ins, 3, 24, 4), ilu_mask = field(ins, 3, 16, 4);
+-        uint32_t tdst = field(ins, 3, 20, 4);
+-        uint32_t omask = field(ins, 3, 12, 4), oaddr = field(ins, 3, 3, 8);
+-        vec4 a = read_src(ins, 0, in, temp, &opos, a0);
+-        vec4 b = read_src(ins, 1, in, temp, &opos, a0);
+-        vec4 c = read_src(ins, 2, in, temp, &opos, a0);
++        const DecIns *d = &s_dec[s];
++        vec4 a = dec_src(&d->src[0], in, reg, a0);
++        vec4 b = dec_src(&d->src[1], in, reg, a0);
++        vec4 c = dec_src(&d->src[2], in, reg, a0);
+         vec4 mres = {{0, 0, 0, 0}}, ires = {{0, 0, 0, 0}};
+ 
+-        if (mac)
+-            mres = run_mac(mac, a, b, c, &a0);
+-        if (ilu)
+-            ires = run_ilu(ilu, c);
++        if (d->mac)
++            mres = run_mac(d->mac, a, b, c, &a0);
++        if (d->ilu)
++            ires = run_ilu(d->ilu, c);
+ 
+-        if (mac && mac != 13 && mac_mask) {
+-            float *d = tdst == 12 ? opos.v : (tdst < 12 ? temp[tdst].v : NULL);
+-            if (d) write_masked(d, &mres, mac_mask);
+-        }
+-        if (ilu && ilu_mask) {
++        if (d->mac && d->mac != 13 && d->mac_mask && d->tdst <= 12)
++            write_masked(reg[d->tdst].v, &mres, d->mac_mask);
++        if (d->ilu && d->ilu_mask) {
+             /* Paired with any MAC op, the ILU can only write R1 -- even when
+              * the MAC half writes no temp at all. The D3D epilogue is exactly
+              * that: `mul o[0].xyz` beside `rcc R1.x`, then `mad` with R1.x.
+              * Sending the rcc to the temp field (R7 there) left R1.x at 0 and
+              * put every vertex of every 3D batch at c[59]. */
+-            uint32_t it = mac ? 1u : tdst;
+-            float *d = it == 12 ? opos.v : (it < 12 ? temp[it].v : NULL);
+-            if (d) write_masked(d, &ires, ilu_mask);
++            uint32_t it = d->mac ? 1u : d->tdst;
++            if (it <= 12)
++                write_masked(reg[it].v, &ires, d->ilu_mask);
+         }
+-        if (omask) {
+-            const vec4 *src = field(ins, 3, 2, 1) ? &ires : &mres;
+-            if (!field(ins, 3, 11, 1)) {                  /* to c[] */
+-                if (s_cxt_write && oaddr < NV2A_VSH_CONSTANTS)
+-                    write_masked(s_const[oaddr], src, omask);
+-            } else if (oaddr == 0) {
+-                write_masked(opos.v, src, omask);
+-            } else if (oaddr < 13) {
+-                write_masked(outregs[oaddr], src, omask);
++        if (d->omask) {
++            const vec4 *src = d->from_ilu ? &ires : &mres;
++            if (!d->to_out) {                             /* to c[] */
++                if (s_cxt_write && d->oaddr < NV2A_VSH_CONSTANTS)
++                    write_masked(s_const[d->oaddr], src, d->omask);
++            } else if (d->oaddr == 0) {
++                write_masked(reg[12].v, src, d->omask);
++            } else if (d->oaddr < 13) {
++                write_masked(outregs[d->oaddr], src, d->omask);
+             }
+         }
+-        if (field(ins, 3, 0, 1)) {
+-            memcpy(out->pos, opos.v, sizeof out->pos);
++        if (d->final) {
++            memcpy(out->pos, reg[12].v, sizeof out->pos);
+             memcpy(out->d0, outregs[3], sizeof out->d0);
+             memcpy(out->d1, outregs[4], sizeof out->d1);
+             memcpy(out->fog, outregs[5], sizeof out->fog);
 diff --git a/src/kernel/nv2a_vsh_interp.h b/src/kernel/nv2a_vsh_interp.h
-index 8acb0af..70b35ea 100644
+index 8acb0af..117695d 100644
 --- a/src/kernel/nv2a_vsh_interp.h
 +++ b/src/kernel/nv2a_vsh_interp.h
-@@ -43,6 +43,7 @@ void nv2a_vsh_set_start_slot(uint32_t slot);          /* _PROGRAM_START     */
+@@ -43,12 +43,14 @@ void nv2a_vsh_set_start_slot(uint32_t slot);          /* _PROGRAM_START     */
  void nv2a_vsh_set_constant_load(uint32_t index);      /* _CONSTANT_LOAD     */
  void nv2a_vsh_constant_word(uint32_t word);           /* _CONSTANT(i)       */
  void nv2a_vsh_set_cxt_write(uint32_t enable);         /* _CXT_WRITE_EN      */
-+int  nv2a_vsh_cxt_write(void);                       /* programs write c[]  */
++int  nv2a_vsh_cxt_write(void);   /* programs may write c[]: vertex order matters */
  
  /* Run the program from the start slot on one vertex. Inputs are the ten
   * attribute values as floats. Returns 0 if there is no program to run (no
+  * FINAL flag within program memory), which the caller treats as "cannot
+  * transform this batch" rather than drawing garbage. */
+ int  nv2a_vsh_run(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out);
++void nv2a_vsh_prepare(void);     /* decode an uploaded program; not thread-safe */
+ 
+ /* Direct access, for the self-test. */
+ void nv2a_vsh_set_constant(uint32_t index, const float v[4]);
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
 index 72d5131..c9940b4 100644
 --- a/src/kernel/xbox_memory_layout.c
