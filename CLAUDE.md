@@ -448,6 +448,19 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   lock ignores priority (arrival order); KeSetPriorityThread is a no-op and
   KeGetCurrentThread returns 0. On the Xbox the highest-priority ready thread
   always runs, so lower ones never see its updates half done.
+  TRIED: RECOMP_PRIO_LOCK=1 (toolkit patch, opt-in) -- a thread taking the
+  guest CPU defers to higher-priority waiters (KeSetBasePriorityThread on
+  itself; ISRs/DPCs highest; 50 ms valve). Result 3/6 with 2 crashes in
+  another streamer function (sub_0020D050+0x69, a write) and 1 stall --
+  worse, so it stays off. IRQL-based exclusion is not it either: only three
+  XAPI-area functions (0x189018, 0x189107, 0x21D1AF) raise IRQL.
+  Data path: sub_0020C290 takes the slot index from the streamer's request
+  list -- entries at [mgr+8] + k, field +0x18 -- so the garbage is written
+  into that list. Streamer code (sub_0020D7C0, reached by a tail jump from
+  sub_0020AF20) runs on the loader thread; sub_0020CAB0 is also reached from
+  game code (0x0005B7B1, 0x000D2690, ...). Next: a watchpoint on the
+  request-list entry that goes bad (log the list each pass, watch the entry
+  whose index field changes to an impossible value).
 - ASYNC GPU FREEZE (map select / rules / loading 31-33%): main thread loops in
   D3D BlockOnTime: the idle wake does reach it (KeSetEvent on 0x0024CE9C,
   ~10/s) but the time it waits for never completes; 0x5C bytes are written

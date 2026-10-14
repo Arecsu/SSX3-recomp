@@ -149,7 +149,7 @@ index cd69e57..86d2428 100644
      idx = g_xa2_next_buf;
      copy_samples = (num_samples > XA2_BUF_SAMPLES) ? XA2_BUF_SAMPLES : num_samples;
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
-index c65ba43..dc1d21f 100644
+index c65ba43..70fb940 100644
 --- a/src/kernel/kernel_bridge.c
 +++ b/src/kernel/kernel_bridge.c
 @@ -1514,6 +1514,31 @@ static HANDLE bridge_resolve_handle(uint32_t token);
@@ -470,7 +470,7 @@ index c65ba43..dc1d21f 100644
      /* A freshly set timer starts unsignaled, like the real KeSetTimer. */
      {
          HANDLE ev = ke_shadow_lookup(timer_va);
-@@ -4155,8 +4401,25 @@ static void bridge_KeQueryBasePriorityThread(void)
+@@ -4155,8 +4401,31 @@ static void bridge_KeQueryBasePriorityThread(void)
          XBOX_TO_NATIVE(STACK_ARG(0)));
  }
  
@@ -493,10 +493,16 @@ index c65ba43..dc1d21f 100644
  static void bridge_KeSetBasePriorityThread(void)
  {
 +    prio_trace("KeSetBasePriorityThread", STACK_ARG(0), STACK_ARG(1));
++    {
++        /* KeGetCurrentThread() answers 0 here, so 0 is "this thread". */
++        extern void guest_cpu_set_priority(int prio);
++        if (STACK_ARG(0) == 0)
++            guest_cpu_set_priority((int)STACK_ARG(1));
++    }
      g_eax = (uint32_t)xbox_KeSetBasePriorityThread(
          XBOX_TO_NATIVE(STACK_ARG(0)), (LONG)STACK_ARG(1));
  }
-@@ -4472,15 +4735,49 @@ static void bridge_KeWaitForMultipleObjects(void)
+@@ -4472,15 +4741,49 @@ static void bridge_KeWaitForMultipleObjects(void)
      }
      if (count > BRIDGE_MAXIMUM_WAIT_OBJECTS)
          count = BRIDGE_MAXIMUM_WAIT_OBJECTS;
@@ -549,7 +555,7 @@ index c65ba43..dc1d21f 100644
  }
  
  #undef BRIDGE_MAXIMUM_WAIT_OBJECTS
-@@ -7349,8 +7646,7 @@ static void bridge_KeSetPriorityProcess(void)
+@@ -7349,8 +7652,7 @@ static void bridge_KeSetPriorityProcess(void)
  /* --- KeSetPriorityThread (ordinal 148, 2 args = 8 bytes) --- */
  static void bridge_KeSetPriorityThread(void)
  {
@@ -559,10 +565,81 @@ index c65ba43..dc1d21f 100644
      g_eax = 0;
  }
  
-@@ -9382,6 +9678,61 @@ void guest_cpu_join(void)
-     }
+@@ -9371,17 +9673,134 @@ static int guest_cpu_enabled(void)
+     return g_guest_cpu_on;
  }
  
++/* Priority-aware hand-off (RECOMP_PRIO_LOCK=1).
++ *
++ * The Xbox runs the highest-priority ready thread; the guest lock alone hands
++ * the CPU over in whatever order Windows wakes the waiters. A thread taking
++ * the CPU therefore first defers to any waiter of higher priority -- the
++ * priority being what the thread set itself with KeSetBasePriorityThread
++ * (SSX 3's XAPI thread start does: +16 on one thread, 2 -> 1 -> 0 on another
++ * over the race load). ISRs and DPCs count as the highest. The deferral is
++ * bounded (50 ms) so an imperfect model cannot starve a thread for good. */
++static RECOMP_TLS int t_guest_prio;
++static volatile LONG g_prio_waiting[34];     /* by priority + 16, 33 = IRQ */
++
++static int prio_lock_on(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char *e = getenv("RECOMP_PRIO_LOCK");
++        on = e && *e && *e != '0';
++        if (on)
++            fprintf(stderr, "  [KERNEL] priority-aware guest CPU hand-off on\n");
++    }
++    return on;
++}
++
++static int prio_index(int prio)
++{
++    prio += 16;
++    return prio < 0 ? 0 : (prio > 32 ? 32 : prio);
++}
++
++static int prio_higher_waiting(int idx)
++{
++    int p;
++    for (p = 33; p > idx; p--)
++        if (g_prio_waiting[p] > 0)
++            return 1;
++    return 0;
++}
++
++/* Take the guest CPU, letting higher-priority waiters go first. */
++static void guest_cpu_acquire(int idx)
++{
++    if (prio_lock_on()) {
++        DWORD t0 = GetTickCount();
++        InterlockedIncrement(&g_prio_waiting[idx]);
++        while (prio_higher_waiting(idx) && GetTickCount() - t0 < 50)
++            SwitchToThread();
++        EnterCriticalSection(&g_guest_cpu);
++        InterlockedDecrement(&g_prio_waiting[idx]);
++    } else {
++        EnterCriticalSection(&g_guest_cpu);
++    }
++}
++
++void guest_cpu_set_priority(int prio)
++{
++    t_guest_prio = prio;
++}
++
+ /* Called once on each host thread that runs a guest thread, before its first
+  * guest instruction. */
+ void guest_cpu_join(void)
+ {
+     t_guest_thread = 1;
+     if (guest_cpu_enabled() && !t_guest_held) {
+-        EnterCriticalSection(&g_guest_cpu);
++        guest_cpu_acquire(prio_index(t_guest_prio));
++        t_guest_held = 1;
++    }
++}
++
 +/* Loop-head preemption (RECOMP_LOOP_YIELD in the generated code): every
 + * RECOMP_LOOP_QUANTUM loop iterations a guest thread holding the guest CPU
 + * lets it go and yields, so a thread spinning on a flag another guest thread
@@ -578,11 +655,11 @@ index c65ba43..dc1d21f 100644
 +        t_guest_held = 0;
 +        LeaveCriticalSection(&g_guest_cpu);
 +        SwitchToThread();
-+        EnterCriticalSection(&g_guest_cpu);
-+        t_guest_held = 1;
-+    }
-+}
-+
++        guest_cpu_acquire(prio_index(t_guest_prio));
+         t_guest_held = 1;
+     }
+ }
+ 
 +/* Interrupt and DPC context takes the guest CPU too.
 + *
 + * The Xbox has one CPU: an ISR or DPC preempts whatever thread was running
@@ -603,8 +680,11 @@ index c65ba43..dc1d21f 100644
 +        const char *e = getenv("RECOMP_IRQ_LOCK");
 +        on = !(e && e[0] == '0');
 +    }
-+    if (on && guest_cpu_enabled())
++    if (on && guest_cpu_enabled()) {
++        InterlockedIncrement(&g_prio_waiting[33]);
 +        EnterCriticalSection(&g_guest_cpu);
++        InterlockedDecrement(&g_prio_waiting[33]);
++    }
 +}
 +
 +void guest_cpu_irq_leave(void)
@@ -621,6 +701,15 @@ index c65ba43..dc1d21f 100644
  void guest_cpu_part(void)
  {
      if (t_guest_held) {
+@@ -9407,7 +9826,7 @@ static void kernel_thunk_dispatch(void)
+      * a guest callback a bridge runs (an APC) returns into the bridge, not to
+      * the thread's own code -- and only if the thread still exists as one. */
+     if (t_guest_thread && t_dispatch_depth == 0 && guest_cpu_enabled()) {
+-        EnterCriticalSection(&g_guest_cpu);
++        guest_cpu_acquire(prio_index(t_guest_prio));
+         t_guest_held = 1;
+     }
+     (void)held;
 diff --git a/src/kernel/kernel_hal.c b/src/kernel/kernel_hal.c
 index 1ad4fff..7deb391 100644
 --- a/src/kernel/kernel_hal.c
