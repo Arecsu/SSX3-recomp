@@ -1,3 +1,6 @@
+#ifndef _WIN32
+#define _GNU_SOURCE
+#endif
 /**
  * All-thread native stack dump, for hangs.
  *
@@ -14,6 +17,127 @@
  * Off unless RECOMP_THREAD_DUMP_SECS is set. Addresses inside the exe are
  * printed rebased to 0x140000000, the base the map file is written for.
  */
+#ifndef _WIN32
+/* POSIX: RECOMP_THREAD_DUMP_SECS=N signals every thread in turn (SIGUSR2); each
+ * prints its own guest registers, guest return addresses and native backtrace,
+ * which names the guest call chain (sub_XXXXXXXX). Peek/watch are Windows-only. */
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <signal.h>
+#include <unistd.h>
+#include <dirent.h>
+#include <pthread.h>
+#include <execinfo.h>
+#include <sys/syscall.h>
+
+#include "recomp/gen/recomp_types.h"
+extern void print_guest_stack(void);
+
+static volatile sig_atomic_t s_dump_done;
+
+static void dump_handler(int sig)
+{
+    void *bt[48];
+    int n;
+
+    (void)sig;
+    fprintf(stderr, "[THREAD %ld] eax=%08X ecx=%08X edx=%08X ebx=%08X esp=%08X esi=%08X edi=%08X\n",
+            (long)syscall(SYS_gettid), g_eax, g_ecx, g_edx, g_ebx, g_esp, g_esi, g_edi);
+    print_guest_stack();
+    n = backtrace(bt, 48);
+    backtrace_symbols_fd(bt, n, 2);
+    s_dump_done = 1;
+}
+
+static volatile sig_atomic_t s_dump_req;
+
+static void usr1_handler(int sig) { (void)sig; s_dump_req = 1; }
+
+static void dump_all(const char *why)
+{
+    long self = (long)syscall(SYS_gettid);
+    DIR *d;
+    struct dirent *e;
+    extern void ssx3_StreamDump(void);
+
+    fprintf(stderr, "[THREADS] ---- dump (%s) ----\n", why);
+    d = opendir("/proc/self/task");
+    while (d && (e = readdir(d))) {
+        long tid = atol(e->d_name);
+        int waited = 0;
+
+        if (tid <= 0 || tid == self)
+            continue;
+        s_dump_done = 0;
+        syscall(SYS_tgkill, getpid(), tid, SIGUSR2);
+        while (!s_dump_done && waited++ < 100)
+            usleep(10000);
+        if (!s_dump_done)
+            fprintf(stderr, "[THREAD %ld] no response (blocked signals?)\n", tid);
+    }
+    if (d)
+        closedir(d);
+    ssx3_StreamDump();
+    fprintf(stderr, "[THREADS] ---- end ----\n");
+    fflush(stderr);
+}
+
+/* RECOMP_THREAD_DUMP_SECS=N: one dump after N s. Any time: kill -USR1 <pid>. */
+static void *dump_thread(void *arg)
+{
+    long secs = (long)(intptr_t)arg, t = 0;
+
+    for (;;) {
+        usleep(100000);
+        t += 100;
+        if (s_dump_req) {
+            s_dump_req = 0;
+            dump_all("SIGUSR1");
+        }
+        if (secs > 0 && t == secs * 1000)
+            dump_all("timer");
+    }
+    return NULL;
+}
+
+void ssx3_ThreadDumpStart(void)
+{
+    const char *v = getenv("RECOMP_THREAD_DUMP_SECS");
+    pthread_t t;
+
+    signal(SIGUSR1, usr1_handler);
+    signal(SIGUSR2, dump_handler);
+    pthread_create(&t, NULL, dump_thread, (void *)(intptr_t)(v ? atoi(v) : 0));
+    pthread_detach(t);
+}
+extern void xbox_PeekSample(const char *label);
+
+static void *peek_thread(void *arg)
+{
+    unsigned ms = (unsigned)(uintptr_t)arg, n;
+    char label[32];
+
+    for (n = 1; ; n++) {
+        usleep(ms * 1000u);
+        snprintf(label, sizeof label, "peek@%us",
+                 (unsigned)((n * (unsigned long long)ms) / 1000u));
+        xbox_PeekSample(label);
+        fflush(stderr);
+    }
+    return NULL;
+}
+
+void ssx3_PeekEveryStart(void)
+{
+    const char *e = getenv("RECOMP_PEEK_EVERY_MS");
+    unsigned ms = e ? (unsigned)atoi(e) : 0;
+    pthread_t t;
+
+    if (ms && pthread_create(&t, NULL, peek_thread, (void *)(uintptr_t)ms) == 0)
+        pthread_detach(t);
+}
+#else
 #include <windows.h>
 #include <tlhelp32.h>
 #include <stdio.h>
@@ -490,3 +614,4 @@ void ssx3_PeekEveryStart(void)
     if (ms)
         CloseHandle(CreateThread(NULL, 0, td_peek_thread, (LPVOID)(uintptr_t)ms, 0, NULL));
 }
+#endif /* _WIN32 */

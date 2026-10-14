@@ -19,7 +19,11 @@
  * Names come from the table below; an unknown vtable is reported as "?".
  * RECOMP_GAME_STATE=0 disables it.
  */
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "platform/win32_compat.h"
+#endif
 #include "recomp/gen/recomp_types.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -95,7 +99,11 @@ static DWORD WINAPI game_state_thread(LPVOID unused)
             if (f) {
                 fputs(line, f);
                 fclose(f);
+                #ifdef _WIN32
                 MoveFileExA("game_state.tmp", "game_state.txt", MOVEFILE_REPLACE_EXISTING);
+#else
+                rename("game_state.tmp", "game_state.txt");
+#endif
             }
         }
     }

@@ -148,8 +148,93 @@ index cd69e57..86d2428 100644
  
      idx = g_xa2_next_buf;
      copy_samples = (num_samples > XA2_BUF_SAMPLES) ? XA2_BUF_SAMPLES : num_samples;
+diff --git a/src/input/xinput_device.c b/src/input/xinput_device.c
+index a91edbe..a18661a 100644
+--- a/src/input/xinput_device.c
++++ b/src/input/xinput_device.c
+@@ -257,6 +257,57 @@ static SDL_GameController *g_pads[XBOX_MAX_CONTROLLERS];
+ static BOOL  g_controller_connected[XBOX_MAX_CONTROLLERS];
+ static DWORD g_packet[XBOX_MAX_CONTROLLERS];
+ 
++/* RECOMP_KEYBOARD=1: the keyboard as player 1, merged over any pad. Same map
++ * as the Windows backend; keys come from the framebuffer window as VK codes. */
++extern int xbox_FramebufferKeyDown(int vk);
++
++static int keyboard_enabled(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char *v = getenv("RECOMP_KEYBOARD");
++        on = (v && *v && *v != '0') ? 1 : 0;
++    }
++    return on;
++}
++
++static SHORT kb_axis(int neg, int pos)
++{
++    int v = 0;
++    if (xbox_FramebufferKeyDown(neg)) v -= 32767;
++    if (xbox_FramebufferKeyDown(pos)) v += 32767;
++    return (SHORT)v;
++}
++
++/* OR the keyboard into *pState. */
++static void keyboard_merge(XBOX_INPUT_STATE *pState)
++{
++    static const struct { int vk; int btn; } analog[8] = {
++        { 'Z', XBOX_BUTTON_A }, { 'X', XBOX_BUTTON_B }, { 'A', XBOX_BUTTON_X },
++        { 'S', XBOX_BUTTON_Y }, { 'Q', XBOX_BUTTON_WHITE }, { 'E', XBOX_BUTTON_BLACK },
++        { '1', XBOX_BUTTON_LTRIGGER }, { '3', XBOX_BUTTON_RTRIGGER },
++    };
++    WORD b = 0;
++    int i;
++
++    if (xbox_FramebufferKeyDown(0x26)) b |= XBOX_GAMEPAD_DPAD_UP;
++    if (xbox_FramebufferKeyDown(0x28)) b |= XBOX_GAMEPAD_DPAD_DOWN;
++    if (xbox_FramebufferKeyDown(0x25)) b |= XBOX_GAMEPAD_DPAD_LEFT;
++    if (xbox_FramebufferKeyDown(0x27)) b |= XBOX_GAMEPAD_DPAD_RIGHT;
++    if (xbox_FramebufferKeyDown(0x0D)) b |= XBOX_GAMEPAD_START;
++    if (xbox_FramebufferKeyDown(0x08)) b |= XBOX_GAMEPAD_BACK;
++    if (xbox_FramebufferKeyDown(0x10)) b |= XBOX_GAMEPAD_LEFT_THUMB;
++    if (xbox_FramebufferKeyDown(0x11)) b |= XBOX_GAMEPAD_RIGHT_THUMB;
++    pState->Gamepad.wButtons |= b;
++    for (i = 0; i < 8; i++)
++        if (xbox_FramebufferKeyDown(analog[i].vk))
++            pState->Gamepad.bAnalogButtons[analog[i].btn] = 255;
++    if (!pState->Gamepad.sThumbLX) pState->Gamepad.sThumbLX = kb_axis(0x64, 0x66);
++    if (!pState->Gamepad.sThumbLY) pState->Gamepad.sThumbLY = kb_axis(0x62, 0x68);
++    if (!pState->Gamepad.sThumbRX) pState->Gamepad.sThumbRX = kb_axis('J', 'L');
++    if (!pState->Gamepad.sThumbRY) pState->Gamepad.sThumbRY = kb_axis('K', 'I');
++}
++
+ /* Open up to XBOX_MAX_CONTROLLERS attached game controllers. */
+ static void open_controllers(void)
+ {
+@@ -287,6 +338,13 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+     SDL_GameController *c = g_pads[dwPort];
+     if (!c || !SDL_GameControllerGetAttached(c)) {
+         g_controller_connected[dwPort] = FALSE;
++        if (dwPort == 0 && keyboard_enabled()) {
++            static DWORD kb_packet;
++            memset(pState, 0, sizeof(*pState));
++            keyboard_merge(pState);
++            pState->dwPacketNumber = ++kb_packet;   /* must move for edges */
++            return ERROR_SUCCESS;
++        }
+         return ERROR_DEVICE_NOT_CONNECTED;
+     }
+ 
+@@ -335,6 +393,8 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+     pState->Gamepad.sThumbRY =
+         (SHORT)(-1 - SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_RIGHTY));
+ 
++    if (dwPort == 0 && keyboard_enabled())
++        keyboard_merge(pState);
+     return ERROR_SUCCESS;
+ }
+ 
 diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
-index c65ba43..33b5500 100644
+index c65ba43..d7679a3 100644
 --- a/src/kernel/kernel_bridge.c
 +++ b/src/kernel/kernel_bridge.c
 @@ -1514,6 +1514,31 @@ static HANDLE bridge_resolve_handle(uint32_t token);
@@ -521,7 +606,45 @@ index c65ba43..33b5500 100644
      /* A freshly set timer starts unsignaled, like the real KeSetTimer. */
      {
          HANDLE ev = ke_shadow_lookup(timer_va);
-@@ -3399,6 +3689,20 @@ static int bridge_async_io_enabled(void)
+@@ -2966,6 +3256,7 @@ static NTSTATUS bridge_create_file_impl(
+         bridge_write_handle(handle_va, h);
+         bridge_write_iostatus(iostatus_va, ios.Status, (uint32_t)ios.Information);
+     } else {
++        fprintf(stderr, "  [FILE] open '%s' failed: 0x%08X\n", name.Buffer, (unsigned)st);
+         bridge_write_iostatus(iostatus_va, st, 0);
+     }
+     return st;
+@@ -3159,6 +3450,16 @@ static void bridge_NtOpenFile(void)
+  */
+ recomp_func_t recomp_lookup_kernel(uint32_t xbox_va);
+ 
++/* Run guest code with the guest CPU. A file-I/O completion APC is delivered
++ * from inside the kernel call, where the thread has let the CPU go, so the
++ * callback ran in parallel with other guest threads. On the console it
++ * preempts the issuing thread and nothing else runs meanwhile; EA's stream
++ * manager scans a ring from that callback while the loader advances its read
++ * pointer, and the race loses the end of a request (the 43% load hang).
++ * RECOMP_APC_LOCK=0 turns it off. */
++static int guest_cpu_callback_enter(void);
++static void guest_cpu_callback_leave(int took);
++
+ static void deliver_one_apc(uint32_t apc_routine, uint32_t apc_context,
+                             uint32_t iostatus)
+ {
+@@ -3175,7 +3476,11 @@ static void deliver_one_apc(uint32_t apc_routine, uint32_t apc_context,
+         g_esp -= 4; BRIDGE_MEM32(g_esp) = iostatus;
+         g_esp -= 4; BRIDGE_MEM32(g_esp) = apc_context;
+         g_esp -= 4; BRIDGE_MEM32(g_esp) = 0;   /* dummy return address */
+-        fn();
++        {
++            int took = guest_cpu_callback_enter();
++            fn();
++            guest_cpu_callback_leave(took);
++        }
+         g_esp += 12;
+     } else {
+         uint32_t ord = 0;
+@@ -3399,6 +3704,20 @@ static int bridge_async_io_enabled(void)
      return on;
  }
  
@@ -542,7 +665,7 @@ index c65ba43..33b5500 100644
  /* ── NtReadFile (ordinal 219, 8 args = 32 bytes) ──────── */
  static void bridge_NtReadFile(void)
  {
-@@ -3436,7 +3740,9 @@ static void bridge_NtReadFile(void)
+@@ -3436,7 +3755,9 @@ static void bridge_NtReadFile(void)
           * whatever precedes the file it actually wants, and a read that stops
           * early looks identical to one that never started -- until you can
           * see where each one landed. */
@@ -553,7 +676,7 @@ index c65ba43..33b5500 100644
              fprintf(stderr, "  [READ] from=0x%08X ev=%08X apc=%08X @%lld want=%u got=%u st=0x%08X  %02X %02X %02X %02X\n",
                      g_xbox_kernel_caller, STACK_ARG(1), STACK_ARG(2),
                      (long long)off.QuadPart, length, got,
-@@ -4155,8 +4461,31 @@ static void bridge_KeQueryBasePriorityThread(void)
+@@ -4155,8 +4476,31 @@ static void bridge_KeQueryBasePriorityThread(void)
          XBOX_TO_NATIVE(STACK_ARG(0)));
  }
  
@@ -585,7 +708,7 @@ index c65ba43..33b5500 100644
      g_eax = (uint32_t)xbox_KeSetBasePriorityThread(
          XBOX_TO_NATIVE(STACK_ARG(0)), (LONG)STACK_ARG(1));
  }
-@@ -4472,15 +4801,49 @@ static void bridge_KeWaitForMultipleObjects(void)
+@@ -4472,15 +4816,49 @@ static void bridge_KeWaitForMultipleObjects(void)
      }
      if (count > BRIDGE_MAXIMUM_WAIT_OBJECTS)
          count = BRIDGE_MAXIMUM_WAIT_OBJECTS;
@@ -638,7 +761,7 @@ index c65ba43..33b5500 100644
  }
  
  #undef BRIDGE_MAXIMUM_WAIT_OBJECTS
-@@ -7349,8 +7712,7 @@ static void bridge_KeSetPriorityProcess(void)
+@@ -7349,8 +7727,7 @@ static void bridge_KeSetPriorityProcess(void)
  /* --- KeSetPriorityThread (ordinal 148, 2 args = 8 bytes) --- */
  static void bridge_KeSetPriorityThread(void)
  {
@@ -648,7 +771,7 @@ index c65ba43..33b5500 100644
      g_eax = 0;
  }
  
-@@ -9371,17 +9733,181 @@ static int guest_cpu_enabled(void)
+@@ -9371,14 +9748,218 @@ static int guest_cpu_enabled(void)
      return g_guest_cpu_on;
  }
  
@@ -746,7 +869,6 @@ index c65ba43..33b5500 100644
  {
      t_guest_thread = 1;
      if (guest_cpu_enabled() && !t_guest_held) {
--        EnterCriticalSection(&g_guest_cpu);
 +        guest_cpu_acquire(prio_index(t_guest_prio));
 +        t_guest_held = 1;
 +    }
@@ -760,6 +882,14 @@ index c65ba43..33b5500 100644
 +#define RECOMP_LOOP_QUANTUM 4096
 +RECOMP_TLS int g_loop_budget = RECOMP_LOOP_QUANTUM;
 +
++/* Non-preemptible sections (xbox_NoPreemptEnter/Leave): code the console runs
++ * without a thread switch in practice -- EA's stream-manager hand-off between
++ * its I/O and loader threads -- keeps the guest CPU across loop-head yields
++ * and across non-blocking kernel calls. Blocking waits still release it. */
++static RECOMP_TLS int t_no_preempt;
++void xbox_NoPreemptEnter(void) { t_no_preempt++; }
++void xbox_NoPreemptLeave(void) { if (t_no_preempt > 0) t_no_preempt--; }
++
 +/* A yield must hand the CPU over, not just offer it. A Windows critical
 + * section is not fair: the thread that leaves it and re-enters at once
 + * usually wins against a waiter that has to be woken and scheduled first,
@@ -772,7 +902,16 @@ index c65ba43..33b5500 100644
 + * someone else has taken the CPU (at most 5 ms) before taking it back. */
 +void recomp_loop_yield(void)
 +{
-+    g_loop_budget = RECOMP_LOOP_QUANTUM;
++    if (t_no_preempt) {
++        g_loop_budget = RECOMP_LOOP_QUANTUM;
++        return;
++    }
++    static int quantum;
++    if (!quantum) {
++        const char *e = getenv("RECOMP_LOOP_QUANTUM");
++        quantum = (e && atoi(e) > 0) ? atoi(e) : RECOMP_LOOP_QUANTUM;
++    }
++    g_loop_budget = quantum;
 +    if (t_guest_held) {
 +        LONG gen = g_guest_gen;
 +        int waiting = fair_yield_on() && g_guest_waiters > 0;
@@ -786,10 +925,10 @@ index c65ba43..33b5500 100644
 +            SwitchToThread();
 +        }
 +        guest_cpu_acquire(prio_index(t_guest_prio));
-         t_guest_held = 1;
-     }
- }
- 
++        t_guest_held = 1;
++    }
++}
++
 +/* Interrupt and DPC context takes the guest CPU too.
 + *
 + * The Xbox has one CPU: an ISR or DPC preempts whatever thread was running
@@ -812,7 +951,7 @@ index c65ba43..33b5500 100644
 +    }
 +    if (on && guest_cpu_enabled()) {
 +        InterlockedIncrement(&g_prio_waiting[33]);
-+        EnterCriticalSection(&g_guest_cpu);
+         EnterCriticalSection(&g_guest_cpu);
 +        InterlockedDecrement(&g_prio_waiting[33]);
 +    }
 +}
@@ -828,10 +967,30 @@ index c65ba43..33b5500 100644
 +        LeaveCriticalSection(&g_guest_cpu);
 +}
 +
- void guest_cpu_part(void)
- {
-     if (t_guest_held) {
-@@ -9391,11 +9917,60 @@ void guest_cpu_part(void)
++static int guest_cpu_callback_enter(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char *e = getenv("RECOMP_APC_LOCK");
++        on = !(e && *e == '0');
++    }
++    if (on && guest_cpu_enabled() && t_guest_thread && !t_guest_held) {
++        guest_cpu_acquire(prio_index(t_guest_prio));
+         t_guest_held = 1;
++        return 1;
++    }
++    return 0;
++}
++
++static void guest_cpu_callback_leave(int took)
++{
++    if (took && t_guest_held) {
++        t_guest_held = 0;
++        LeaveCriticalSection(&g_guest_cpu);
+     }
+ }
+ 
+@@ -9391,11 +9972,78 @@ void guest_cpu_part(void)
      t_guest_thread = 0;
  }
  
@@ -869,6 +1028,24 @@ index c65ba43..33b5500 100644
  static void kernel_thunk_dispatch(void)
  {
      int held = t_guest_held;
++    int keep = 0;
++    if (t_no_preempt && held && g_kernel_dispatch_slot >= 0
++            && g_kernel_dispatch_slot < XBOX_KERNEL_THUNK_TABLE_SIZE) {
++        switch (g_slot_ordinals[g_kernel_dispatch_slot]) {
++        case 99: case 158: case 159: case 233: case 234: case 235: case 238:
++        case 277: case 278:            /* RtlEnterCriticalSection(AndRegion): the
++                                        * owner needs the CPU to leave it */
++            break;                     /* blocking: must let others run */
++        default:
++            keep = 1;
++        }
++    }
++    if (keep) {
++        t_dispatch_depth++;
++        kernel_thunk_dispatch_body();
++        t_dispatch_depth--;
++        return;
++    }
 +    LONG gen = g_guest_gen;
 +    int waiter = held && fair_yield_on() && g_guest_waiters > 0;
 +    /* Only while nobody waits for the guest CPU: a guest thread that wants
@@ -893,7 +1070,7 @@ index c65ba43..33b5500 100644
      if (held) {                        /* let other guest threads run meanwhile */
          t_guest_held = 0;
          LeaveCriticalSection(&g_guest_cpu);
-@@ -9403,11 +9978,16 @@ static void kernel_thunk_dispatch(void)
+@@ -9403,11 +10051,16 @@ static void kernel_thunk_dispatch(void)
      t_dispatch_depth++;
      kernel_thunk_dispatch_body();
      t_dispatch_depth--;
@@ -911,7 +1088,7 @@ index c65ba43..33b5500 100644
          t_guest_held = 1;
      }
      (void)held;
-@@ -9449,7 +10029,7 @@ static void kernel_thunk_dispatch_body(void)
+@@ -9449,7 +10102,7 @@ static void kernel_thunk_dispatch_body(void)
          static DWORD last_summary_tick = 0;
          DWORD now = GetTickCount();
          if (last_summary_tick == 0) last_summary_tick = now;
@@ -920,6 +1097,32 @@ index c65ba43..33b5500 100644
              fprintf(stderr, "  [KERNEL] summary: %lld total calls, latest ordinal %u (slot %d) esp=0x%08X\n",
                      g_kernel_call_count, ordinal, slot, g_esp);
              /* And which ones, ranked. "Latest" names whatever the sample
+diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
+index 42135e0..feec58a 100644
+--- a/src/kernel/kernel_file.c
++++ b/src/kernel/kernel_file.c
+@@ -824,7 +824,12 @@ NTSTATUS __stdcall xbox_NtCreateFile(
+     }
+ 
+     int fd;
+-    if (CreateOptions & XBOX_FILE_DIRECTORY_FILE) {
++    struct stat host_st;
++    if (!(CreateOptions & XBOX_FILE_DIRECTORY_FILE) &&
++        stat(host_path, &host_st) == 0 && S_ISDIR(host_st.st_mode)) {
++        /* A title opening a partition device (a directory here) as a file. */
++        fd = open(host_path, O_RDONLY | O_DIRECTORY);
++    } else if (CreateOptions & XBOX_FILE_DIRECTORY_FILE) {
+         if (CreateDisposition == XBOX_FILE_CREATE || CreateDisposition == XBOX_FILE_OPEN_IF)
+             mkdir(host_path, 0755);   /* EEXIST is fine */
+         fd = open(host_path, O_RDONLY | O_DIRECTORY);
+@@ -835,6 +840,7 @@ NTSTATUS __stdcall xbox_NtCreateFile(
+     if (fd < 0) {
+         int e = errno;
+         XBOX_TRACE(XBOX_LOG_FILE, "NtCreateFile FAILED: %s (errno=%d)", host_path, e);
++        fprintf(stderr, "  [FILE] host open '%s' failed: %s\n", host_path, strerror(e));
+         if (IoStatusBlock) {
+             IoStatusBlock->Status = STATUS_OBJECT_NAME_NOT_FOUND;
+             IoStatusBlock->Information = 0;
 diff --git a/src/kernel/kernel_hal.c b/src/kernel/kernel_hal.c
 index 1ad4fff..7deb391 100644
 --- a/src/kernel/kernel_hal.c
@@ -946,6 +1149,156 @@ index 1ad4fff..7deb391 100644
  }
  
  /*
+diff --git a/src/kernel/kernel_path.c b/src/kernel/kernel_path.c
+index caf6390..a2d1345 100644
+--- a/src/kernel/kernel_path.c
++++ b/src/kernel/kernel_path.c
+@@ -485,6 +485,10 @@ translate:
+ #include <sys/stat.h>
+ #include <sys/types.h>
+ #include <errno.h>
++#include <fcntl.h>
++#include <stdint.h>
++#include <dirent.h>
++#include <strings.h>
+ 
+ static char s_game_dir[MAX_PATH];
+ static char s_save_dir[MAX_PATH];
+@@ -553,6 +557,116 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
+              s_game_dir, s_save_dir);
+ }
+ 
++/* Xbox paths are case-insensitive, the host's are not. If `path` does not
++ * exist, walk it component by component and substitute the on-disk spelling
++ * of any component that only differs in case. Leaves `path` alone when no
++ * match exists (a create, for instance). */
++static void fix_path_case(char *path)
++{
++    char out[MAX_PATH];
++    char *comp, *save = NULL, tmp[MAX_PATH];
++    size_t n = 0;
++
++    if (access(path, F_OK) == 0)
++        return;
++    snprintf(tmp, sizeof(tmp), "%s", path);
++    if (tmp[0] == '/')
++        out[n++] = '/';
++    out[n] = '\0';
++
++    for (comp = strtok_r(tmp, "/", &save); comp; comp = strtok_r(NULL, "/", &save)) {
++        char probe[MAX_PATH];
++        size_t base = n;
++
++        if (base && out[base - 1] != '/')
++            out[base++] = '/';
++        snprintf(probe, sizeof(probe), "%.*s%s", (int)base, out, comp);
++        if (access(probe, F_OK) != 0) {
++            DIR *d;
++            struct dirent *e;
++            char dir[MAX_PATH];
++
++            snprintf(dir, sizeof(dir), "%.*s", (int)base, out);
++            d = opendir(base ? dir : ".");
++            if (d) {
++                while ((e = readdir(d)) != NULL) {
++                    if (strcasecmp(e->d_name, comp) == 0) {
++                        snprintf(probe, sizeof(probe), "%.*s%s", (int)base, out, e->d_name);
++                        break;
++                    }
++                }
++                closedir(d);
++            }
++        }
++        snprintf(out, sizeof(out), "%s", probe);
++        n = strlen(out);
++    }
++    if (access(out, F_OK) == 0)
++        snprintf(path, MAX_PATH, "%s", out);
++}
++
++/* Raw disk device: Partition0.img carries the partition table at 0x800
++ * (see the Windows branch above for why a title reads it). */
++static void xbox_write_partition_table(const char *path)
++{
++    static const struct { const char *name; uint32_t start, size; } parts[] = {
++        { "XBOX_PART_X",  0x00000400, 0x00177000 },
++        { "XBOX_PART_Y",  0x00177400, 0x00177000 },
++        { "XBOX_PART_Z",  0x002EE400, 0x00177000 },
++        { "XBOX_PART_C",  0x00465400, 0x000FA000 },
++        { "XBOX_PART_E",  0x0055F400, 0x00465400 },
++    };
++    unsigned char sector[512];
++    int fd = open(path, O_WRONLY | O_CREAT, 0644);
++    size_t i;
++
++    if (fd < 0)
++        return;
++    memset(sector, 0, sizeof(sector));
++    memcpy(sector, "****PARTINFO****", 16);
++    for (i = 0; i < sizeof(parts) / sizeof(parts[0]); i++) {
++        unsigned char *e = sector + 48 + i * 32;
++        size_t n = strlen(parts[i].name);
++        uint32_t flags = 0x80000000u, zero = 0;
++        memset(e, ' ', 16);
++        memcpy(e, parts[i].name, n < 16 ? n : 16);
++        memcpy(e + 16, &flags, 4);
++        memcpy(e + 20, &parts[i].start, 4);
++        memcpy(e + 24, &parts[i].size, 4);
++        memcpy(e + 28, &zero, 4);
++    }
++    if (pwrite(fd, sector, sizeof(sector), 0x800) < 0)
++        xbox_log(XBOX_LOG_WARN, XBOX_LOG_PATH, "partition table write: %s", strerror(errno));
++    close(fd);
++}
++
++/* \Device\Harddisk0\PartitionN with nothing below it -> <save>/PartitionN.img */
++static BOOL xbox_partition_device_path(const char *xbox_path, char *out, DWORD n)
++{
++    static const char *prefix = "\\Device\\Harddisk0\\Partition";
++    int len = match_prefix(xbox_path, prefix);
++    int digit;
++    const char *rest;
++
++    if (!len)
++        return FALSE;
++    digit = xbox_path[len];
++    /* Only the raw disk is an image; the others are directories (rules table). */
++    if (digit != '0')
++        return FALSE;
++    rest = xbox_path + len + 1;
++    if (*rest == '\\' || *rest == '/')
++        rest++;
++    if (*rest != '\0')
++        return FALSE;
++
++    mkdir_p(s_save_dir);
++    snprintf(out, n, "%s/Partition%c.img", s_save_dir, digit);
++    if (access(out, F_OK) != 0)
++        xbox_write_partition_table(out);
++    return TRUE;
++}
++
+ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, DWORD buf_size)
+ {
+     const char* remainder = NULL;
+@@ -566,6 +680,9 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+     if (!s_initialized)
+         xbox_path_init(NULL, NULL);
+ 
++    if (xbox_partition_device_path(xbox_path, host_path_buf, buf_size))
++        return TRUE;
++
+     {
+         char linked[512];
+         if (resolve_symlink(xbox_path, linked, sizeof(linked)))
+@@ -616,6 +733,7 @@ translate:
+                 host_path_buf[--n] = '\0';
+         }
+ 
++        fix_path_case(host_path_buf);
+         XBOX_TRACE(XBOX_LOG_PATH, "%s -> %s", xbox_path, host_path_buf);
+         return TRUE;
+     }
 diff --git a/src/kernel/kernel_rtl.c b/src/kernel/kernel_rtl.c
 index 9760735..4717e28 100644
 --- a/src/kernel/kernel_rtl.c
@@ -974,11 +1327,97 @@ index 9760735..4717e28 100644
  VOID __stdcall xbox_RtlInitializeCriticalSection(PRTL_CRITICAL_SECTION CriticalSection)
  {
      /* Creating the shadow here is not required -- Enter does it -- but doing
+diff --git a/src/kernel/nv2a_backend.h b/src/kernel/nv2a_backend.h
+new file mode 100644
+index 0000000..602f84f
+--- /dev/null
++++ b/src/kernel/nv2a_backend.h
+@@ -0,0 +1,72 @@
++/**
++ * Pluggable GPU backend for the pushbuffer executor.
++ *
++ * The executor parses the pushbuffer, tracks state and runs vertex programs.
++ * With a backend registered it hands the rasterising to it instead of
++ * drawing pixels itself. The backend is optional: with none set, nothing
++ * here is used.
++ */
++#ifndef XBOXRECOMP_NV2A_BACKEND_H
++#define XBOXRECOMP_NV2A_BACKEND_H
++
++#include <stdint.h>
++#include "nv2a_vsh_interp.h"
++#include "nv2a_combiner.h"
++
++typedef struct {
++    uint32_t color_offset;          /* guest address of the colour surface */
++    uint32_t pitch;
++    uint32_t x, y, width, height;   /* clip rectangle */
++    uint32_t bpp;                   /* 2 or 4 */
++    int      swizzled;              /* render target stored Morton-swizzled */
++    uint32_t zeta_offset;
++    uint32_t zmax;                  /* 0xFFFF (Z16) or 0xFFFFFF (Z24S8) */
++    int      depth_test, depth_write;
++    uint32_t depth_func;            /* GL enum, as the NV2A takes it */
++    /* Per-pixel state (GL enums as the NV2A takes them). */
++    int      blend_enable;
++    uint32_t blend_sfactor, blend_dfactor, blend_equation, blend_color; /* ARGB */
++    uint32_t color_mask;            /* A<<24 R<<16 G<<8 B, non-zero byte = write */
++    int      alpha_test;
++    uint32_t alpha_func, alpha_ref;
++    Nv2aCombiner rc;
++    int      rc_seen;               /* combiners programmed by the title */
++    uint32_t fog_enable, fog_mode, fog_color;   /* fog_color: FOG_COLOR as written (R in bits 0-7) */
++    float    fog_param[2];
++} Nv2aTarget;
++
++typedef struct {
++    int      valid;
++    uint32_t offset, width, height;
++    uint32_t addr_u, addr_v;        /* 1 wrap 2 mirror 3 clamp 4 border 5 clamp-to-edge */
++    int      linear_filter;         /* magnification */
++    int      normalised;            /* swizzled/DXT: coords normalised; else texels */
++    uint32_t format;                /* NV097 colour format code */
++    uint32_t stage_program;         /* SET_SHADER_STAGE_PROGRAM, 5 bits per stage */
++    uint64_t hash;                  /* of the base level's bytes (this frame) */
++} Nv2aTexInfo;
++
++/* Texture stage description, and mip 0 decoded to A8R8G8B8 (width*height
++ * dwords). Both return 0 if the stage is unusable. */
++int nv2a_exec_tex_info(int stage, Nv2aTexInfo *info);
++int nv2a_exec_tex_decode(int stage, uint32_t *out);
++
++#define NV2A_CLEAR_Z      0x01
++#define NV2A_CLEAR_STENCIL 0x02
++#define NV2A_CLEAR_COLOR  0xF0
++
++typedef struct {
++    /* One draw call after the vertex program: n vertices, assembled
++     * according to prim (NV097 primitive code). Return 1 if consumed. */
++    int  (*draw)(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, uint32_t n);
++    /* CLEAR_SURFACE; argb and depth are already decoded (depth 0..1). */
++    /* Return 1 if consumed (else the executor clears guest memory itself). */
++    int  (*clear)(const Nv2aTarget *t, uint32_t flags, uint32_t argb, float depth);
++    /* A finished frame is being presented from t: the backend must have
++     * written it into guest memory (A8R8G8B8 / R5G6B5 at color_offset). */
++    void (*flip)(const Nv2aTarget *t);
++} Nv2aBackend;
++
++void nv2a_exec_set_backend(const Nv2aBackend *b);
++
++#endif
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index c65632c..48eb7ae 100644
+index c65632c..ea02b8e 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
-@@ -240,10 +240,13 @@ typedef struct {
+@@ -37,6 +37,7 @@
+ #include "../d3d/d3d8_swizzle.h"
+ #include "nv2a_vsh_interp.h"
+ #include "nv2a_combiner.h"
++#include "nv2a_backend.h"
+ #if defined(_WIN32)
+ #include <windows.h>
+ #define NV_TLS __declspec(thread)
+@@ -240,10 +241,13 @@ typedef struct {
      uint32_t pitch;                     /* bytes per row, from CONTROL1  */
      uint32_t color;                     /* NV097 colour-format code      */
      uint32_t addr_u, addr_v;            /* wrap mode per axis            */
@@ -992,7 +1431,7 @@ index c65632c..48eb7ae 100644
      int      valid;
  } Texture;
  
-@@ -284,6 +287,10 @@ static struct {
+@@ -284,6 +288,10 @@ static struct {
      uint64_t pixels;
      uint32_t pixel_max;   /* brightest value any pixel write carried */
      uint32_t clip_x, clip_w, clip_y, clip_h;
@@ -1003,7 +1442,7 @@ index c65632c..48eb7ae 100644
      uint32_t clear_color;
      uint32_t clears, unhandled_total;
      uint32_t flip_read, flip_write, flip_modulo, flips;
-@@ -321,6 +328,9 @@ static struct {
+@@ -321,6 +329,9 @@ static struct {
      uint32_t xf_fmt[16];  /* attribute formats seen: type | size<<4 | slot<<8 */
      int xf_nfmt, xf_seeded;
      uint32_t depth_test, depth_func, depth_mask;
@@ -1013,7 +1452,16 @@ index c65632c..48eb7ae 100644
      uint32_t zeta_offset, zstencil_clear;
  } s_gpu;
  
-@@ -660,12 +670,65 @@ static void raster_triangle(const float a[2], const float b[2],
+@@ -528,6 +539,8 @@ static int fetch_attr(const VertexAttr *a, uint32_t index, float out[4])
+ }
+ 
+ static uint32_t surface_bpp(void);
++static const Nv2aBackend *s_backend;
++static void backend_target(Nv2aTarget *t);
+ 
+ static void note_drawn(void)
+ {
+@@ -660,12 +673,77 @@ static void raster_triangle(const float a[2], const float b[2],
                              const float c[2], uint32_t argb,
                              const float uv[3][2]);
  
@@ -1058,6 +1506,18 @@ index c65632c..48eb7ae 100644
 +
  static void clear_surface(uint32_t param)
  {
++    if (s_backend && s_backend->clear) {
++        Nv2aTarget t;
++        float z;
++        backend_target(&t);
++        z = (float)(((s_gpu.format >> 4) & 0xF) == 1 ? (s_gpu.zstencil_clear & 0xFFFF)
++                                                    : (s_gpu.zstencil_clear >> 8)) / (float)t.zmax;
++        if (s_backend->clear(&t, param, s_gpu.clear_color, z)) {
++            note_drawn();
++            s_gpu.clears++;
++            return;
++        }
++    }
      uint8_t *mem = (uint8_t *)xbox_GetMemoryOffset();
      uint32_t bpp = surface_bpp();
      uint32_t y, x;
@@ -1079,7 +1539,7 @@ index c65632c..48eb7ae 100644
      if (!(param & NV097_CLEAR_COLOR_MASK))
          return;                            /* depth/stencil only */
      if (!s_gpu.color_offset || !s_gpu.pitch || !s_gpu.clip_h || bpp == 0)
-@@ -679,6 +742,47 @@ static void clear_surface(uint32_t param)
+@@ -679,6 +757,47 @@ static void clear_surface(uint32_t param)
          s_gpu.color_base = base;
      }
  
@@ -1127,7 +1587,7 @@ index c65632c..48eb7ae 100644
      for (y = 0; y < s_gpu.clip_h; y++) {
          uint8_t *row = mem + s_gpu.color_base
                       + (size_t)(s_gpu.clip_y + y) * s_gpu.pitch;
-@@ -835,6 +939,10 @@ static uint32_t wrap_coord(uint32_t c, uint32_t size, uint32_t mode)
+@@ -835,6 +954,10 @@ static uint32_t wrap_coord(uint32_t c, uint32_t size, uint32_t mode)
          return 0;
      if (mode == 1)                         /* wrap */
          return (uint32_t)(((sc % n) + n) % n);
@@ -1138,7 +1598,7 @@ index c65632c..48eb7ae 100644
      return sc < 0 ? 0u : (sc >= n ? size - 1 : c);   /* clamp, and the rest */
  }
  
-@@ -875,6 +983,16 @@ static int sample_tex(const Texture *t, uint32_t face_offset,
+@@ -875,6 +998,16 @@ static int sample_tex(const Texture *t, uint32_t face_offset,
  
      if (!t->valid)
          return 0;
@@ -1155,7 +1615,7 @@ index c65632c..48eb7ae 100644
      u = wrap_coord(u, t->width,  t->addr_u);
      v = wrap_coord(v, t->height, t->addr_v);
  
-@@ -1127,10 +1245,44 @@ static void dump_texture_bmp(uint32_t seq)
+@@ -1127,10 +1260,44 @@ static void dump_texture_bmp(uint32_t seq)
   * playback rate. */
  static uint8_t *s_surface;          /* host address of surface row 0 */
  
@@ -1200,7 +1660,7 @@ index c65632c..48eb7ae 100644
      if (surface_hits_image(base, (s_gpu.clip_y + s_gpu.clip_h) * s_gpu.pitch))
          return 0;
      s_surface = (uint8_t *)mem + base;
-@@ -1168,11 +1320,53 @@ static void blend_factor(uint32_t f, const float s[4], const float d[4],
+@@ -1168,11 +1335,53 @@ static void blend_factor(uint32_t f, const float s[4], const float d[4],
      }
  }
  
@@ -1209,7 +1669,7 @@ index c65632c..48eb7ae 100644
 + * was stored, and the draw state -- so a wrong colour on screen can be traced
 + * to the pass that produced it. Starts delay_ms after the first write. */
 +static int s_probe = -1, s_probe_x, s_probe_y;
-+static long s_probe_left;
++static LONG s_probe_left;
 +static DWORD s_probe_start, s_probe_delay;
 +
 +static void probe_init(void)
@@ -1220,7 +1680,7 @@ index c65632c..48eb7ae 100644
 +    if (e && sscanf(e, "%d,%d,%lu,%lu", &s_probe_x, &s_probe_y, &d, &m) >= 2) {
 +        s_probe = 1;
 +        s_probe_delay = (DWORD)d;
-+        s_probe_left = (long)m;
++        s_probe_left = (LONG)m;
 +        s_probe_start = GetTickCount();
 +    }
 +}
@@ -1254,7 +1714,7 @@ index c65632c..48eb7ae 100644
      if (x < (int)s_gpu.clip_x || x >= (int)(s_gpu.clip_x + s_gpu.clip_w))
          return;
      if (y < (int)s_gpu.clip_y || y >= (int)(s_gpu.clip_y + s_gpu.clip_h))
-@@ -1180,7 +1374,7 @@ static void put_pixel(uint8_t *mem, uint32_t bpp, int x, int y, uint32_t argb)
+@@ -1180,7 +1389,7 @@ static void put_pixel(uint8_t *mem, uint32_t bpp, int x, int y, uint32_t argb)
      s_gpu.pixels++;
      if ((argb & 0x00FFFFFFu) > (s_gpu.pixel_max & 0x00FFFFFFu))
          s_gpu.pixel_max = argb;
@@ -1263,7 +1723,7 @@ index c65632c..48eb7ae 100644
  
      /* Blending, with the GL factor set and equations the NV2A takes.
       *
-@@ -1194,9 +1388,9 @@ static void put_pixel(uint8_t *mem, uint32_t bpp, int x, int y, uint32_t argb)
+@@ -1194,9 +1403,9 @@ static void put_pixel(uint8_t *mem, uint32_t bpp, int x, int y, uint32_t argb)
          float sc[4], dc[4], sf[4], df[4], out[4];
          int k;
          if (bpp == 4) {
@@ -1275,7 +1735,7 @@ index c65632c..48eb7ae 100644
              dst = 0xFF000000u | ((t & 0xF800u) << 8) | ((t & 0x07E0u) << 5)
                  | ((t & 0x001Fu) << 3);
          }
-@@ -1229,20 +1423,42 @@ static void put_pixel(uint8_t *mem, uint32_t bpp, int x, int y, uint32_t argb)
+@@ -1229,20 +1438,42 @@ static void put_pixel(uint8_t *mem, uint32_t bpp, int x, int y, uint32_t argb)
          if (keep == 0xFFFFFFFFu)
              return;
          if (bpp == 4) {
@@ -1322,7 +1782,50 @@ index c65632c..48eb7ae 100644
  }
  
  /* Half-space fill. Barycentric edge functions rather than scanline slopes:
-@@ -1857,6 +2073,55 @@ static void xf_rows(const XfTri *T, int y0, int step, XfCount *cnt)
+@@ -1550,6 +1781,42 @@ static float zclear_value(void)
+                    : (float)(s_gpu.zstencil_clear >> 8);
+ }
+ 
++void nv2a_exec_set_backend(const Nv2aBackend *b)
++{
++    s_backend = b;
++}
++
++static void backend_target(Nv2aTarget *t)
++{
++    t->color_offset = dma_resolve(s_gpu.color_offset);
++    t->pitch = s_gpu.pitch;
++    t->x = s_gpu.clip_x; t->y = s_gpu.clip_y;
++    t->width = s_gpu.clip_w; t->height = s_gpu.clip_h;
++    t->bpp = surface_bpp();
++    t->swizzled = ((s_gpu.format >> 8) & 0xF) == 2;
++    t->zeta_offset = s_gpu.zeta_offset;
++    t->zmax = ((s_gpu.format >> 4) & 0xF) == 1 ? 0xFFFFu : 0xFFFFFFu;
++    t->depth_test = (int)s_gpu.depth_test;
++    t->depth_write = (int)s_gpu.depth_mask;
++    t->depth_func = s_gpu.depth_func;
++    t->blend_enable = (int)s_gpu.blend_enable;
++    t->blend_sfactor = s_gpu.blend_sfactor;
++    t->blend_dfactor = s_gpu.blend_dfactor;
++    t->blend_equation = s_gpu.blend_equation;
++    t->blend_color = s_gpu.blend_color;
++    t->color_mask = s_gpu.color_mask;
++    t->alpha_test = (int)s_gpu.alpha_test;
++    t->alpha_func = s_gpu.alpha_func;
++    t->alpha_ref = s_gpu.alpha_ref;
++    t->rc = s_gpu.rc;
++    t->rc_seen = s_gpu.rc_seen;
++    t->fog_enable = s_gpu.fog_enable;
++    t->fog_mode = s_gpu.fog_mode;
++    t->fog_color = s_gpu.fog_color;
++    t->fog_param[0] = s_gpu.fog_param[0];
++    t->fog_param[1] = s_gpu.fog_param[1];
++}
++
+ static float *zbuf_current(int create)
+ {
+     int i;
+@@ -1857,6 +2124,55 @@ static void xf_rows(const XfTri *T, int y0, int step, XfCount *cnt)
                              continue;
                          nv2a_rc_eval(&s_gpu.rc, col, d1, fog,
                                       (const float (*)[4])t, out);
@@ -1378,7 +1881,7 @@ index c65632c..48eb7ae 100644
                          if (s_gpu.alpha_test && !alpha_test_pass(out[3]))
                              continue;
                          argb = pack_color(out);
-@@ -1901,25 +2166,54 @@ static void xf_rows(const XfTri *T, int y0, int step, XfCount *cnt)
+@@ -1901,25 +2217,54 @@ static void xf_rows(const XfTri *T, int y0, int step, XfCount *cnt)
   * few cores for the title and the host.
   * ponytail: s_gpu.pixels/pixel_max in put_pixel are unsynchronised stats and
   * may undercount; nothing depends on them. */
@@ -1435,7 +1938,7 @@ index c65632c..48eb7ae 100644
          if (InterlockedDecrement(&s_pool.pending) == 0)
              SetEvent(s_pool.done);
      }
-@@ -1985,6 +2279,94 @@ static void xf_rows_parallel(const XfTri *T, XfCount *total)
+@@ -1985,6 +2330,94 @@ static void xf_rows_parallel(const XfTri *T, XfCount *total)
  }
  #endif
  
@@ -1530,7 +2033,7 @@ index c65632c..48eb7ae 100644
  static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
                                 const Nv2aVshOutput *vc)
  {
-@@ -1994,10 +2376,17 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
+@@ -1994,10 +2427,17 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
      const float *a, *b, *c;
      float area, su = 1.0f, sv = 1.0f;
      int k;
@@ -1549,7 +2052,7 @@ index c65632c..48eb7ae 100644
      memset(&T, 0, sizeof T);
      T.mem = (uint8_t *)xbox_GetMemoryOffset();
      T.bpp = surface_bpp();
-@@ -2070,6 +2459,11 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
+@@ -2070,6 +2510,11 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
      s_gpu.xf_drawn++;
      T.inv_area = 1.0f / area;
  
@@ -1561,7 +2064,7 @@ index c65632c..48eb7ae 100644
      xf_rows_parallel(&T, &cnt);
      s_gpu.xf_depth_fail += cnt.depth_fail;
      s_gpu.xf_pixels += cnt.pixels;
-@@ -2088,24 +2482,22 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
+@@ -2088,24 +2533,22 @@ static void raster_xf_triangle(const Nv2aVshOutput *va, const Nv2aVshOutput *vb,
   * race frame's triangles went this way.
   *
   * Clipping has to happen in clip space, but the D3D epilogue has already
@@ -1599,7 +2102,7 @@ index c65632c..48eb7ae 100644
  static void xf_lerp(const Nv2aVshOutput *a, const Nv2aVshOutput *b, float t,
                      Nv2aVshOutput *out)
  {
-@@ -2116,52 +2508,74 @@ static void xf_lerp(const Nv2aVshOutput *a, const Nv2aVshOutput *b, float t,
+@@ -2116,52 +2559,74 @@ static void xf_lerp(const Nv2aVshOutput *a, const Nv2aVshOutput *b, float t,
          po[i] = pa[i] + (pb[i] - pa[i]) * t;
  }
  
@@ -1707,7 +2210,7 @@ index c65632c..48eb7ae 100644
  }
  
  static Nv2aVshOutput s_xf[NV_MAX_INDICES];
-@@ -2171,18 +2585,288 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
+@@ -2171,18 +2636,297 @@ static int transform_vertex(uint32_t index, Nv2aVshOutput *out)
      float in[NV2A_VSH_INPUTS][4];
      uint32_t a;
  
@@ -1994,11 +2497,20 @@ index c65632c..48eb7ae 100644
 +        s_phase_vsh += d;
 +        s_phase_setup -= d;         /* the caller's setup timer includes this */
 +    }
++    if (s_backend && s_backend->draw) {
++        Nv2aTarget t;
++        backend_target(&t);
++        if (s_backend->draw(&t, s_gpu.prim, s_xf, n)) {
++            note_drawn();
++            s_gpu.batches_program++;
++            return;
++        }
++    }
 +    vsh_bad_account(n);
      s_gpu.batches_program++;
      s_gpu.verts_program += n;
      if (s_gpu.blend_enable) {
-@@ -2202,8 +2886,11 @@ static void raster_batch_program(void)
+@@ -2202,8 +2946,11 @@ static void raster_batch_program(void)
              left = t ? atoi(t) : 0;
          }
          /* Spread out: one every 20000 program batches, so a run that spends
@@ -2012,7 +2524,7 @@ index c65632c..48eb7ae 100644
              float in[4];
              left--;
              fprintf(stderr, "[VTRACE] prim %u n %u idx %u %u %u\n", s_gpu.prim,
-@@ -2409,7 +3096,45 @@ static void frame_trace_flip(void)
+@@ -2409,7 +3156,45 @@ static void frame_trace_flip(void)
      }
  }
  
@@ -2058,7 +2570,7 @@ index c65632c..48eb7ae 100644
  {
      float v[4];
      uint32_t i;
-@@ -2417,7 +3142,7 @@ static void draw_primitive(void)
+@@ -2417,7 +3202,7 @@ static void draw_primitive(void)
      if (!s_gpu.prim || !s_gpu.idx_count)
          return;
      s_gpu.draws++;
@@ -2067,7 +2579,7 @@ index c65632c..48eb7ae 100644
          fprintf(stderr, "  [GPU] draw #%u\n", s_gpu.draws);
      s_gpu.verts += s_gpu.idx_count;
  
-@@ -2814,9 +3539,11 @@ static void tex_stage_method(uint32_t method, uint32_t param)
+@@ -2814,9 +3599,11 @@ static void tex_stage_method(uint32_t method, uint32_t param)
          /* A DMA-object offset like a surface's: physical, reached through
           * the contiguous window when it names contiguous memory. */
          t->offset = dma_resolve(param);
@@ -2079,7 +2591,7 @@ index c65632c..48eb7ae 100644
          t->cube = (param >> 2) & 1;
          t->levels = (param >> 16) & 0xF;
          /* A swizzled texture carries its own dimensions here, as log2 in
-@@ -2832,8 +3559,8 @@ static void tex_stage_method(uint32_t method, uint32_t param)
+@@ -2832,8 +3619,8 @@ static void tex_stage_method(uint32_t method, uint32_t param)
          t->palette = dma_resolve(param & ~0x3Fu);
          break;
      case NV097_SET_TEXTURE_ADDRESS:
@@ -2090,7 +2602,7 @@ index c65632c..48eb7ae 100644
          t->addr_u =  param        & 0xF;
          t->addr_v = (param >>  8) & 0xF;
          break;
-@@ -2847,6 +3574,9 @@ static void tex_stage_method(uint32_t method, uint32_t param)
+@@ -2847,6 +3634,9 @@ static void tex_stage_method(uint32_t method, uint32_t param)
      case 0x1B14:                                  /* SET_TEXTURE_FILTER */
          t->filter = param;
          break;
@@ -2100,7 +2612,7 @@ index c65632c..48eb7ae 100644
      default:
          break;
      }
-@@ -2910,10 +3640,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -2910,10 +3700,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
          return;
      }
      if (subch != 0) {                      /* 3D class lives on subchannel 0 */
@@ -2120,7 +2632,7 @@ index c65632c..48eb7ae 100644
      case NV097_SET_SURFACE_CLIP_HORIZONTAL:
          s_gpu.clip_x = param & 0xFFFF;
          s_gpu.clip_w = (param >> 16) & 0xFFFF;
-@@ -2925,6 +3663,14 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -2925,6 +3723,14 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
      case NV097_SET_SURFACE_FORMAT:
          s_gpu.format = param;
          break;
@@ -2135,7 +2647,21 @@ index c65632c..48eb7ae 100644
      case NV097_SET_SURFACE_PITCH:
          s_gpu.pitch = param & 0xFFFF;      /* colour pitch; zeta is the top half */
          break;
-@@ -3179,8 +3925,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3119,6 +3925,13 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+                                                : s_gpu.color_offset;
+             uint32_t pitch = s_gpu.drawn_offset ? s_gpu.drawn_pitch
+                                                 : s_gpu.pitch;
++            if (done && s_backend && s_backend->flip) {
++                Nv2aTarget t;
++                backend_target(&t);
++                t.color_offset = dma_resolve(done);
++                t.pitch = pitch;
++                s_backend->flip(&t);
++            }
+             if (done) {
+                 xbox_FramebufferWindowSet(dma_resolve(done), pitch);
+                 xbox_FramebufferWindowPresent(dma_resolve(done), pitch);
+@@ -3179,8 +3992,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
      case 0x030C: s_gpu.depth_test = param; break; /* DEPTH_TEST_ENABLE */
      case 0x0354: s_gpu.depth_func = param; break; /* DEPTH_FUNC */
      case 0x035C: s_gpu.depth_mask = param; break; /* DEPTH_MASK */
@@ -2154,7 +2680,7 @@ index c65632c..48eb7ae 100644
  
      default:
          if (method >= 0x0260 && method < 0x0280) {         /* ALPHA_ICW(i) */
-@@ -3220,6 +3976,21 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3220,6 +4043,21 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
              nv2a_vsh_constant_component(58, (method - 0x0AF0) / 4, param);
              break;
          }
@@ -2176,7 +2702,7 @@ index c65632c..48eb7ae 100644
          if (method >= 0x0B00 && method < 0x0B80) {    /* TRANSFORM_PROGRAM(i) */
              nv2a_vsh_program_word(param);
              break;
-@@ -3406,6 +4177,7 @@ static void peek_chain(void)
+@@ -3406,6 +4244,7 @@ static void peek_chain(void)
  
  void nv2a_pb_exec_report(void)
  {
@@ -2184,7 +2710,7 @@ index c65632c..48eb7ae 100644
      peek_addresses();
      peek_chain();
      if (getenv("RECOMP_FIND_NAN")) {
-@@ -3534,7 +4306,7 @@ void nv2a_pb_exec_report(void)
+@@ -3534,10 +4373,92 @@ void nv2a_pb_exec_report(void)
               * is using. */
              union { uint32_t u; float f; } v;
              v.u = s_unhandled[i].last_param;
@@ -2193,16 +2719,132 @@ index c65632c..48eb7ae 100644
                      s_unhandled[i].method, s_unhandled[i].count,
                      v.u, v.f);
          }
+     }
+     }    fflush(stderr);
+ }
++
++
++/* ── Backend texture access ──────────────────────────────────────────── */
++
++static uint32_t tex_base_bytes(const Texture *t)
++{
++    uint32_t bb = d3d8_format_dxt_block_bytes(t->color);
++    if (bb)
++        return ((t->width + 3) / 4) * ((t->height + 3) / 4) * bb;
++    if (d3d8_format_is_swizzled(t->color))
++        return t->width * t->height * tex_texel_bytes(t->color);
++    return t->pitch * t->height;
++}
++
++int nv2a_exec_tex_info(int stage, Nv2aTexInfo *info)
++{
++    const Texture *t;
++    const uint64_t *w;
++    uint64_t h = 1469598103934665603ull;
++    uint32_t n, i;
++
++    if (stage < 0 || stage > 3)
++        return 0;
++    t = &s_gpu.texs[stage];
++    if (!t->valid)
++        return 0;
++    info->valid = 1;
++    info->offset = t->offset;
++    info->width = t->width; info->height = t->height;
++    info->addr_u = t->addr_u; info->addr_v = t->addr_v;
++    {
++        uint32_t mag = (t->filter >> 24) & 0xF, min = (t->filter >> 16) & 0xFF;
++        info->linear_filter = mag == 2 || min == 2 || min == 4 || min == 6;
++    }
++    info->normalised = tex_size_from_format(t->color) != 0;
++    info->format = t->color;
++    info->stage_program = s_gpu.rc.stage_program;
++    /* Hash the base level (8 bytes at a time); a changed texture changes it.
++     * Done at most once per texture per flipped frame: hashing on every draw
++     * cost 70% of a frame on the character screen. A texture rewritten
++     * mid-frame is picked up at the next flip. */
++    {
++        static struct { uint32_t offset, color, w, h, flips; uint64_t hash; } memo[256];
++        uint32_t slot = (t->offset >> 7) * 2654435761u >> 24;
++        if (memo[slot].offset == t->offset && memo[slot].color == t->color
++            && memo[slot].w == t->width && memo[slot].h == t->height
++            && memo[slot].flips == s_gpu.flips + 1) {
++            info->hash = memo[slot].hash;
++            return 1;
++        }
++        w = (const uint64_t *)((const uint8_t *)xbox_GetMemoryOffset() + t->offset);
++        n = tex_base_bytes(t) / 8;
++        for (i = 0; i < n; i++)
++            h = (h ^ w[i]) * 1099511628211ull;
++        info->hash = h ^ ((uint64_t)t->color << 56) ^ ((uint64_t)t->width << 20) ^ t->height;
++        memo[slot].offset = t->offset; memo[slot].color = t->color;
++        memo[slot].w = t->width; memo[slot].h = t->height;
++        memo[slot].flips = s_gpu.flips + 1;
++        memo[slot].hash = info->hash;
++    }
++    return 1;
++}
++
++int nv2a_exec_tex_decode(int stage, uint32_t *out)
++{
++    const Texture *t;
++    uint32_t x, y;
++
++    if (stage < 0 || stage > 3)
++        return 0;
++    t = &s_gpu.texs[stage];
++    if (!t->valid)
++        return 0;
++    for (y = 0; y < t->height; y++)
++        for (x = 0; x < t->width; x++) {
++            uint32_t argb = 0xFFFF00FFu;
++            if (!sample_tex(t, 0, x, y, &argb))
++                argb = 0xFFFF00FFu;          /* unsupported format: magenta */
++            out[y * t->width + x] = argb;
++        }
++    return 1;
++}
 diff --git a/src/kernel/nv2a_pb_scan.c b/src/kernel/nv2a_pb_scan.c
-index 65bbedb..1abdb56 100644
+index 65bbedb..7cc37c7 100644
 --- a/src/kernel/nv2a_pb_scan.c
 +++ b/src/kernel/nv2a_pb_scan.c
 @@ -1,3 +1,4 @@
-+#include <windows.h>
++#include "kernel.h"
  /*
   * Read-only survey of the pushbuffer a title submits.
   *
-@@ -222,7 +223,156 @@ static uint32_t pb_walk(uint32_t va, uint32_t end_va, int in_call,
+@@ -50,13 +51,17 @@ extern void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+ extern void nv2a_pb_exec_report(void);
+ static int s_exec_enabled = -1;
+ 
++/* (subchannel, method) -> index into s_seen + 1, so counting a word is O(1):
++ * the linear scan this replaced was a third of the executor's time. Methods
++ * are 13 bits, word aligned; subchannels 3 bits. */
++static uint16_t s_seen_idx[8 * 2048];
++
+ static void note(uint32_t subch, uint32_t method)
+ {
+-    for (int i = 0; i < s_seen_count; i++) {
+-        if (s_seen[i].method == method && s_seen[i].subch == subch) {
+-            s_seen[i].count++;
+-            return;
+-        }
++    uint16_t *slot = &s_seen_idx[((subch & 7u) << 11) | ((method >> 2) & 0x7FFu)];
++    if (*slot && s_seen[*slot - 1].method == method && s_seen[*slot - 1].subch == subch) {
++        s_seen[*slot - 1].count++;
++        return;
+     }
+     if (s_seen_count >= PB_MAX_METHODS) {
+         /* Silently dropping past the cap is how a truncated inventory reads as
+@@ -74,6 +79,7 @@ static void note(uint32_t subch, uint32_t method)
+         s_seen[s_seen_count].subch  = subch;
+         s_seen[s_seen_count].count  = 1;
+         s_seen_count++;
++        *slot = (uint16_t)s_seen_count;
+     }
+ }
+ 
+@@ -222,7 +228,156 @@ static uint32_t pb_walk(uint32_t va, uint32_t end_va, int in_call,
      return words;
  }
  
@@ -2426,10 +3068,21 @@ index 7fae74c..c7a2e88 100644
  {
      static int dump = -1;
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
-index 72d5131..2da98ac 100644
+index 72d5131..c9940b4 100644
 --- a/src/kernel/xbox_memory_layout.c
 +++ b/src/kernel/xbox_memory_layout.c
-@@ -191,11 +191,11 @@ static const struct { uint32_t offset; uint32_t busy_mask; } NV2A_ACK[] = {
+@@ -15,6 +15,10 @@
+ #include "xbox_memory_layout.h"
+ #include "kernel.h"
+ #include "guest_vmem.h"
++#ifndef _WIN32
++#include <sched.h>
++#define YieldProcessor() sched_yield()
++#endif
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -191,11 +195,11 @@ static const struct { uint32_t offset; uint32_t busy_mask; } NV2A_ACK[] = {
       *
       * Holding them at zero is correct rather than convenient: nothing here
       * ever raises a GPU interrupt, so "none pending" is the truth. */
@@ -2443,7 +3096,7 @@ index 72d5131..2da98ac 100644
  };
  
  /*
-@@ -449,6 +449,23 @@ static void ac97_arm_write_trap(void)
+@@ -449,6 +453,23 @@ static void ac97_arm_write_trap(void)
  static uint32_t g_dsp_ack[XBOX_MAX_DSP_ACK];
  static int g_dsp_ack_count = 0;
  
@@ -2467,7 +3120,7 @@ index 72d5131..2da98ac 100644
  static void dsp_ack_init(void)
  {
      const char *spec = getenv("RECOMP_DSP_ACK");
-@@ -785,8 +802,50 @@ static void frame_counters_tick(void)
+@@ -785,8 +806,50 @@ static void frame_counters_tick(void)
      }
  }
  
@@ -2518,7 +3171,7 @@ index 72d5131..2da98ac 100644
      for (int i = 0; i < g_fence_mirror_count; i++) {
          uint32_t dev, get_ptr;
  
-@@ -873,6 +932,56 @@ static void framebuffer_probe_tick(void)
+@@ -873,6 +936,56 @@ static void framebuffer_probe_tick(void)
      fflush(stderr);
  }
  
@@ -2575,7 +3228,7 @@ index 72d5131..2da98ac 100644
  static DWORD WINAPI nv2a_ack_thread(LPVOID param)
  {
      volatile uint32_t *regs = (volatile uint32_t *)param;
-@@ -931,6 +1040,45 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+@@ -931,6 +1044,45 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
              static uint32_t last_put;
              DWORD now_ms = GetTickCount();
              uint32_t put = *(volatile uint32_t *)((char *)regs + NV2A_USER_DMA_PUT);
@@ -2621,7 +3274,7 @@ index 72d5131..2da98ac 100644
              if (put != last_put || (now_ms - last_put_ms) > 2000) {
                  /* Survey the segment the title just submitted, once. */
                  {
-@@ -1034,8 +1182,10 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+@@ -1034,8 +1186,10 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
              static uint32_t last_start = 0xFFFFFFFFu;
              uint32_t start = *(volatile uint32_t *)((char *)regs + 0x600800);
              if (start != last_start) {
@@ -2633,7 +3286,7 @@ index 72d5131..2da98ac 100644
                  fflush(stderr);
              }
          }
-@@ -1062,13 +1212,50 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+@@ -1062,13 +1216,50 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
      return 0;
  }
  
@@ -2684,19 +3337,94 @@ index 72d5131..2da98ac 100644
      if (g_nv2a_ack_thread) {
          fprintf(stderr, "  NV2A busy-bit ack: %zu register(s) acknowledged\n",
                  sizeof(NV2A_ACK) / sizeof(NV2A_ACK[0]));
+@@ -1790,7 +1981,14 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+          * this on Windows needs placeholder reservations (VirtualAlloc2). */
+ #ifndef _WIN32
+         g_span_size = g_memory_size * (size_t)(1 + XBOX_NUM_MIRRORS);
+-        g_span_base = VirtualAlloc(NULL, g_span_size, MEM_RESERVE, PAGE_NOACCESS);
++        /* The device apertures sit at base + 0xFD000000 and up, so base + 4 GB
++         * must stay inside the host address space. An OS-chosen reservation is
++         * placed at the top of it (0xFFFF........ on arm64 Linux) and every
++         * aperture then fails; ask for a low-ish address first. */
++        g_span_base = VirtualAlloc((LPVOID)(uintptr_t)0x100000000000ULL,
++                                   g_span_size, MEM_RESERVE, PAGE_NOACCESS);
++        if (!g_span_base)
++            g_span_base = VirtualAlloc(NULL, g_span_size, MEM_RESERVE, PAGE_NOACCESS);
+         if (g_span_base) {
+             VirtualFree(g_span_base, g_memory_size, MEM_RELEASE);
+             g_memory_base = MapViewOfFileEx(g_mapping_handle,
+diff --git a/src/usb/ohci.c b/src/usb/ohci.c
+index 641a94d..58a34af 100644
+--- a/src/usb/ohci.c
++++ b/src/usb/ohci.c
+@@ -1278,7 +1278,7 @@ void xbox_OhciInit(void)
+     ohci_reset(&s_hc[0], XBOX_OHCI0_BASE, 0);
+     ohci_reset(&s_hc[1], XBOX_OHCI1_BASE, 1);
+ 
+-#if defined(_WIN32)
++#if 1
+     /* The registers have to fault to be answered. The MCPX aperture is mapped
+      * as plain committed memory, so both blocks are made inaccessible here and
+      * the title's VEH routes the faults back to xbox_OhciHandleMmio.
+@@ -1314,7 +1314,7 @@ void xbox_OhciInit(void)
+             XBOX_OHCI0_BASE, XBOX_OHCI1_BASE, OHCI_PORTS);
+     fflush(stderr);
+ 
+-#if defined(_WIN32)
++#if 1
+     {
+         HANDLE th = CreateThread(NULL, 0, ohci_thread, NULL, 0, NULL);
+         if (th)
+@@ -1340,6 +1340,21 @@ int xbox_OhciOwnsAddress(uint32_t xbox_va)
+     return hc_for(xbox_va) != NULL;
+ }
+ 
++/* Host-independent access: the caller has already decoded the instruction.
++ * Returns 0 if xbox_va is not an OHCI register. */
++int xbox_OhciMmioAccess(uint32_t xbox_va, int is_write, uint64_t *val, int size)
++{
++    OhciController *hc = hc_for(xbox_va);
++
++    if (!hc)
++        return 0;
++    if (is_write)
++        ohci_write(hc, xbox_va - hc->base, *val, size);
++    else
++        *val = ohci_read(hc, xbox_va - hc->base, size);
++    return 1;
++}
++
+ int xbox_OhciHandleMmio(void *ctx, uint32_t xbox_va)
+ {
+ #if defined(_WIN32)
+diff --git a/src/usb/ohci.h b/src/usb/ohci.h
+index 94ff7b2..2a01b28 100644
+--- a/src/usb/ohci.h
++++ b/src/usb/ohci.h
+@@ -40,6 +40,7 @@ int  xbox_OhciOwnsAddress(uint32_t xbox_va);
+ /* Service a trapped access. Returns 1 if the faulting instruction was decoded
+  * and stepped over. `ctx` is a PCONTEXT; void * keeps windows.h out of here. */
+ int  xbox_OhciHandleMmio(void *ctx, uint32_t xbox_va);
++int  xbox_OhciMmioAccess(uint32_t xbox_va, int is_write, uint64_t *val, int size);
+ 
+ /* Report counts at exit, so a run says whether the driver ever looked. */
+ void xbox_OhciReport(void);
 diff --git a/src/video/CMakeLists.txt b/src/video/CMakeLists.txt
-index 2189a3b..6a5edfb 100644
+index 2189a3b..7f1ee5e 100644
 --- a/src/video/CMakeLists.txt
 +++ b/src/video/CMakeLists.txt
-@@ -3,6 +3,7 @@ add_library(xbox_video STATIC
+@@ -3,12 +3,16 @@ add_library(xbox_video STATIC
      video_player.c
      video_pump.c
      fb_present.c
 +    gpu_present.c
  )
++if(NOT WIN32)
++    target_sources(xbox_video PRIVATE fb_present_sdl.c)
++endif()
  target_include_directories(xbox_video PUBLIC
      ${CMAKE_CURRENT_SOURCE_DIR}
-@@ -10,5 +11,5 @@ target_include_directories(xbox_video PUBLIC
+     ${CMAKE_CURRENT_SOURCE_DIR}/..
  )
  target_link_libraries(xbox_video PUBLIC xbox_d3d8)
  if(WIN32)
@@ -2704,7 +3432,7 @@ index 2189a3b..6a5edfb 100644
 +    target_link_libraries(xbox_video PUBLIC mfplat mfreadwrite mfuuid mf ole32 d3d11 dxgi)
  endif()
 diff --git a/src/video/fb_present.c b/src/video/fb_present.c
-index 08bae4b..76c81ec 100644
+index 08bae4b..a0e55ee 100644
 --- a/src/video/fb_present.c
 +++ b/src/video/fb_present.c
 @@ -21,6 +21,7 @@
@@ -2882,6 +3610,371 @@ index 08bae4b..76c81ec 100644
      ReleaseDC(hwnd, hdc);
      DestroyWindow(hwnd);
      free(s_rgb);
+@@ -390,11 +483,4 @@ void xbox_FramebufferWindowStart(void)
+         InterlockedExchange(&s_fb_running, 0);
+ }
+ 
+-#else
+-void xbox_FramebufferWindowSet(uint32_t fb_va, uint32_t pitch) { (void)fb_va; (void)pitch; }
+-void xbox_FramebufferWindowPresent(uint32_t fb_va, uint32_t pitch) { (void)fb_va; (void)pitch; }
+-void xbox_FramebufferWindowStart(void) {}
+-int xbox_FramebufferKeyDown(int vk) { (void)vk; return 0; }
+-void xbox_FramebufferWindowSetTitle(const uint16_t *n, int m) { (void)n; (void)m; }
+-void xbox_FramebufferWindowFrameStats(uint32_t draws) { (void)draws; }
+ #endif
+diff --git a/src/video/fb_present_sdl.c b/src/video/fb_present_sdl.c
+new file mode 100644
+index 0000000..e19a55e
+--- /dev/null
++++ b/src/video/fb_present_sdl.c
+@@ -0,0 +1,347 @@
++/**
++ * POSIX counterpart of fb_present.c: show the guest framebuffer in an SDL2
++ * window. Same contract (RECOMP_FB_WINDOW, flip-time copy, BMP dump, snap
++ * trigger, keyboard state), minus the D3D11 presenter.
++ */
++#include <stdint.h>
++
++#if !defined(_WIN32)
++#define _GNU_SOURCE
++#include <SDL2/SDL.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <stddef.h>
++#include <time.h>
++#include <unistd.h>
++
++extern ptrdiff_t xbox_GetMemoryOffset(void);
++
++static volatile int  s_fb_running;
++static uint32_t      s_fb_va, s_fb_pitch, s_fb_width = 640, s_fb_height = 480;
++static uint32_t     *s_rgb;
++static uint32_t     *s_present[2];
++static volatile int  s_present_idx = -1;
++static volatile unsigned char s_key_down[256];
++static char          s_title[48] = "Xbox Recomp";
++static volatile int  s_flips, s_frame_draws;
++
++void xbox_FramebufferWindowSet(uint32_t fb_va, uint32_t pitch)
++{
++    const char *pin = getenv("RECOMP_FB_VA");
++
++    s_fb_va = pin ? (uint32_t)strtoul(pin, NULL, 0) : fb_va;
++    if (pitch)
++        s_fb_pitch = pitch;
++}
++
++static void fb_convert_row(const uint8_t *row, uint32_t *dst, uint32_t bpp)
++{
++    uint32_t x;
++
++    if (bpp == 4) {
++        memcpy(dst, row, (size_t)s_fb_width * 4);
++    } else if (bpp == 2) {
++        const uint16_t *p = (const uint16_t *)row;
++        for (x = 0; x < s_fb_width; x++) {
++            uint16_t v = p[x];
++            uint32_t r = (uint32_t)((v >> 11) & 0x1F) * 255u / 31u;
++            uint32_t g = (uint32_t)((v >>  5) & 0x3F) * 255u / 63u;
++            uint32_t b = (uint32_t)( v        & 0x1F) * 255u / 31u;
++            dst[x] = (r << 16) | (g << 8) | b;
++        }
++    } else {
++        memset(dst, 0, (size_t)s_fb_width * 4);
++    }
++}
++
++/* Called by the pushbuffer executor when the title flips. */
++void xbox_FramebufferWindowPresent(uint32_t fb_va, uint32_t pitch)
++{
++    const uint8_t *src;
++    int next;
++    uint32_t bpp, y;
++
++    if (!s_fb_running || !fb_va || !pitch)
++        return;
++    if (getenv("RECOMP_FB_VA"))
++        return;
++    next = (s_present_idx == 0) ? 1 : 0;
++    if (!s_present[next]) {
++        s_present[next] = (uint32_t *)calloc((size_t)s_fb_width * s_fb_height, 4);
++        if (!s_present[next])
++            return;
++    }
++    bpp = pitch / s_fb_width;
++    src = (const uint8_t *)((uintptr_t)fb_va + xbox_GetMemoryOffset());
++    for (y = 0; y < s_fb_height; y++)
++        fb_convert_row(src + (size_t)y * pitch,
++                       s_present[next] + (size_t)y * s_fb_width, bpp);
++    __atomic_store_n(&s_present_idx, next, __ATOMIC_RELEASE);
++}
++
++void xbox_FramebufferWindowSetTitle(const uint16_t *name, int max_chars)
++{
++    int i;
++
++    for (i = 0; i < max_chars && i < 47 && name[i]; i++)
++        s_title[i] = (char)name[i];
++    if (i)
++        s_title[i] = 0;
++}
++
++static double now_ms(void)
++{
++    struct timespec ts;
++
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
++}
++
++static int cmp_double(const void *a, const void *b)
++{
++    double x = *(const double *)a, y = *(const double *)b;
++    return x < y ? -1 : x > y;
++}
++
++/* RECOMP_FRAME_STATS=1: [FRAMES] line once a second, as on Windows. */
++void xbox_FramebufferWindowFrameStats(uint32_t draws)
++{
++    static int on = -1;
++    static double last, window, dt[2048];
++    static int n;
++    double t;
++
++    __atomic_fetch_add(&s_flips, 1, __ATOMIC_RELAXED);
++    s_frame_draws = (int)draws;
++    if (on < 0) {
++        const char *e = getenv("RECOMP_FRAME_STATS");
++        on = e && *e && *e != '0';
++    }
++    if (!on)
++        return;
++    t = now_ms();
++    if (last && n < (int)(sizeof dt / sizeof dt[0]))
++        dt[n++] = t - last;
++    last = t;
++    if (!window)
++        window = t;
++    if (t - window >= 1000.0 && n) {
++        double secs = (t - window) / 1000.0;
++        qsort(dt, (size_t)n, sizeof dt[0], cmp_double);
++        fprintf(stderr, "[FRAMES] n %d fps %.1f p50 %.1f p99 %.1f max %.1f ms draws %u\n",
++                n, n / secs, dt[n / 2],
++                dt[(n * 99) / 100 < n ? (n * 99) / 100 : n - 1], dt[n - 1], draws);
++        n = 0;
++        window = t;
++    }
++}
++
++int xbox_FramebufferKeyDown(int vk)
++{
++    if ((unsigned)vk > 255)
++        return 0;
++    return s_key_down[vk] != 0;
++}
++
++/* SDL keycode -> Windows virtual-key code, for the keyboard pad stand-in. */
++static int sdl_to_vk(SDL_Keycode k)
++{
++    if (k >= 'a' && k <= 'z') return k - 'a' + 0x41;
++    if (k >= '0' && k <= '9') return k;
++    if (k >= SDLK_F1 && k <= SDLK_F12) return 0x70 + (k - SDLK_F1);
++    if (k >= SDLK_KP_1 && k <= SDLK_KP_9) return 0x61 + (k - SDLK_KP_1);
++    switch (k) {
++    case SDLK_KP_0: return 0x60;
++    case SDLK_RETURN: return 0x0D;   case SDLK_ESCAPE: return 0x1B;
++    case SDLK_SPACE: return 0x20;    case SDLK_TAB: return 0x09;
++    case SDLK_BACKSPACE: return 0x08;
++    case SDLK_LEFT: return 0x25;     case SDLK_UP: return 0x26;
++    case SDLK_RIGHT: return 0x27;    case SDLK_DOWN: return 0x28;
++    case SDLK_LSHIFT: case SDLK_RSHIFT: return 0x10;
++    case SDLK_LCTRL: case SDLK_RCTRL: return 0x11;
++    case SDLK_LALT: case SDLK_RALT: return 0x12;
++    case SDLK_COMMA: return 0xBC;    case SDLK_PERIOD: return 0xBE;
++    case SDLK_MINUS: return 0xBD;    case SDLK_EQUALS: return 0xBB;
++    case SDLK_DELETE: return 0x2E;   case SDLK_HOME: return 0x24;
++    case SDLK_END: return 0x23;      case SDLK_PAGEUP: return 0x21;
++    case SDLK_PAGEDOWN: return 0x22; case SDLK_INSERT: return 0x2D;
++    default: return 0;
++    }
++}
++
++static int s_dump_quiet;
++
++int xbox_FramebufferDumpBmp(const char *path)
++{
++    FILE *f;
++    uint32_t row = ((s_fb_width * 3u) + 3u) & ~3u;
++    uint32_t img = row * s_fb_height, total = 54u + img, y, x;
++    uint8_t hdr[54], *line;
++
++    if (!s_rgb || !s_fb_va)
++        return -1;
++    f = fopen(path, "wb");
++    if (!f)
++        return -1;
++    memset(hdr, 0, sizeof(hdr));
++    hdr[0] = 'B'; hdr[1] = 'M';
++    memcpy(hdr + 2, &total, 4);
++    hdr[10] = 54; hdr[14] = 40;
++    memcpy(hdr + 18, &s_fb_width, 4);
++    memcpy(hdr + 22, &s_fb_height, 4);
++    hdr[26] = 1; hdr[28] = 24;
++    memcpy(hdr + 34, &img, 4);
++    fwrite(hdr, 1, sizeof(hdr), f);
++    line = (uint8_t *)calloc(1, row);
++    for (y = 0; y < s_fb_height; y++) {
++        const uint32_t *src = s_rgb + (size_t)(s_fb_height - 1 - y) * s_fb_width;
++        for (x = 0; x < s_fb_width; x++) {
++            line[x * 3 + 0] = (uint8_t)(src[x] & 0xFF);
++            line[x * 3 + 1] = (uint8_t)((src[x] >> 8) & 0xFF);
++            line[x * 3 + 2] = (uint8_t)((src[x] >> 16) & 0xFF);
++        }
++        fwrite(line, 1, row, f);
++    }
++    free(line);
++    fclose(f);
++    if (!s_dump_quiet)
++        fprintf(stderr, "  [FBWIN] wrote %s (%ux%u from 0x%08X)\n",
++                path, s_fb_width, s_fb_height, s_fb_va);
++    return 0;
++}
++
++/* RECOMP_SNAP_TRIGGER=<file>: when it appears, dump the shown frame to the BMP
++ * path it contains and delete it. */
++static void snap_trigger_poll(void)
++{
++    static int checked;
++    static const char *trig;
++    FILE *f;
++    char path[1024];
++    size_t n;
++
++    if (!checked) {
++        checked = 1;
++        trig = getenv("RECOMP_SNAP_TRIGGER");
++    }
++    if (!trig || access(trig, F_OK) != 0)
++        return;
++    f = fopen(trig, "rb");
++    if (!f)
++        return;
++    n = fread(path, 1, sizeof path - 1, f);
++    fclose(f);
++    while (n && (path[n - 1] == '\n' || path[n - 1] == '\r' || path[n - 1] == ' '))
++        n--;
++    path[n] = 0;
++    unlink(trig);
++    if (n) {
++        s_dump_quiet = 1;
++        xbox_FramebufferDumpBmp(path);
++        s_dump_quiet = 0;
++    }
++}
++
++static void *fb_thread(void *unused)
++{
++    SDL_Window *win;
++    SDL_Renderer *ren;
++    SDL_Texture *tex;
++    double t0 = 0;
++    int f0 = 0;
++
++    (void)unused;
++    if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
++        fprintf(stderr, "  [FBWIN] SDL video init failed: %s\n", SDL_GetError());
++        s_fb_running = 0;
++        return NULL;
++    }
++    win = SDL_CreateWindow("Xbox Recomp - Framebuffer",
++                           SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
++                           (int)s_fb_width, (int)s_fb_height,
++                           SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
++    ren = win ? SDL_CreateRenderer(win, -1, SDL_RENDERER_PRESENTVSYNC) : NULL;
++    tex = ren ? SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
++                                  SDL_TEXTUREACCESS_STREAMING,
++                                  (int)s_fb_width, (int)s_fb_height) : NULL;
++    if (!tex) {
++        fprintf(stderr, "  [FBWIN] window setup failed: %s\n", SDL_GetError());
++        s_fb_running = 0;
++        return NULL;
++    }
++    SDL_RenderSetLogicalSize(ren, (int)s_fb_width, (int)s_fb_height);
++    s_rgb = (uint32_t *)calloc((size_t)s_fb_width * s_fb_height, 4);
++    fprintf(stderr, "  [FBWIN] framebuffer window open (%ux%u)\n",
++            s_fb_width, s_fb_height);
++
++    while (s_fb_running) {
++        SDL_Event e;
++        int idx;
++
++        while (SDL_PollEvent(&e)) {
++            if (e.type == SDL_QUIT) {
++                /* Window close, and SDL turns SIGINT/SIGTERM into this too.
++                 * Closing only the window left the game running and the
++                 * next flip reopened it. */
++                fflush(NULL);
++                _exit(0);
++            } else if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) {
++                int vk = sdl_to_vk(e.key.keysym.sym);
++                if (vk)
++                    s_key_down[vk] = e.type == SDL_KEYDOWN;
++            } else if (e.type == SDL_WINDOWEVENT &&
++                       e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
++                memset((void *)s_key_down, 0, sizeof s_key_down);
++            }
++        }
++        idx = __atomic_load_n(&s_present_idx, __ATOMIC_ACQUIRE);
++        if (idx >= 0 && s_present[idx])
++            memcpy(s_rgb, s_present[idx], (size_t)s_fb_width * s_fb_height * 4);
++        else if (s_fb_va && s_fb_pitch) {
++            const uint8_t *src = (const uint8_t *)((uintptr_t)s_fb_va + xbox_GetMemoryOffset());
++            uint32_t y;
++            for (y = 0; y < s_fb_height; y++)
++                fb_convert_row(src + (size_t)y * s_fb_pitch,
++                               s_rgb + (size_t)y * s_fb_width,
++                               s_fb_pitch / s_fb_width);
++        }
++        SDL_UpdateTexture(tex, NULL, s_rgb, (int)(s_fb_width * 4));
++        SDL_RenderClear(ren);
++        SDL_RenderCopy(ren, tex, NULL, NULL);
++        SDL_RenderPresent(ren);
++
++        {
++            double now = now_ms();
++            if (now - t0 >= 1000.0) {
++                int f = s_flips;
++                char tb[128];
++                snprintf(tb, sizeof tb, "%s | FPS: %.1f | draws: %d", s_title,
++                         t0 ? (f - f0) * 1000.0 / (now - t0) : 0.0, s_frame_draws);
++                SDL_SetWindowTitle(win, tb);
++                t0 = now; f0 = f;
++            }
++        }
++        snap_trigger_poll();
++    }
++    SDL_DestroyTexture(tex);
++    SDL_DestroyRenderer(ren);
++    SDL_DestroyWindow(win);
++    return NULL;
++}
++
++void xbox_FramebufferWindowStart(void)
++{
++    pthread_t th;
++
++    if (!getenv("RECOMP_FB_WINDOW"))
++        return;
++    if (__sync_val_compare_and_swap(&s_fb_running, 0, 1) != 0)
++        return;
++    if (pthread_create(&th, NULL, fb_thread, NULL) == 0)
++        pthread_detach(th);
++    else
++        s_fb_running = 0;
++}
++#endif /* !_WIN32 */
 diff --git a/src/video/gpu_present.c b/src/video/gpu_present.c
 new file mode 100644
 index 0000000..d243871

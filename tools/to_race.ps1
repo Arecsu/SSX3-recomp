@@ -71,8 +71,11 @@ while ((Get-Date) -lt $deadline) {
             Copy-Item (Join-Path $root "nav.png") $shot -ErrorAction SilentlyContinue
         }
     }
-    if ($draws -eq 309 -or $draws -eq 22) { $loadingSeen = $true }
-    if ($loadingSeen -and $draws -ge 600) {
+    if ($draws -eq 309 -or $draws -eq 22 -or ($gs -and $gs.Name -eq "loading")) { $loadingSeen = $true }
+    # In the race: the game's own state says so (draw counts alone missed
+    # briefings drawn with fewer than 600 calls, and runs sat there for good).
+    $inRace = $gs -and $gs.Name -eq "ingame" -and $gs.Seconds -ge 3
+    if ($loadingSeen -and ($draws -ge 600 -or $inRace)) {
         if ($ShotDir) { Copy-Item (Join-Path $root "nav.png") (Join-Path $ShotDir "briefing.png") -ErrorAction SilentlyContinue }
         if ($StopAtBriefing) { "at briefing ($draws draws)"; exit 0 }
         live press -Buttons "a:300" | Out-Null

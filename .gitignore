@@ -73,3 +73,14 @@ game_state.tmp
 soak.png
 snap.trigger
 snap_tmp.bmp
+
+# Local rip / ISO
+disk/
+build-linux/
+/game
+build-linux-abi/
+build-vk/
+build-linux/
+tk/
+src/recomp/
+game

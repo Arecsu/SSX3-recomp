@@ -30,8 +30,14 @@
  *   Kernel imports: 159
  */
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "platform/win32_compat.h"
+#endif
+#ifdef _WIN32
 #include <dbghelp.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -40,6 +46,9 @@
 
 /* xboxrecomp runtime headers */
 #include <xbox/xboxrecomp.h>
+#ifdef SSX3_VULKAN
+#include "vkr_backend.h"
+#endif
 
 /*
  * If xboxrecomp.h is not an umbrella header in your setup, include
@@ -82,7 +91,7 @@ extern ptrdiff_t g_xbox_mem_offset;
  * Run: py -3 -m tools.xbe_parser game/default.xbe
  */
 #define YOUR_GAME_ENTRY_POINT   0x00181AD2  /* XBE entry point VA */
-#define YOUR_GAME_XBE_PATH      "game\\default.xbe"
+#define YOUR_GAME_XBE_PATH      "game/default.xbe"
 #define YOUR_GAME_DIR            "game"
 
 /* ── Forward declarations ──────────────────────────────────── */
@@ -128,6 +137,13 @@ extern void xbe_entry_point(void);
  *
  * Requires linking dbghelp and keeping the .pdb beside the .exe.
  */
+typedef struct MCPXAPUState MCPXAPUState;
+extern MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr);
+extern MCPXAPUState *g_apu_state;
+
+void print_guest_stack(void);
+
+#ifdef _WIN32
 static void print_guest_context(void *rip)
 {
     /* SYMBOL_INFO is variable-length: the name is written past the struct, so
@@ -142,7 +158,12 @@ static void print_guest_context(void *rip)
     if (SymFromAddr(GetCurrentProcess(), (DWORD64)(uintptr_t)rip, &disp, sym))
         fprintf(stderr, "  in %s+0x%llX\n",
                 sym->Name, (unsigned long long)disp);
+    print_guest_stack();
+}
+#endif /* _WIN32 */
 
+void print_guest_stack(void)
+{
     if (g_xbox_mem_offset && g_esp) {
         const uint32_t *sp =
             (const uint32_t *)((uintptr_t)g_xbox_mem_offset + g_esp);
@@ -202,6 +223,7 @@ static void print_guest_context(void *rip)
     }
 }
 
+#ifdef _WIN32
 /* The emulated APU.
  *
  * Two entry points that had no callers anywhere in the tree. apu_mmio_hook.c
@@ -214,9 +236,6 @@ static void print_guest_context(void *rip)
  *
  * Declared rather than included so this does not depend on src/apu being on
  * the include path. */
-typedef struct MCPXAPUState MCPXAPUState;
-extern MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr);
-extern MCPXAPUState *g_apu_state;
 extern bool apu_hook_handle_mmio(PCONTEXT ctx, uintptr_t fault_addr,
                                  uint32_t fault_xbox_va, int is_write);
 
@@ -324,8 +343,159 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
 
     return EXCEPTION_CONTINUE_SEARCH;
 }
+#else /* !_WIN32 */
+
+#include <signal.h>
+#include <ucontext.h>
+#include <execinfo.h>
+#include <unistd.h>
+#include <sys/prctl.h>
+#include <sys/mman.h>
+
+#include "mmio_posix.h"
+
+extern uint64_t mcpx_apu_mmio_read(MCPXAPUState *d, uint64_t addr, unsigned int size);
+extern void mcpx_apu_mmio_write(MCPXAPUState *d, uint64_t addr, uint64_t val, unsigned int size);
+extern int xbox_OhciMmioAccess(uint32_t xbox_va, int is_write, uint64_t *val, int size);
+
+#define APU_MMIO_BASE 0xFE800000u
+#define APU_MMIO_END  0xFE880000u
+
+static uint32_t mmio_va(uintptr_t host)
+{
+    return (uint32_t)(host - (uintptr_t)g_xbox_mem_offset);
+}
+
+static uint64_t mmio_read(uintptr_t host, int size)
+{
+    uint32_t va = mmio_va(host);
+    uint64_t v = 0;
+
+    if (va >= APU_MMIO_BASE && va < APU_MMIO_END)
+        return mcpx_apu_mmio_read(g_apu_state, va - APU_MMIO_BASE, size);
+    xbox_OhciMmioAccess(va, 0, &v, size);
+    return v;
+}
+
+static void mmio_write(uintptr_t host, uint64_t val, int size)
+{
+    uint32_t va = mmio_va(host);
+
+    if (va >= APU_MMIO_BASE && va < APU_MMIO_END)
+        mcpx_apu_mmio_write(g_apu_state, va - APU_MMIO_BASE, val, size);
+    else
+        xbox_OhciMmioAccess(va, 1, &val, size);
+}
+
+static int mmio_owned(uint32_t va)
+{
+    extern int xbox_OhciOwnsAddress(uint32_t xbox_va);
+
+    return (g_apu_state && va >= APU_MMIO_BASE && va < APU_MMIO_END)
+        || xbox_OhciOwnsAddress(va);
+}
+
+/* AC'97 bus-master reset bit (RR): the XDK sets it and waits for the controller
+ * to clear it, reading the register once (see ac97_arm_write_trap in the
+ * toolkit's xbox_memory_layout.c). The page is read-only; a write faults, is
+ * emulated here, and every control byte's RR is cleared before the page is
+ * closed again. */
+#define AC97_BASE 0xFEC00000u
+static size_t ac97_len;
+
+static void ac97_arm(void)
+{
+    long pg = sysconf(_SC_PAGESIZE);
+    void *p = (void *)((uintptr_t)g_xbox_mem_offset + AC97_BASE);
+
+    ac97_len = pg > 0x1000 ? (size_t)pg : 0x1000;
+    if (mprotect(p, ac97_len, PROT_READ) != 0) {
+        fprintf(stderr, "  AC97: mprotect failed; a channel reset will spin\n");
+        ac97_len = 0;
+    }
+}
+
+static void ac97_wr(uintptr_t addr, uint64_t val, int size)
+{
+    memcpy((void *)addr, &val, (size_t)size);
+}
+
+static int ac97_write(void *uc, uintptr_t fault, uint32_t *insn)
+{
+    void *page = (void *)((uintptr_t)g_xbox_mem_offset + AC97_BASE);
+    uint32_t off;
+    int ok;
+
+    mprotect(page, ac97_len, PROT_READ | PROT_WRITE);
+    ok = mmio_posix_step(uc, fault, NULL, ac97_wr, insn);
+    for (off = 0x10B; off < 0x180; off += 0x10) {
+        volatile uint8_t *r = (volatile uint8_t *)((char *)page + off);
+        if (*r & 0x02)
+            *r = (uint8_t)(*r & ~0x02);
+    }
+    mprotect(page, ac97_len, PROT_READ);
+    return ok;
+}
+
+/* Trapped device registers are serviced here (src/mmio_posix.c); anything else
+ * is a crash and gets reported. */
+static void segv_handler(int sig, siginfo_t *si, void *uc_)
+{
+    ucontext_t *uc = (ucontext_t *)uc_;
+    void *bt[32];
+    uintptr_t fault = (uintptr_t)si->si_addr;
+    int n;
+#if defined(__aarch64__)
+    uintptr_t pc = (uintptr_t)uc->uc_mcontext.pc;
+#else
+    uintptr_t pc = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
+#endif
+
+    uint32_t insn = 0;
+
+    if (sig == SIGSEGV && ac97_len && g_xbox_mem_offset
+            && mmio_va(fault) >= AC97_BASE && mmio_va(fault) < AC97_BASE + ac97_len
+            && ac97_write(uc, fault, &insn))
+        return;
+    if (sig == SIGSEGV && g_xbox_mem_offset && mmio_owned(mmio_va(fault))
+            && mmio_posix_step(uc, fault, mmio_read, mmio_write, &insn))
+        return;
+
+    fprintf(stderr, "[CRASH] signal %d at pc=%p, fault addr=%p, insn %08X\n",
+            sig, (void *)pc, (void *)fault, insn);
+    fprintf(stderr, "  Xbox regs: eax=0x%08X ecx=0x%08X edx=0x%08X esp=0x%08X\n",
+            g_eax, g_ecx, g_edx, g_esp);
+    fprintf(stderr, "  Xbox regs: ebx=0x%08X esi=0x%08X edi=0x%08X\n",
+            g_ebx, g_esi, g_edi);
+    fprintf(stderr, "  Xbox VA of fault: 0x%08X\n",
+            (uint32_t)(fault - (uintptr_t)g_xbox_mem_offset));
+    print_guest_stack();
+    n = backtrace(bt, 32);
+    backtrace_symbols_fd(bt, n, 2);
+    _exit(139);
+}
+
+static void install_crash_handler(void)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = segv_handler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGBUS, &sa, NULL);
+    sigaction(SIGILL, &sa, NULL);
+}
+#endif /* _WIN32 */
 
 /* ── WinMain ───────────────────────────────────────────────── */
+
+#ifndef _WIN32
+/* No SEH/VEH on the POSIX shim: the crash handler below is Windows-only. */
+#define WINAPI
+typedef void *HINSTANCE;
+#define _putenv_s(n, v) setenv((n), (v), 1)
+int recomp_dispatch_init(void);
+#endif
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                    LPSTR lpCmdLine, int nCmdShow)
@@ -379,6 +549,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
      *   lock-step mode. */
     if (!getenv("RECOMP_NV2A_ACK_THREAD")) _putenv_s("RECOMP_NV2A_ACK_THREAD", "1");
 
+#if defined(__linux__) && defined(__aarch64__)
+    /* The guest is x86: its lock-free code, and the pushbuffer / PUT hand-off
+     * to the GPU threads, assume total store order. Apple cores (Asahi) can
+     * run a thread in hardware TSO; inherited by every thread created later. */
+    {
+        extern int prctl(int, ...);
+#ifndef PR_SET_MEM_MODEL
+#define PR_SET_MEM_MODEL 0x4d4d444c
+#define PR_SET_MEM_MODEL_TSO 1
+#endif
+        if (prctl(PR_SET_MEM_MODEL, PR_SET_MEM_MODEL_TSO, 0, 0, 0) != 0)
+            fprintf(stderr, "[BOOT] hardware TSO unavailable; expect ordering bugs\n");
+        else
+            fprintf(stderr, "[BOOT] hardware TSO on\n");
+    }
+#endif
+
     printf("=== SSX 3 - Static Recompilation ===\n");
     printf("Loading XBE...\n");
 
@@ -386,9 +573,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     /* Load symbols up front rather than from inside the handler: at fault
      * time the process is already in a bad way, and SymInitialize
      * allocates. Failure is not fatal -- the handler prints no name. */
+#ifdef _WIN32
     SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
     SymInitialize(GetCurrentProcess(), NULL, TRUE);
     AddVectoredExceptionHandler(1, veh_handler);
+#else
+    install_crash_handler();
+#endif
 
     /* Step 1: Load XBE */
     if (!load_xbe(YOUR_GAME_XBE_PATH, &xbe_data, &xbe_size)) {
@@ -423,6 +614,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         g_apu_state = mcpx_apu_init_standalone((uint8_t *)xbox_GetMemoryBase());
         fprintf(stderr, "[BOOT] emulated APU %s\n",
                 g_apu_state ? "up" : "FAILED to initialise");
+#ifndef _WIN32
+        ac97_arm();
+#endif
     }
 
     /* Step 3: Initialize Xbox kernel */
@@ -469,6 +663,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
      * 0x0024B0D8. Nothing executes the pushbuffer on the GPU here, so all
      * submitted work is complete; mirror that so the wait terminates. */
     xbox_Nv2aMirrorFence(0x0024B0D8, 0x2C, 0x30);
+
+#ifdef SSX3_VULKAN
+    {
+        const char *gpu = getenv("RECOMP_GPU");
+        if (gpu && !strcmp(gpu, "vk") && !vkr_backend_install())
+            fprintf(stderr, "[VKR] unavailable, software rasteriser stays\n");
+    }
+#endif
 
     /*
      * TODO: Pre-initialize CRT globals if needed.
@@ -583,5 +785,9 @@ int main(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
+#ifdef _WIN32
     return WinMain(GetModuleHandle(NULL), NULL, GetCommandLineA(), SW_SHOW);
+#else
+    return WinMain(NULL, NULL, NULL, 0);
+#endif
 }

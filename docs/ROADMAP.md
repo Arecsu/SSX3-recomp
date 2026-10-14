@@ -57,15 +57,31 @@ Fix the known failures before the renderer changes so regressions stay visible.
 - [ ] Crash in EA movie/stream code on the main thread (2026-10-14, 1 in 16 parallel runs): read fault at 0xE0220705, guest stack 0x00173B36 <- 0x00173C05 <- 0x001731CD <- 0x001740C4; log kept as `logs/crash_20261014_i8_stderr.txt` (Windows build dir).
 - [ ] Gate: 20/20 boot→race on both GPU modes.
 
-## Phase 2 — GPU renderer (D3D11), the big one
+## Phase 2 — GPU renderer (Vulkan), the big one
 
-Approach: keep the executor's pushbuffer walk and state tracking
-(`nv2a_pb_exec.c`, already accurate) and replace the software rasteriser with
-D3D11 draws. Reuse the toolkit's translators: NV2A vertex-program microcode →
-HLSL (`d3d8_vsh_parse` / `d3d8_vsh_generate_hlsl`) and register combiners →
-HLSL pixel shaders (`d3d8_combiners.c`). The software rasteriser stays as the
-reference (`RECOMP_GPU=0`) for differential testing.
+Approach (2026-10-14, adopted from Corné Dorrestijn's `linux` branch, MR !1,
+see `docs/VULKAN.html`): keep the executor's pushbuffer walk, state tracking
+and CPU vertex programs (`nv2a_pb_exec.c`), and hand each draw to a Vulkan
+renderer (`src/vk/`, toolkit hook `nv2a_backend.h`, `RECOMP_GPU=vk`) in place
+of the software rasteriser: register combiners ported to GLSL, 4 texture
+stages, fog, blend, alpha test, depth. Frames are read back into guest memory
+and presented as before. Runs on Linux (Asahi) and Windows (Vulkan SDK). The
+software rasteriser stays the reference for differential testing. The D3D11
+path below (2.1) is superseded except for its presentation work.
 
+Windows, first numbers (RTX 4080 SUPER, one instance): title 43 FPS, race
+briefing 13, race 22-28 (software: 5-8 menus, ~3 briefing, 9-12 race).
+Per second in a race: renderer draws ~80 ms, flip readback ~240 ms; the rest
+is guest code and CPU vertex programs. Known: black polygons in the sky in
+part of the race (docs/screenshots/25).
+
+- [ ] 2.0 Vulkan by default on Windows once a parallel reliability batch and
+  the screenshot suite match software (today opt-in: `RECOMP_GPU=vk`).
+- [ ] 2.0b Black sky polygons in races (missing feature or a target the
+  backend declines).
+- [ ] 2.0c Flip without the readback: present the Vulkan image directly
+  (swapchain on the game window) instead of copying it to guest memory.
+- [ ] 2.0d Vertex programs on the GPU (SPIR-V), the next big CPU cost.
 - [ ] 2.1 Device and presentation: D3D11 device + swap chain in the game window; flips present the front surface; vsync-paced at 60 Hz. **Done (opt-in `RECOMP_D3D_PRESENT=1`, toolkit `src/video/gpu_present.c`):** device + DISCARD swap chain on the window, each flipped frame uploaded to the back buffer and presented with vsync (`RECOMP_VSYNC=0` off). Screenshots now come from inside the process (`RECOMP_SNAP_TRIGGER`, used by `live.ps1 snap`), since PrintWindow cannot read a swap chain. Left: make it the default after a visual check; share the device with the renderer (2.2+).
 - [ ] 2.2 Surfaces: colour/depth render targets as D3D11 textures keyed by guest address and format, including **swizzled RTs** (rider shadow maps) and clear rects; Z24S8/Z16 depth, stencil.
 - [ ] 2.3 Textures: upload from guest memory (swizzled, linear, DXT1/3/5, palettised, cube maps), cached by address + content hash with invalidation on CPU writes; render-target-as-texture without a round trip; sampler state (filter, address modes incl. border colour).
@@ -136,6 +152,8 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 - **Determinism for debugging.** Keep `RECOMP_NV2A_ACK_THREAD=0` and the software rasteriser as references until the GPU path passes the gates.
 
 ## Progress log
+
+- 2026-10-14 — Vulkan renderer (MR !1, Corné) merged with MR !2 (APC guest-CPU fix); builds and runs on Windows with the Vulkan SDK: race 22-28 FPS vs 9-12 software.
 
 - 2026-10-14 — Title freeze = guest-CPU starvation (unfair critical-section handoff at loop yields/kernel calls); fair handoff in the toolkit (RECOMP_FAIR_YIELD). race_par 8x4 29/32; [GUESTCPU] holder report added.
 - 2026-10-14 — The "[no pad]" runs are a title-screen movie stream freeze (EA STRM ring), not USB; ring trace added. RECOMP_PRIO_LOCK=1 still worse (16/24 vs 20/24).

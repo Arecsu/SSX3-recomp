@@ -9,11 +9,23 @@
  * the way recomp_manual.c does: the registers are thread-local, and a plain
  * `extern uint32_t g_eax` names the TLS template, not the running thread's copy.
  */
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include "platform/win32_compat.h"
+#endif
 #include "recomp/gen/recomp_types.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+/* 64-bit compare-and-swap on both hosts: true if *p was old and is now nu. */
+#ifdef _WIN32
+#define CAS64(p, old, nu) (InterlockedCompareExchange64((volatile LONG64 *)(p), (LONG64)(nu), \
+                                                       (LONG64)(old)) == (LONG64)(old))
+#else
+#define CAS64(p, old, nu) __sync_bool_compare_and_swap((p), (old), (nu))
+#endif
 
 /*
  * sub_00183EBB - XAPI startup media check (XDK 5558 library code).
@@ -496,11 +508,52 @@ extern void sub_00177990_gen(void);
 
 void sub_0017A5A0(void)
 {
-    uint32_t fd = ~MEM32(g_esp + 4), pos = MEM32(g_esp + 16), len = MEM32(g_esp + 20);
+    uint32_t fd = ~MEM32(g_esp + 4), pos = MEM32(g_esp + 12), len = MEM32(g_esp + 16);
     uint32_t tab = MEM32(0x0039E884u), ent = tab + fd * 20;
     uint32_t cached = tab ? MEM32(ent + 4) : 0, base = tab ? MEM32(ent + 12) : 0;
     int log = strm_check_on() && tab && fd < 64;
-    sub_0017A5A0_gen();
+    int slot = -1;
+    /* Always seek. EA caches each descriptor's file position and skips the
+     * seek when it matches the wanted one, but several descriptors can share
+     * one OS handle (BAM.big is fd 22 and the BAM.xsb inside it fd 23): a read
+     * through one moves the handle's position under the other's cache, and the
+     * next "sequential" read comes from the wrong place -- the world-stream
+     * stall. Make the cached value never equal the wanted one so the seek is
+     * always issued. RECOMP_EA_FORCE_SEEK=0 turns it off. */
+    {
+        static int force = -1;
+        if (force < 0) {
+            const char *e = getenv("RECOMP_EA_FORCE_SEEK");
+            force = !(e && *e == '0');
+        }
+        if (force && tab && fd < MEM32(0x0039E880u) && MEM32(ent) != 0) {
+            uint32_t want = MEM32(g_esp + 12);
+            MEM32(ent + 4) = (base ? base - want : want) ^ 1;
+        }
+    }
+    if (log) {
+        /* Two threads inside the file layer on one OS handle: its seek and
+         * read are separate kernel calls with no lock, so the second thread's
+         * seek can land between the first's seek and read. */
+        static volatile uint64_t inflight[16];   /* handle << 32 | tid, 0 = free */
+        uint32_t handle = MEM32(ent), tid = (uint32_t)GetCurrentThreadId();
+        uint64_t mine = ((uint64_t)handle << 32) | tid;
+        int k;
+        for (k = 0; k < 16; k++) {
+            uint64_t o = inflight[k];
+            if (o && (uint32_t)(o >> 32) == handle && (uint32_t)o != tid)
+                fprintf(stderr, "[EAOVERLAP] t=%lu handle %08X: thread %u enters (fd %u pos 0x%X) while thread %u is inside\n",
+                        (unsigned long)GetTickCount(), handle, tid, fd, pos, (uint32_t)o);
+        }
+        for (k = 0; k < 16; k++)
+            if (!inflight[k] && CAS64(&inflight[k], 0, mine)) { slot = k; break; }
+        sub_0017A5A0_gen();
+        if (slot >= 0)
+            inflight[slot] = 0;
+    } else {
+        sub_0017A5A0_gen();
+    }
+
     if (log) {
         static volatile LONG n;
         if (InterlockedIncrement(&n) <= 20000) {
@@ -509,6 +562,212 @@ void sub_0017A5A0(void)
                     fd, pos, len, cached, base, g_eax, MEM32(ent + 4));
             fflush(stderr);
         }
+    }
+}
+
+
+/*
+ * EA's STRM stream manager: hand-off between its I/O thread and the loader
+ * thread. The console runs these without a thread switch in practice; here
+ * every kernel call and loop head is a switch point, and in ~1 of 3 loads the
+ * end of the world's first request (BAM.xsb, ASKY) is handed over with the
+ * I/O side already reading on -- the load never completes. These entry points
+ * keep the guest CPU (blocking waits still release it). OFF by default,
+ * RECOMP_STRM_ATOMIC=1 enables: sub_00178280 calls the polling pull
+ * (sub_00177F80), so wrapping it livelocks the load (stack seen in a stall).
+ */
+extern void xbox_NoPreemptEnter(void);
+extern void xbox_NoPreemptLeave(void);
+static void strm_note(char op, uint32_t m, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e);
+static int strm_ok(uint32_t va);
+static int strm_atomic(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RECOMP_STRM_ATOMIC");
+        on = e && *e && *e != '0';      /* opt-in: livelocks, see below */
+    }
+    return on;
+}
+
+
+/* [OVL] two guest threads inside the stream manager's entry points at once
+ * (RECOMP_STREAM_CHECK=1). With the guest-CPU lock that only happens when a
+ * switch lands inside one of them. */
+static volatile uint64_t ovl_inflight[8];   /* func << 32 | tid, 0 = free */
+
+static int ovl_enter(uint32_t func)
+{
+    uint32_t tid = (uint32_t)GetCurrentThreadId();
+    int k, slot = -1;
+    if (!strm_check_on())
+        return -1;
+    for (k = 0; k < 8; k++) {
+        uint64_t o = ovl_inflight[k];
+        if (o && (uint32_t)o != tid)
+            fprintf(stderr, "[OVL] t=%lu thread %u enters %06X while thread %u is inside %06X\n",
+                    (unsigned long)GetTickCount(), tid, func, (uint32_t)o, (uint32_t)(o >> 32));
+    }
+    for (k = 0; k < 8; k++)
+        if (!ovl_inflight[k] && CAS64(&ovl_inflight[k], 0, ((uint64_t)func << 32) | tid)) { slot = k; break; }
+    return slot;
+}
+
+static void ovl_leave(int slot)
+{
+    if (slot >= 0)
+        ovl_inflight[slot] = 0;
+}
+
+extern void sub_001781B0_gen(void);
+
+/* [SM] request state transitions (RECOMP_STREAM_CHECK=1): the I/O completion
+ * callback (sub_001781B0) and the consumer's close/cancel (sub_001785D0). */
+static void sm_name(uint32_t req, char *out)
+{
+    int c;
+    for (c = 0; c < 23; c++) { uint8_t x = req ? MEM8(req + 0x14 + c) : 0; if (!x) break; out[c] = (char)x; }
+    out[c] = 0;
+}
+
+void sub_001781B0(void)
+{
+    int a = strm_atomic();
+    int log = strm_check_on();
+    /* callback(op, 0, M): the scheduler pushes M, 0, 0 (0x0017848A). */
+    uint32_t op = MEM32(g_esp + 4), M = MEM32(g_esp + 12), req = MEM32(M + 0x70);
+    uint32_t before = req ? MEM32(req + 4) : 0xFF;
+    uint32_t pos0 = MEM32(M + 0x180);
+    int ov = ovl_enter(0x1781B0);
+    strm_note('C', M, op, MEM32(M + 0x68), MEM32(M + 0x188), MEM32(M + 0x180), MEM32(M + 0x48));
+    if (a) xbox_NoPreemptEnter();
+    sub_001781B0_gen();
+    if (a) xbox_NoPreemptLeave();
+    strm_note('c', M, op, MEM32(M + 0x68), MEM32(M + 0x64), MEM32(M + 0x60), MEM32(M + 0x48));
+    ovl_leave(ov);
+    if (log && req) {
+        uint32_t after = MEM32(req + 4);
+        char nm[24];
+        sm_name(req, nm);
+        fprintf(stderr, "[SM] t=%lu t%lu cb   req %08X state %u->%u cur %08X pos 0x%X->0x%X '%s'\n",
+                (unsigned long)GetTickCount(), (unsigned long)GetCurrentThreadId(), req, before, after,
+                MEM32(M + 0x70), pos0, MEM32(M + 0x180), nm);
+    }
+}
+
+extern void sub_001785D0_gen(void);
+
+void sub_001785D0(void)
+{
+    uint32_t h = MEM32(g_esp + 4), id = MEM32(g_esp + 8), M = h ? MEM32(h) : 0;
+    uint32_t req = M ? MEM32(M + 0x24) + (id & 0xFF) * 0x124 : 0;
+    uint32_t before = req ? MEM32(req + 4) : 0xFF;
+    char nm[24];
+    int log = strm_check_on() && req;
+    if (log) sm_name(req, nm);
+    sub_001785D0_gen();
+    if (log)
+        fprintf(stderr, "[SM] t=%lu t%lu close req %08X state %u->%u cur %08X '%s'\n",
+                (unsigned long)GetTickCount(), (unsigned long)GetCurrentThreadId(), req, before,
+                MEM32(req + 4), MEM32(M + 0x70), nm);
+}
+
+extern void sub_00178280_gen(void);
+
+void sub_00178280(void)                 /* schedule the next read (M, n) */
+{
+    int a = strm_atomic();
+    uint32_t M = MEM32(g_esp + 4);
+    int ov = ovl_enter(0x178280);
+    strm_note('K', M, MEM32(M + 0x60), MEM32(M + 0x64), MEM32(M + 0x68), MEM32(M + 0x48), MEM32(M + 0x18C));
+    if (a) xbox_NoPreemptEnter();
+    sub_00178280_gen();
+    if (a) xbox_NoPreemptLeave();
+    strm_note('k', M, MEM32(M + 0x60), MEM32(M + 0x64), MEM32(M + 0x68), MEM32(M + 0x48), MEM32(M + 0x188));
+    ovl_leave(ov);
+}
+
+extern void sub_00177760_gen(void);
+
+/*
+ * Chunk parser, on EA's file worker after each read. It publishes a chunk
+ * under the lock, unlocks (0x001778A2), and only then re-reads the chunk's
+ * tag from the ring (0x001778B2) to see whether it was the request's end
+ * chunk ('CEND'). If the loader pulls and releases that chunk in between, the
+ * release has overwritten the tag with -2 (0x00178575): the end is missed and
+ * the worker keeps reading the bytes that follow on disk as if they belonged
+ * to the request -- garbage assets, the 43% load stall. On the console the
+ * worker keeps the CPU through an uncontended unlock; keep the guest CPU here
+ * too. The parser does not poll, so this cannot livelock. Blocking lock waits
+ * still release the CPU. RECOMP_STRM_PARSE_ATOMIC=0 turns it off.
+ */
+static int strm_parse_atomic(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RECOMP_STRM_PARSE_ATOMIC");
+        on = !(e && *e == '0');
+    }
+    return on;
+}
+
+void sub_00177760(void)                 /* scan new blocks; eax = manager */
+{
+    int a = strm_parse_atomic();
+    uint32_t M = g_eax, scan = MEM32(M + 0x64), wr = MEM32(M + 0x68);
+    uint32_t tag = strm_ok(scan) ? MEM32(scan) : 0, sz = strm_ok(scan) ? MEM32(scan + 4) : 0;
+    int ov = ovl_enter(0x177760);
+    if (a) xbox_NoPreemptEnter();
+    sub_00177760_gen();
+    if (a) xbox_NoPreemptLeave();
+    ovl_leave(ov);
+    strm_note('S', M, scan, wr, tag, sz, (g_eax << 28) | (MEM32(M + 0x64) & 0x0FFFFFFFu));
+}
+
+extern void sub_00177E10_gen(void);
+
+void sub_00177E10(void)
+{
+    sub_00177E10_gen();   /* polls for the I/O thread: must stay preemptible */
+}
+
+extern void sub_00177F80_gen(void);
+
+/* [CEND-RACE] (RECOMP_STREAM_CHECK=1): the loader pulls the current
+ * request's end chunk while the parser (sub_00177760) is still inside on
+ * another thread -- the window in which the end is missed. */
+void sub_00177F80(void)                 /* next chunk of stream h */
+{
+    /* A consumer polls an empty stream every frame: an empty fetch is
+     * recorded once per handle, not each time, so the ring keeps history. */
+    static volatile uint32_t last_h[4], last_cur[4];
+    uint32_t h = MEM32(g_esp + 4), M = h ? MEM32(h) : 0;
+    uint32_t cur = strm_ok(h) ? MEM32(h + 12) : 0, avail = strm_ok(h) ? MEM32(h + 8) : 0;
+    int k, slot = -1, quiet = 0;
+    for (k = 0; k < 4; k++)
+        if (last_h[k] == h) { slot = k; break; }
+    if (slot < 0)
+        for (k = 0; k < 4; k++)
+            if (!last_h[k]) { slot = k; last_h[k] = h; break; }
+    quiet = slot >= 0 && avail == 0 && last_cur[slot] == cur;
+    if (!quiet)
+        strm_note('g', M, h, strm_ok(h) ? MEM32(h + 4) : 0, avail, cur, strm_ok(cur) ? MEM32(cur + 4) : 0);
+    sub_00177F80_gen();   /* polls for the I/O thread: must stay preemptible */
+    if (!quiet || g_eax)
+        strm_note('G', M, h, g_eax, strm_ok(h) ? MEM32(h + 8) : 0, strm_ok(h) ? MEM32(h + 12) : 0,
+                  strm_ok(M) ? MEM32(M + 0x60) : 0);
+    if (slot >= 0)
+        last_cur[slot] = strm_ok(h) ? MEM32(h + 12) : 0;
+    if (strm_check_on() && g_eax && M) {
+        uint32_t req = MEM32(M + 0x70), tid = (uint32_t)GetCurrentThreadId();
+        int k;
+        if (req && MEM32(g_eax) == MEM32(req + 0x11C))
+            for (k = 0; k < 8; k++) {
+                uint64_t o = ovl_inflight[k];
+                if (o && (uint32_t)(o >> 32) == 0x177760 && (uint32_t)o != tid)
+                    fprintf(stderr, "[CEND-RACE] t=%lu t%u pulled end chunk %08X of req %08X while t%u parses\n",
+                            (unsigned long)GetTickCount(), tid, g_eax, req, (uint32_t)o);
+            }
     }
 }
 
@@ -522,13 +781,18 @@ void sub_00177990(void)
         a[c] = 0;
         for (c = 0; c < 39; c++) { uint8_t x = MEM8(M + 0x7C + c); if (!x) break; b[c] = (char)x; }
         b[c] = 0;
-        fprintf(stderr, "[STRM] t=%lu start: M %08X busy %u req %08X state %u pos 0x%X tag %08X '%s'"
-                " | open fd %08X '%s' pos 0x%X\n", (unsigned long)GetTickCount(), M, MEM32(M + 0x48),
+        fprintf(stderr, "[STRM] t=%lu t%lu ret %08X start: M %08X busy %u req %08X state %u pos 0x%X tag %08X '%s'"
+                " | open fd %08X '%s' pos 0x%X\n", (unsigned long)GetTickCount(), (unsigned long)GetCurrentThreadId(), MEM32(g_esp), M, MEM32(M + 0x48),
                 req, req ? MEM32(req + 4) : 0, req ? MEM32(req + 0x118) : 0, req ? MEM32(req + 0x11C) : 0,
                 a, MEM32(M + 0x17C), b, MEM32(M + 0x180));
         fflush(stderr);
     }
-    sub_00177990_gen();
+    {
+        int a = strm_atomic();
+        if (a) xbox_NoPreemptEnter();
+        sub_00177990_gen();
+        if (a) xbox_NoPreemptLeave();
+    }
 }
 
 /*
@@ -570,49 +834,12 @@ extern void sub_00177F80_gen(void);
 extern void sub_00178540_gen(void);
 extern void sub_00178800_gen(void);
 
-void sub_00177760(void)                 /* scan new blocks; eax = manager */
-{
-    uint32_t M = g_eax, scan = MEM32(M + 0x64), wr = MEM32(M + 0x68);
-    uint32_t tag = strm_ok(scan) ? MEM32(scan) : 0, sz = strm_ok(scan) ? MEM32(scan + 4) : 0;
-    sub_00177760_gen();
-    strm_note('S', M, scan, wr, tag, sz, (g_eax << 28) | (MEM32(M + 0x64) & 0x0FFFFFFFu));
-}
 
-void sub_00177F80(void)                 /* next chunk of stream h */
-{
-    /* A consumer polls an empty stream every frame: an empty fetch is
-     * recorded once, not each time, so the ring keeps the history. */
-    static volatile uint32_t last_h, last_cur;
-    uint32_t h = MEM32(g_esp + 4), M = strm_ok(h) ? MEM32(h) : 0;
-    uint32_t cur = strm_ok(h) ? MEM32(h + 12) : 0, avail = strm_ok(h) ? MEM32(h + 8) : 0;
-    int quiet = avail == 0 && h == last_h && cur == last_cur;
-    if (!quiet)
-        strm_note('g', M, h, MEM32(h + 4), avail, cur, strm_ok(cur) ? MEM32(cur + 4) : 0);
-    sub_00177F80_gen();
-    if (!quiet || g_eax)
-        strm_note('G', M, h, g_eax, MEM32(h + 8), MEM32(h + 12), M ? MEM32(M + 0x60) : 0);
-    last_h = h;
-    last_cur = strm_ok(h) ? MEM32(h + 12) : 0;
-}
 
 extern void sub_00178280_gen(void);
 extern void sub_001781B0_gen(void);
 
-void sub_00178280(void)                 /* schedule the next read (M, n) */
-{
-    uint32_t M = MEM32(g_esp + 4);
-    strm_note('K', M, MEM32(M + 0x60), MEM32(M + 0x64), MEM32(M + 0x68), MEM32(M + 0x48), MEM32(M + 0x18C));
-    sub_00178280_gen();
-    strm_note('k', M, MEM32(M + 0x60), MEM32(M + 0x64), MEM32(M + 0x68), MEM32(M + 0x48), MEM32(M + 0x188));
-}
 
-void sub_001781B0(void)                 /* read completed (op, ?, M) */
-{
-    uint32_t op = MEM32(g_esp + 4), M = MEM32(g_esp + 12);
-    strm_note('C', M, op, MEM32(M + 0x68), MEM32(M + 0x188), MEM32(M + 0x180), MEM32(M + 0x48));
-    sub_001781B0_gen();
-    strm_note('c', M, op, MEM32(M + 0x68), MEM32(M + 0x64), MEM32(M + 0x60), MEM32(M + 0x48));
-}
 
 void sub_00178540(void)                 /* release chunk */
 {
@@ -915,7 +1142,7 @@ extern void sub_001A9BD0_gen(void);
 
 void sub_001A9BD0(void)
 {
-    static volatile long failures, calls;
+    static volatile LONG failures, calls;
     static volatile long long requested;
     uint32_t ret_va = MEM32(g_esp);
     uint32_t size = MEM32(g_esp + 4);
@@ -923,7 +1150,11 @@ void sub_001A9BD0(void)
     uint32_t flags = MEM32(g_esp + 12);
 
     InterlockedIncrement(&calls);
+    #ifdef _WIN32
     InterlockedExchangeAdd64(&requested, size);
+#else
+    __sync_fetch_and_add(&requested, size);
+#endif
     sub_001A9BD0_gen();
     if (g_eax == 0 && InterlockedIncrement(&failures) <= 24)
         fprintf(stderr, "  [ALLOC] FAILED size=0x%X (%u) tag=0x%08X flags=0x%08X "
@@ -952,7 +1183,7 @@ extern void sub_000E1AE0(void);   /* app vtbl[6]: sample input into the ring */
 extern void sub_000E1A80(void);   /* app vtbl[5]: is an input frame (update) due */
 extern void sub_000D7460(void);   /* loading state vtbl[6]: render */
 
-static void trace_call(const char *name, void (*fn)(void), volatile long *n)
+static void trace_call(const char *name, void (*fn)(void), volatile LONG *n)
 {
     long k = InterlockedIncrement(n);
     uint32_t ecx = g_ecx;
@@ -966,8 +1197,8 @@ static void trace_call(const char *name, void (*fn)(void), volatile long *n)
 /* Same, but logs the return value (al) whenever it changes, with the input
  * ring indices: guest 0x0036952C is the input manager, +0x2EE0 read and
  * +0x2EE4 write. */
-static void trace_ret(const char *name, void (*fn)(void), volatile long *n,
-                      volatile long *last)
+static void trace_ret(const char *name, void (*fn)(void), volatile LONG *n,
+                      volatile LONG *last)
 {
     long k = InterlockedIncrement(n);
     long ret;
@@ -987,11 +1218,11 @@ static void trace_ret(const char *name, void (*fn)(void), volatile long *n,
 }
 
 #define TRACED_RET(va)                                                 \
-    static volatile long n_##va, last_##va = -1;                       \
+    static volatile LONG n_##va, last_##va = -1;                       \
     static void traced_##va(void) { trace_ret(#va, va, &n_##va, &last_##va); }
 
 #define TRACED(va)                                                     \
-    static volatile long n_##va;                                       \
+    static volatile LONG n_##va;                                       \
     static void traced_##va(void) { trace_call(#va, va, &n_##va); }
 
 TRACED(sub_001AE020)
