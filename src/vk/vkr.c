@@ -46,6 +46,7 @@ struct VkrContext {
     /* target */
     uint32_t w, h;
     float zmax;
+    VkRect2D sc;                    /* current scissor (the NV2A clip rect) */
     VkImage color, depth;
     VkDeviceMemory color_mem, depth_mem;
     VkImageView color_view, depth_view;
@@ -446,6 +447,7 @@ int vkr_set_target(VkrContext *c, uint32_t w, uint32_t h, float zmax)
     void *map;
     free_target(c);
     c->w = w; c->h = h; c->zmax = zmax;
+    c->sc.offset.x = c->sc.offset.y = 0; c->sc.extent.width = w; c->sc.extent.height = h;
     if (!make_image(c, VK_FORMAT_B8G8R8A8_UNORM,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, &c->color, &c->color_mem, &c->color_view))
@@ -489,7 +491,7 @@ static void begin_pass(VkrContext *c)
     VkRenderingAttachmentInfo da = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     VkRenderingInfo ri = {VK_STRUCTURE_TYPE_RENDERING_INFO};
     VkViewport vp = {0, 0, (float)c->w, (float)c->h, 0.0f, 1.0f};
-    VkRect2D sc = {{0, 0}, {c->w, c->h}};
+    VkRect2D sc = {{0, 0}, {c->w, c->h}};   /* render area: the whole target */
     if (c->in_pass) return;
     ca.imageView = c->color_view; ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     ca.loadOp = c->color_valid ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -502,7 +504,7 @@ static void begin_pass(VkrContext *c)
     ri.colorAttachmentCount = 1; ri.pColorAttachments = &ca; ri.pDepthAttachment = &da;
     vkCmdBeginRendering(c->cmd, &ri);
     vkCmdSetViewport(c->cmd, 0, 1, &vp);
-    vkCmdSetScissor(c->cmd, 0, 1, &sc);
+    vkCmdSetScissor(c->cmd, 0, 1, &c->sc);
     c->in_pass = 1;
     c->color_valid = 1;
 }
@@ -512,10 +514,26 @@ static void end_pass(VkrContext *c)
     if (c->in_pass) { vkCmdEndRendering(c->cmd); c->in_pass = 0; }
 }
 
+/* Draws and clears stay inside the NV2A clip rectangle; the target stays the
+ * whole surface (a smaller clip must not recreate it mid-frame). */
+void vkr_set_scissor(VkrContext *c, uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+{
+    if (x >= c->w || y >= c->h) { x = y = 0; w = h = 0; }
+    if (x + w > c->w) w = c->w - x;
+    if (y + h > c->h) h = c->h - y;
+    if (c->sc.offset.x == (int32_t)x && c->sc.offset.y == (int32_t)y
+        && c->sc.extent.width == w && c->sc.extent.height == h)
+        return;
+    c->sc.offset.x = (int32_t)x; c->sc.offset.y = (int32_t)y;
+    c->sc.extent.width = w; c->sc.extent.height = h;
+    if (c->in_pass)
+        vkCmdSetScissor(c->cmd, 0, 1, &c->sc);
+}
+
 void vkr_clear(VkrContext *c, const float rgba[4], int clear_depth, float depth)
 {
     VkClearAttachment ca[2];
-    VkClearRect cr = {{{0, 0}, {c->w, c->h}}, 0, 1};
+    VkClearRect cr = {c->sc, 0, 1};
     uint32_t n = 1;
     if (!begin_cmd(c)) return;
     begin_pass(c);
@@ -532,7 +550,7 @@ void vkr_clear(VkrContext *c, const float rgba[4], int clear_depth, float depth)
 void vkr_clear_depth(VkrContext *c, float depth)
 {
     VkClearAttachment ca = {VK_IMAGE_ASPECT_DEPTH_BIT};
-    VkClearRect cr = {{{0, 0}, {c->w, c->h}}, 0, 1};
+    VkClearRect cr = {c->sc, 0, 1};
     if (!begin_cmd(c)) return;
     begin_pass(c);
     ca.clearValue.depthStencil.depth = depth;

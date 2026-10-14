@@ -50,6 +50,7 @@ void vkr_destroy(VkrContext *c);
 
 /* Colour (BGRA8) + depth target; replaces any previous one. */
 int vkr_set_target(VkrContext *c, uint32_t w, uint32_t h, float zmax);
+void vkr_set_scissor(VkrContext *c, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
 void vkr_clear(VkrContext *c, const float rgba[4], int clear_depth, float depth);
 void vkr_clear_depth(VkrContext *c, float depth);
 

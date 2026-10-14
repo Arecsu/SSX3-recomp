@@ -3,7 +3,12 @@
 #   powershell -File tools\race_test.ps1 [-Runs 3] [-TimeoutSec 480] [-Env @{...}] [-Dir instance]
 # (-Dir: run in an instance directory, see live.ps1; tools\race_par.ps1 runs
 # several of these at once.)
-param([int]$Runs = 3, [int]$TimeoutSec = 480, [hashtable]$Env = @{}, [string]$Dir = "")
+# -RaceSec N: after a run reaches the race, stay N s (A taps keep riding;
+# -NoTaps: ride without them, the same path every time),
+# then -Snap <file> takes a screenshot before the run is stopped -- a whole
+# single-instance check in one command.
+param([int]$Runs = 3, [int]$TimeoutSec = 480, [hashtable]$Env = @{}, [string]$Dir = "",
+      [int]$RaceSec = 0, [string]$Snap = "", [switch]$NoTaps)
 
 $root = if ($Dir) { $Dir } else { Split-Path -Parent $PSScriptRoot }
 $live = Join-Path $PSScriptRoot "live.ps1"
@@ -27,6 +32,17 @@ for ($i = 1; $i -le $Runs; $i++) {
               elseif ($crash) { "CRASH $crash" }
               else { "FAIL $kind$out" }
     "run ${i}: $result"
+    if ($result -like "OK*" -and $RaceSec -gt 0) {
+        $t0 = Get-Date
+        while (((Get-Date) - $t0).TotalSeconds -lt $RaceSec) {
+            # -NoTaps still taps through the briefing (its first 6 s).
+            if (-not $NoTaps -or ((Get-Date) - $t0).TotalSeconds -lt 6) {
+                & $live press -Buttons "a:200" -Dir $Dir | Out-Null
+            }
+            Start-Sleep -Seconds 3
+        }
+        if ($Snap) { & $live snap -Out $Snap -Dir $Dir }
+    }
     if ($result -like "FAIL*") {
         # A stall: dump every thread (and the RECOMP_JOB_TRACE ring) before
         # the run is killed; the log is kept in logs\ by the next start.

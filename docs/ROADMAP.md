@@ -78,8 +78,19 @@ part of the race (docs/screenshots/25).
 
 - [ ] 2.0 Vulkan by default on Windows once a parallel reliability batch and
   the screenshot suite match software (today opt-in: `RECOMP_GPU=vk`).
-- [ ] 2.0b Black sky polygons in races (missing feature or a target the
-  backend declines).
+- [ ] 2.0b Black shapes in races (docs/screenshots/25): NOT Vulkan-specific --
+  the software path shows them too (user report), so the cause is in the
+  shared executor. Reproducible: `tools\race_test.ps1 -Runs 1 -RaceSec 22
+  -NoTaps -Snap x.png -Env @{RECOMP_GPU='vk'}` (00:00:15, airborne over the
+  first jump). Ruled out: shadow receivers (RECOMP_VKR_NO_SHADOW=1), fog
+  (RECOMP_VKR_NO_FOG=1), textures not yet streamed / the DXT block cache
+  (texture bytes are loaded), sampler address modes, projective lookup.
+  Fixed on the way (Vulkan): the target was sized by the clip rectangle and
+  recreated mid-frame (now the surface, clip = scissor), and offscreen
+  640x480 surfaces were drawn into the main image (now only flipped
+  surfaces). Next: RECOMP_VKR_TRACE_AT=<ms> lists every large draw of one
+  frame -- find the draw that covers the shapes by bisecting draws (skip by
+  index) rather than by state.
 - [ ] 2.0c Flip without the readback: present the Vulkan image directly
   (swapchain on the game window) instead of copying it to guest memory.
 - [ ] 2.0d Vertex programs on the GPU (SPIR-V), the next big CPU cost.
@@ -154,6 +165,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-14 — Vulkan: target = surface with the clip as scissor, only flipped surfaces drawn on the GPU; black race shapes shown to be shared with software (not fixed). race_test -RaceSec/-NoTaps/-Snap for one-command checks.
 - 2026-10-14 — to_race.ps1 navigates from game state only; intro movies skipped by default (boot -> briefing ~25 s).
 - 2026-10-14 — Vulkan renderer (MR !1, Corné) merged with MR !2 (APC guest-CPU fix); builds and runs on Windows with the Vulkan SDK: race 22-28 FPS vs 9-12 software.
 

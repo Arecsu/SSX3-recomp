@@ -74,24 +74,94 @@ static int s_dirty;                     /* drawn since the last flip */
 static uint8_t *s_px;
 
 /* Is t the surface the Vulkan target stands for? Adopts the first one that
- * looks like a frame buffer (>= 320x240, linear, 32-bit); a size change
- * replaces the target. */
+ * looks like a frame buffer (>= 320x240 clip, linear, 32-bit). The target
+ * covers the surface from its origin -- vertex positions are relative to it
+ * -- and only grows: the clip rectangle (360..480 lines in a race: the
+ * letterboxed start camera, HUD passes) becomes the scissor. Sizing the
+ * target by the clip recreated it, blank, mid-frame and mapped positions
+ * with the wrong size: black and misplaced geometry in races. */
+/* Surfaces that have been flipped to the screen (double/triple buffered):
+ * only those are the Vulkan target. Another linear 32-bit surface the title
+ * renders into -- an offscreen image it later samples as a texture -- was
+ * drawn into the main image instead: its memory stayed black (the black
+ * shapes in races) and the frame got draws meant for it. Until the first
+ * flip any frame-buffer-like surface is taken. */
+static uint32_t s_front[4];
+static int s_nfront;
+
+static int is_front(uint32_t off)
+{
+    int i;
+    for (i = 0; i < s_nfront; i++)
+        if (s_front[i] == off)
+            return 1;
+    return s_nfront == 0;
+}
+
+/* Swizzled render targets the title draws (rider shadow maps): drawn in
+ * software; RECOMP_VKR_NO_SHADOW=1 skips the draws that sample them (an
+ * experiment for the black shadow-receiver shapes). */
+static uint32_t s_rt[16];
+static int s_nrt;
+
+static void note_rt(uint32_t off)
+{
+    int i;
+    for (i = 0; i < s_nrt; i++)
+        if (s_rt[i] == off)
+            return;
+    if (s_nrt < 16)
+        s_rt[s_nrt++] = off;
+}
+
+static int samples_rt(const VkrDrawState *st)
+{
+    int k, i;
+    for (k = 0; k < 4; k++) {
+        Nv2aTexInfo ti;
+        if (!((st->u.stage_program >> (k * 5)) & 0x1F) || !nv2a_exec_tex_info(k, &ti))
+            continue;
+        for (i = 0; i < s_nrt; i++)
+            if (s_rt[i] == ti.offset)
+                return 1;
+    }
+    return 0;
+}
+
 static int is_main(const Nv2aTarget *t)
 {
+    uint32_t w, h;
+    if (t->swizzled)
+        note_rt(t->color_offset);
     if (t->swizzled || t->bpp != 4)
         return 0;
+    if (!is_front(t->color_offset)) {
+        static uint32_t said[8];
+        int i;
+        for (i = 0; i < 8 && said[i] && said[i] != t->color_offset; i++)
+            ;
+        if (i < 8 && !said[i]) {
+            said[i] = t->color_offset;
+            fprintf(stderr, "[VKR] offscreen surface %08X %ux%u: drawn in software\n",
+                    t->color_offset, t->width, t->height);
+        }
+        return 0;
+    }
     if (t->width < 320 || t->height < 240)
         return 0;
     if (t->x + t->width > t->pitch / 4)
         return 0;
-    if (t->width != s_w || t->height != s_h || t->zmax != s_zmax) {
-        if (!vkr_set_target(s_vk, t->width, t->height, (float)t->zmax))
+    w = t->x + t->width > s_w ? t->x + t->width : s_w;
+    h = t->y + t->height > s_h ? t->y + t->height : s_h;
+    if (w != s_w || h != s_h || t->zmax != s_zmax) {
+        if (!vkr_set_target(s_vk, w, h, (float)t->zmax))
             return 0;
         free(s_px);
-        s_px = (uint8_t *)malloc((size_t)t->width * t->height * 4);
-        s_w = t->width; s_h = t->height; s_zmax = t->zmax;
+        s_px = (uint8_t *)malloc((size_t)w * h * 4);
+        s_w = w; s_h = h; s_zmax = t->zmax;
         fprintf(stderr, "[VKR] target %ux%u zmax %X\n", s_w, s_h, s_zmax);
     }
+    vkr_set_scissor(s_vk, t->x, t->y, t->width, t->height);
     return s_px != NULL;
 }
 
@@ -124,6 +194,11 @@ static void fill_state(const Nv2aTarget *t, VkrDrawState *st)
     u->control = t->rc.control; u->stage_program = t->rc.stage_program;
     u->rc_seen = (uint32_t)t->rc_seen;
     u->fog_enable = t->fog_enable;
+    {
+        static int no_fog = -1;         /* RECOMP_VKR_NO_FOG=1: experiment */
+        if (no_fog < 0) no_fog = getenv("RECOMP_VKR_NO_FOG") != NULL;
+        if (no_fog) u->fog_enable = 0;
+    }
     /* FOG_COLOR is R in bits 0-7, the reverse of a D3DCOLOR. */
     u->fog_color[0] = (float)(t->fog_color & 0xFF) / 255.0f;
     u->fog_color[1] = (float)((t->fog_color >> 8) & 0xFF) / 255.0f;
@@ -165,6 +240,48 @@ static void bind_textures(VkrDrawState *st)
         st->u.tex_scale[k][0] = ti.normalised ? 1.0f : 1.0f / (float)ti.width;
         st->u.tex_scale[k][1] = ti.normalised ? 1.0f : 1.0f / (float)ti.height;
     }
+}
+
+/* RECOMP_VKR_TRACE_AT=<ms since start>: log every large draw (> 2000 px of
+ * screen box) of the first frame after that time -- what a wrong-looking
+ * region is drawn with. s_trace: 0 off/done, 1 armed, 2 this frame. */
+static int s_trace = -1;
+static double s_trace_at, s_t0;
+
+static void trace_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, uint32_t n,
+                       const VkrDrawState *st)
+{
+    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    uint32_t i;
+    int k;
+    for (i = 0; i < n; i++) {
+        if (v[i].pos[0] < x0) x0 = v[i].pos[0];
+        if (v[i].pos[0] > x1) x1 = v[i].pos[0];
+        if (v[i].pos[1] < y0) y0 = v[i].pos[1];
+        if (v[i].pos[1] > y1) y1 = v[i].pos[1];
+    }
+    if ((x1 - x0) * (y1 - y0) < 2000.0f)
+        return;
+    fprintf(stderr, "[VKRTRACE] prim %u n %u box %.0f,%.0f-%.0f,%.0f w0 %.3g d0 %.2f,%.2f,%.2f,%.2f | stages %05X",
+            prim, n, x0, y0, x1, y1, v[0].pos[3], v[0].d0[0], v[0].d0[1], v[0].d0[2], v[0].d0[3],
+            st->u.stage_program);
+    for (k = 0; k < 4; k++) {
+        Nv2aTexInfo ti;
+        if (!((st->u.stage_program >> (k * 5)) & 0x1F))
+            continue;
+        if (nv2a_exec_tex_info(k, &ti)) {
+            const uint32_t *m = (const uint32_t *)((const uint8_t *)xbox_GetMemoryOffset() + ti.offset);
+            fprintf(stderr, " t%d:%08X fmt %X %ux%u%s [%08X %08X %08X %08X]", k, ti.offset, ti.format,
+                    ti.width, ti.height, st->tex[k] ? "" : " (none)", m[0], m[1], m[2], m[3]);
+        }
+        else
+            fprintf(stderr, " t%d:invalid", k);
+    }
+    fprintf(stderr, " | rc %u final %08X %08X fog %u | blend %d %X/%X alpha %X ref %u mask %X depth %d/%d %X\n",
+            st->u.rc_seen, st->u.final0, st->u.final1, st->u.fog_enable, st->blend_enable, st->blend_src,
+            st->blend_dst, st->alpha_func, st->alpha_ref, st->write_mask, st->depth_test, st->depth_write,
+            st->depth_func);
+    (void)t;
 }
 
 static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, uint32_t n)
@@ -219,14 +336,22 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
     }
     if (!k)
         return 1;
-    /* The vertex program output is relative to the surface origin, and the
-     * target is the clip rectangle, which on a frame buffer is the surface. */
+    /* The vertex program output is relative to the surface origin, which is
+     * the target's; the clip rectangle is the scissor (is_main). */
     {
         VkrDrawState st;
         memset(&st, 0, sizeof st);
         fill_state(t, &st);
         double t2;
         bind_textures(&st);
+        {
+            static int no_shadow = -1;
+            if (no_shadow < 0) no_shadow = getenv("RECOMP_VKR_NO_SHADOW") != NULL;
+            if (no_shadow && samples_rt(&st))
+                return 1;               /* swallowed: experiment */
+        }
+        if (s_trace == 2)
+            trace_draw(t, prim, v, n, &st);
         t2 = s_stats ? now_ms() : 0;
         vkr_draw(s_vk, (const VkrVertex *)v, n, idx, k, &st);
         if (s_stats) { s_t[3] += now_ms() - t2; s_n[0]++; }
@@ -261,7 +386,29 @@ static void be_flip(const Nv2aTarget *t)
 {
     uint8_t *mem = (uint8_t *)xbox_GetMemoryOffset();
     uint32_t y;
-    if (!s_dirty || t->bpp != 4 || t->width != s_w || t->height != s_h)
+    if (s_trace < 0) {
+        const char *e = getenv("RECOMP_VKR_TRACE_AT");
+        s_trace = e ? 1 : 0;
+        s_trace_at = e ? atof(e) : 0;
+        s_t0 = now_ms();
+    }
+    if (s_trace == 2) {
+        s_trace = 0;
+        fprintf(stderr, "[VKRTRACE] end of frame\n");
+    } else if (s_trace == 1 && now_ms() - s_t0 >= s_trace_at) {
+        s_trace = 2;
+        fprintf(stderr, "[VKRTRACE] frame at %.0f ms\n", now_ms() - s_t0);
+    }
+    {
+        int i;
+        for (i = 0; i < s_nfront && s_front[i] != t->color_offset; i++)
+            ;
+        if (i == s_nfront && s_nfront < 4) {
+            s_front[s_nfront++] = t->color_offset;
+            fprintf(stderr, "[VKR] front buffer %08X\n", t->color_offset);
+        }
+    }
+    if (!s_dirty || t->bpp != 4 || t->pitch / 4 < s_w)
         return;
     {
         double tf = s_stats ? now_ms() : 0;
@@ -270,8 +417,8 @@ static void be_flip(const Nv2aTarget *t)
         if (!ok)
             return;
     }
-    for (y = 0; y < s_h; y++)
-        memcpy(mem + t->color_offset + (size_t)(t->y + y) * t->pitch + (size_t)t->x * 4,
+    for (y = 0; y < s_h; y++)              /* the target is the surface from its origin */
+        memcpy(mem + t->color_offset + (size_t)y * t->pitch,
                s_px + (size_t)y * s_w * 4, (size_t)s_w * 4);
     s_dirty = 0;
 }
