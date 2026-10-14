@@ -531,6 +531,40 @@ void sub_00177990(void)
     sub_00177990_gen();
 }
 
+/*
+ * Chunk parser, on EA's file worker after each read. It publishes a chunk
+ * under the lock, unlocks (0x001778A2), and only then re-reads the chunk's
+ * tag from the ring (0x001778B2) to see whether it was the request's end
+ * chunk ('CEND'). If the loader pulls and releases that chunk in between, the
+ * release has overwritten the tag with -2 (0x00178575): the end is missed and
+ * the worker keeps reading the bytes that follow on disk as if they belonged
+ * to the request -- garbage assets, the 43% load stall. On the console the
+ * worker keeps the CPU through an uncontended unlock; keep the guest CPU here
+ * too. The parser does not poll, so this cannot livelock. Blocking lock waits
+ * still release the CPU. RECOMP_STRM_PARSE_ATOMIC=0 turns it off.
+ */
+extern void sub_00177760_gen(void);
+extern void xbox_NoPreemptEnter(void);
+extern void xbox_NoPreemptLeave(void);
+
+static int strm_parse_atomic(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RECOMP_STRM_PARSE_ATOMIC");
+        on = !(e && *e == '0');
+    }
+    return on;
+}
+
+void sub_00177760(void)
+{
+    int a = strm_parse_atomic();
+    if (a) xbox_NoPreemptEnter();
+    sub_00177760_gen();
+    if (a) xbox_NoPreemptLeave();
+}
+
 static volatile uint32_t s_block_t;     /* BlockOnTime: time being waited for */
 static volatile DWORD    s_block_since; /* when that call began, 0 = none */
 
