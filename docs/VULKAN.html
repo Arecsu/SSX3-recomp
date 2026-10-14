@@ -34,7 +34,7 @@
   <li class="open">3. Surfaces keyed by guest address (colour/depth, swizzled RTs); present by writing the front surface to guest memory (existing SDL present), later a direct swapchain.</li>
   <li class="wip">4. Textures: stage 0 done (decoded by the executor's <code>sample_tex</code>, cached by content hash, push descriptors, sampler per wrap/filter); intro movie renders. Left: stages 1-3, mips, cube maps, border colour, render-target-as-texture, per-frame hash cost.</li>
   <li class="done">4b. Blend (factors/equation/constant), colour write mask, alpha test, depth func: wired (pipeline cache keyed by blend state).</li>
-  <li class="open">5. Register combiners &rarr; GLSL (port of <code>nv2a_combiner.c</code>), pipeline cache; blend, alpha test, fog, stencil, colour mask.</li>
+  <li class="done">5. Register combiners &rarr; GLSL: interpreter port of <code>nv2a_combiner.c</code> (words in a per-draw UBO, one shader), 4 texture stages with project2D/passthru modes, fog in the vertex shader. Select Character renders correctly. Left: cube maps, bump/dot-product stage modes, clip-plane stage, border colour, stencil.</li>
   <li class="open">6. Vertex programs &rarr; SPIR-V (drops the CPU interpreter).</li>
   <li class="open">7. Differential test vs software output (screenshot suite).</li>
 </ul>
@@ -52,6 +52,7 @@
   <tr><td>2026-10-14</td><td>Vulkan 1.4 required (push descriptors core). Stage-0 textures + blend + alpha test: intro movie frame correct under <code>RECOMP_GPU=vk</code>.</td></tr>
   <tr><td>2026-10-14</td><td>Frontend menus on Vulkan look right (Select Mode screen). Menu frame rate: Vulkan 43&ndash;50 FPS (p50 18&ndash;23 ms) vs software 5&ndash;8 FPS. Race not tried yet (needs combiners, shadow-map RTs, fog).</td></tr>
   <tr><td>2026-10-14</td><td>Black menu backgrounds: stage 0 disabled (<code>stage_program&amp;0x1F == 0</code>) but a stale texture was still sampled. Fixed; backgrounds and panels now draw. Still to compare with software: ~10 px black strip at the left/right screen edge. <code>RECOMP_VKR_TRACE=&lt;flagfile&gt;</code> logs large draws while the file exists.</td></tr>
+  <tr><td>2026-10-14</td><td>Select Character: rider was transparent because the placeholder shader used <code>d0.a</code>; the vertex-program lighting puts junk there and the combiners produce the real alpha. Combiner GLSL port fixed it.</td></tr>
   <tr><td>2026-10-14</td><td>Found the shared toolkit clone diverges from the patch; plan a private clone for the backend hook.</td></tr>
 </table>
 </body>
