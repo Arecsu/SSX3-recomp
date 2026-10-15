@@ -4951,7 +4951,7 @@ index 0000000..d975b79
 +    }
 +}
 diff --git a/src/video/fb_present.c b/src/video/fb_present.c
-index 08bae4b..c04b24a 100644
+index 08bae4b..bea5a10 100644
 --- a/src/video/fb_present.c
 +++ b/src/video/fb_present.c
 @@ -15,12 +15,15 @@
@@ -5046,7 +5046,7 @@ index 08bae4b..c04b24a 100644
  }
  
  int xbox_FramebufferKeyDown(int vk)
-@@ -140,8 +208,43 @@ int xbox_FramebufferKeyDown(int vk)
+@@ -140,12 +208,58 @@ int xbox_FramebufferKeyDown(int vk)
      return s_key_down[vk] != 0;
  }
  
@@ -5090,7 +5090,22 @@ index 08bae4b..c04b24a 100644
      switch (m) {
      case WM_CLOSE:
      case WM_DESTROY:
-@@ -217,6 +320,8 @@ static void fb_convert(const uint8_t *src, uint32_t bpp)
++        /* Closing the window quits the game. Only stopping this thread left
++         * every other thread running -- the audio played on and the process
++         * had to be ended in Task Manager. The game has no clean exit path
++         * of its own (the console never quits), so end the process here;
++         * RECOMP_CLOSE_KEEPS_RUNNING=1 keeps the old behaviour. */
+         InterlockedExchange(&s_fb_running, 0);
++        if (!getenv("RECOMP_CLOSE_KEEPS_RUNNING")) {
++            fprintf(stderr, "  [FBWIN] window closed: exiting\n");
++            fflush(stderr);
++            fflush(stdout);
++            TerminateProcess(GetCurrentProcess(), 0);
++        }
+         return 0;
+ 
+     case WM_KEYDOWN:
+@@ -217,6 +331,8 @@ static void fb_convert(const uint8_t *src, uint32_t bpp)
   * A black window is ambiguous: it means either that the read path is wrong or
   * that the title really did render black. Dumping the same converted pixels
   * the window draws settles which, and does it without a screenshot. */
@@ -5099,7 +5114,7 @@ index 08bae4b..c04b24a 100644
  int xbox_FramebufferDumpBmp(const char *path)
  {
      FILE *f;
-@@ -251,11 +356,72 @@ int xbox_FramebufferDumpBmp(const char *path)
+@@ -251,11 +367,72 @@ int xbox_FramebufferDumpBmp(const char *path)
      }
      free(line);
      fclose(f);
@@ -5174,7 +5189,7 @@ index 08bae4b..c04b24a 100644
  static DWORD WINAPI fb_thread(LPVOID unused)
  {
      HWND hwnd;
-@@ -274,13 +440,32 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -274,13 +451,32 @@ static DWORD WINAPI fb_thread(LPVOID unused)
          wc.lpszClassName = "XboxRecompFramebuffer";
          RegisterClassA(&wc);
      }
@@ -5214,7 +5229,7 @@ index 08bae4b..c04b24a 100644
      if (!hwnd) {
          InterlockedExchange(&s_fb_running, 0);
          return 0;
-@@ -299,6 +484,8 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -299,6 +495,8 @@ static DWORD WINAPI fb_thread(LPVOID unused)
  
      fprintf(stderr, "  [FBWIN] framebuffer window open (%ux%u)\n",
              s_fb_width, s_fb_height);
@@ -5223,7 +5238,7 @@ index 08bae4b..c04b24a 100644
  
      while (InterlockedCompareExchange(&s_fb_running, 1, 1)) {
          MSG msg;
-@@ -314,18 +501,25 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -314,18 +512,25 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              if (s_present[idx])
                  memcpy(s_rgb, s_present[idx],
                         (size_t)s_fb_width * s_fb_height * 4);
@@ -5255,7 +5270,7 @@ index 08bae4b..c04b24a 100644
          }
          {
              /* One dump a few seconds in, so the title has had time to render
-@@ -365,9 +559,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -365,9 +570,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
                  t0 = now; f0 = f;
              }
          }
@@ -5269,7 +5284,7 @@ index 08bae4b..c04b24a 100644
      ReleaseDC(hwnd, hdc);
      DestroyWindow(hwnd);
      free(s_rgb);
-@@ -390,11 +587,4 @@ void xbox_FramebufferWindowStart(void)
+@@ -390,11 +598,4 @@ void xbox_FramebufferWindowStart(void)
          InterlockedExchange(&s_fb_running, 0);
  }
  
