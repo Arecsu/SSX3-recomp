@@ -20,6 +20,7 @@ layout(push_constant) uniform PC {
     uint nin;           /* inputs per vertex */
     uint prog_base;     /* uvec4 index of the program (2 per instruction) */
     uint const_base;    /* vec4 index of c[0] */
+    float squeeze2d;    /* widescreen: x of 2D vertices (w == 1) times this */
 } pc;
 
 layout(location = 0) out vec4 v_d0;
@@ -185,6 +186,11 @@ void main()
     vec4 pos = R[12];
     float w = pos.w;
     vec2 ndc = pos.xy * pc.inv_size * 2.0 - 1.0;
+    /* 2D (screen space, w == 1): keep 4:3 proportions around the centre --
+     * except vertices on the screen's left/right edge (full-screen quads:
+     * fades, colour/blur passes), which stay at the edges of the 16:9 frame. */
+    if (w == 1.0 && abs(ndc.x) < 0.999)
+        ndc.x *= pc.squeeze2d;
     gl_Position = vec4(ndc * w, pos.z * pc.inv_zmax * w, w);
     /* Vertex colours are clamped to 0..1 before interpolation (NV2A, xemu). */
     v_d0 = clamp(O[3], 0.0, 1.0); v_d1 = clamp(O[4], 0.0, 1.0);

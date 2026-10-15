@@ -79,7 +79,8 @@ struct VkrContext {
     /* Internal resolution (RECOMP_RES): the target is sw x sh = w x h times
      * scale; positions, the guest's copy and the clip rectangle stay in guest
      * pixels (w x h). */
-    float scale;
+    float scale, scale_x;           /* scale_x = scale x 4/3 in widescreen */
+    float squeeze2d;                /* widescreen: 2D (w == 1) narrowed to 4:3 */
     uint32_t sw, sh;
     int wide_lines;
     float max_line;
@@ -288,7 +289,7 @@ static int make_layout(VkrContext *c)
         {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, NULL},
     };
     VkDescriptorSetLayoutCreateInfo di = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    VkPushConstantRange pcr[2] = {{VK_SHADER_STAGE_VERTEX_BIT, 0, 48},
+    VkPushConstantRange pcr[2] = {{VK_SHADER_STAGE_VERTEX_BIT, 0, 64},
                                   {VK_SHADER_STAGE_FRAGMENT_BIT, 64, 16}};
     VkPipelineLayoutCreateInfo li = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
 
@@ -474,6 +475,15 @@ VkrContext *vkr_create(void)
         const char *r = getenv("RECOMP_RES");
         double v = r ? atof(r) : 0;
         c->scale = v >= 240 ? (float)(v / 480.0) : (v >= 1.0 && v <= 8.0) ? (float)v : 1.0f;
+        /* RECOMP_WIDESCREEN=1: a 16:9 target (the game renders a 16:9 view
+         * squeezed into 640x480, ssx3_overrides.c sub_0024EA13). */
+        r = getenv("RECOMP_WIDESCREEN");
+        c->scale_x = c->scale;
+        c->squeeze2d = 1.0f;
+        if (r && *r && *r != '0') {
+            c->scale_x = c->scale * 4.0f / 3.0f;
+            c->squeeze2d = 0.75f;
+        }
     }
     {
         VkPhysicalDeviceFeatures pf;
@@ -685,7 +695,7 @@ int vkr_set_target(VkrContext *c, uint32_t w, uint32_t h, float zmax)
         return 0;
     free_target(c);
     c->w = w; c->h = h; c->zmax = zmax;
-    c->sw = (uint32_t)((float)w * c->scale + 0.5f);
+    c->sw = (uint32_t)((float)w * c->scale_x + 0.5f);
     c->sh = (uint32_t)((float)h * c->scale + 0.5f);
     c->sc.offset.x = c->sc.offset.y = 0; c->sc.extent.width = c->sw; c->sc.extent.height = c->sh;
     if (!make_image(c, VK_FORMAT_B8G8R8A8_UNORM,
@@ -697,7 +707,7 @@ int vkr_set_target(VkrContext *c, uint32_t w, uint32_t h, float zmax)
                     VK_IMAGE_ASPECT_DEPTH_BIT, &c->depth, &c->depth_mem, &c->depth_view,
                     c->sw, c->sh))
         return 0;
-    if (c->scale != 1.0f
+    if ((c->scale != 1.0f || c->scale_x != 1.0f)
         && !make_image(c, VK_FORMAT_B8G8R8A8_UNORM,
                        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT, &c->down, &c->down_mem, &c->down_view, w, h))
@@ -707,16 +717,16 @@ int vkr_set_target(VkrContext *c, uint32_t w, uint32_t h, float zmax)
                             &c->fr[f].rb, &c->fr[f].rb_mem, &map, 1, &c->fr[f].rb_noncoherent))
             return 0;
         c->fr[f].rb_map = (uint8_t *)map;
-        if (c->scale != 1.0f) {
+        if (c->scale != 1.0f || c->scale_x != 1.0f) {
             if (!make_buffer_ex(c, (VkDeviceSize)c->sw * c->sh * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                 &c->fr[f].rbh, &c->fr[f].rbh_mem, &map, 1, &c->fr[f].rbh_noncoherent))
                 return 0;
             c->fr[f].rbh_map = (uint8_t *)map;
         }
     }
-    if (c->scale != 1.0f)
-        fprintf(stderr, "[VKR] internal resolution %ux%u (x%.2f of %ux%u)\n", c->sw, c->sh,
-                c->scale, w, h);
+    if (c->scale != 1.0f || c->scale_x != 1.0f)
+        fprintf(stderr, "[VKR] internal resolution %ux%u (x%.2f/x%.2f of %ux%u)%s\n", c->sw, c->sh,
+                c->scale_x, c->scale, w, h, c->squeeze2d != 1.0f ? ", widescreen" : "");
     c->recording = c->in_pass = c->color_valid = 0;
     return 1;
 }
@@ -786,10 +796,10 @@ void vkr_set_scissor(VkrContext *c, uint32_t x, uint32_t y, uint32_t w, uint32_t
     if (x >= c->w || y >= c->h) { x = y = 0; w = h = 0; }
     if (x + w > c->w) w = c->w - x;
     if (y + h > c->h) h = c->h - y;
-    if (c->scale != 1.0f) {             /* guest pixels -> target pixels */
-        uint32_t x1 = (uint32_t)((float)(x + w) * c->scale + 0.5f);
+    if (c->scale != 1.0f || c->scale_x != 1.0f) {   /* guest pixels -> target pixels */
+        uint32_t x1 = (uint32_t)((float)(x + w) * c->scale_x + 0.5f);
         uint32_t y1 = (uint32_t)((float)(y + h) * c->scale + 0.5f);
-        x = (uint32_t)((float)x * c->scale + 0.5f);
+        x = (uint32_t)((float)x * c->scale_x + 0.5f);
         y = (uint32_t)((float)y * c->scale + 0.5f);
         if (x1 > c->sw) x1 = c->sw;
         if (y1 > c->sh) y1 = c->sh;
@@ -991,6 +1001,7 @@ int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
     pcv[4] = st->u.fog_param[0]; pcv[5] = st->u.fog_param[1];
     pcv[6] = st->point_size * c->scale; pcv[7] = st->point_params ? c->scale : 0.0f;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pcv);
+    vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 48, 4, &c->squeeze2d);
     pcf[0] = st->alpha_func; pcf[1] = st->alpha_ref;
     {
         /* W-buffering: depth is the interpolated clip w in depth-buffer
@@ -1101,6 +1112,7 @@ int vkr_draw_vsh(VkrContext *c, const float *in, uint32_t nverts, uint32_t nin,
     pcv[4] = st->u.fog_param[0]; pcv[5] = st->u.fog_param[1];
     pcv[6] = st->point_size * c->scale; pcv[7] = st->point_params ? c->scale : 0.0f;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pcv);
+    vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 48, 4, &c->squeeze2d);
     pcu[0] = vb / 16; pcu[1] = nin ? nin : 1; pcu[2] = po / 16; pcu[3] = co / 16;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 32, 16, pcu);
     pcf[0] = st->alpha_func; pcf[1] = st->alpha_ref;
@@ -1157,7 +1169,7 @@ int vkr_flip_submit(VkrContext *c)
     cp.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     cp.imageSubresource.layerCount = 1;
     cp.imageExtent.depth = 1;
-    if (c->scale == 1.0f) {
+    if (c->scale == 1.0f && c->scale_x == 1.0f) {
         cp.imageExtent.width = c->w; cp.imageExtent.height = c->h;
         vkCmdCopyImageToBuffer(c->cmd, c->color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                c->fr[slot].rb, 1, &cp);
@@ -1226,7 +1238,7 @@ const uint8_t *vkr_frame_pixels(VkrContext *c, int slot)
  * (*w x *h), or NULL when the internal resolution is the guest's. */
 const uint8_t *vkr_frame_pixels_full(VkrContext *c, int slot, uint32_t *w, uint32_t *h)
 {
-    if (c->scale == 1.0f || !c->fr[slot].rbh_map)
+    if ((c->scale == 1.0f && c->scale_x == 1.0f) || !c->fr[slot].rbh_map)
         return NULL;
     if (c->fr[slot].rbh_noncoherent) {
         VkMappedMemoryRange mr = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};

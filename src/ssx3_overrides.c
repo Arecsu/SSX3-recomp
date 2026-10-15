@@ -18,6 +18,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* 64-bit compare-and-swap on both hosts: true if *p was old and is now nu. */
 #ifdef _WIN32
@@ -127,6 +128,34 @@ void sub_0025BD81(void)
  * answer there is 0.0 either way; set by main.c when it is installed.
  * Args: (char *pending, index, total, char wait), stdcall.
  */
+/*
+ * Widescreen (RECOMP_WIDESCREEN=1): the main camera's projection is D3DX
+ * PerspectiveFovLH (0x0024EA13, called only by the renderer's camera setup
+ * sub_001EAB40 with aspect = viewport width / height = 640/480). Times 4/3
+ * it is 16:9: the game renders a wider view (its frustum, so its culling,
+ * follows the matrix) squeezed into 640x480, which the Vulkan renderer then
+ * stretches to a 16:9 target. Args (stdcall): out, fovy, aspect, zn, zf.
+ */
+extern void sub_0024EA13_gen(void);
+int ssx3_widescreen = -1;
+
+void sub_0024EA13(void)
+{
+    if (ssx3_widescreen < 0) {
+        const char *e = getenv("RECOMP_WIDESCREEN");
+        ssx3_widescreen = e && *e && *e != '0';
+    }
+    if (ssx3_widescreen) {
+        uint32_t bits = MEM32(g_esp + 12);
+        float aspect;
+        memcpy(&aspect, &bits, 4);
+        aspect *= 4.0f / 3.0f;
+        memcpy(&bits, &aspect, 4);
+        MEM32(g_esp + 12) = bits;
+    }
+    sub_0024EA13_gen();
+}
+
 extern void sub_001F8760_gen(void);
 int ssx3_lensfx_nowait;
 

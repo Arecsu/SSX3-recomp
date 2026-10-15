@@ -4437,7 +4437,7 @@ index 65bbedb..4bc1add 100644
      uint32_t words, jumps = 0, unknown = 0;
  
 diff --git a/src/kernel/nv2a_vsh_interp.c b/src/kernel/nv2a_vsh_interp.c
-index 7fae74c..27937f5 100644
+index 7fae74c..53faba3 100644
 --- a/src/kernel/nv2a_vsh_interp.c
 +++ b/src/kernel/nv2a_vsh_interp.c
 @@ -39,6 +39,7 @@ static float    s_const[NV2A_VSH_CONSTANTS][4];
@@ -4595,7 +4595,7 @@ index 7fae74c..27937f5 100644
  static void write_masked(float *dst, const vec4 *src, uint32_t mask)
  {
      if (mask & 8) dst[0] = src->v[0];
-@@ -305,12 +310,173 @@ static vec4 run_ilu(uint32_t op, vec4 c)
+@@ -305,19 +310,184 @@ static vec4 run_ilu(uint32_t op, vec4 c)
      return r;
  }
  
@@ -4763,14 +4763,29 @@ index 7fae74c..27937f5 100644
  int nv2a_vsh_run(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out)
  {
      static int dump = -1;
-     static uint32_t dumped[16];
+-    static uint32_t dumped[16];
++    static uint32_t dumped[128];
      static int ndumped;
 -    vec4 temp[12], opos;
 +    vec4 reg[13];                  /* R0..R11, and R12 = oPos */
      float outregs[13][4];
      int a0 = 0;
      uint32_t s;
-@@ -335,8 +501,8 @@ int nv2a_vsh_run(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out)
+ 
+-    if (dump < 0)
+-        dump = getenv("RECOMP_VSH_DUMP") != NULL;
+-    if (dump && ndumped < 16) {
++    if (dump < 0) {
++        /* RECOMP_VSH_DUMP=N: the first N distinct programs (1 or any
++         * non-number: 16). */
++        const char *e = getenv("RECOMP_VSH_DUMP");
++        dump = e ? (atoi(e) > 1 ? atoi(e) : 16) : 0;
++    }
++    if (dump && ndumped < dump && ndumped < (int)(sizeof dumped / sizeof dumped[0])) {
+         /* By content: titles reload different programs into the same slot. */
+         uint32_t h = 2166136261u, t;
+         int i, seen = 0;
+@@ -335,8 +505,8 @@ int nv2a_vsh_run(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out)
          }
      }
  
@@ -4781,7 +4796,7 @@ index 7fae74c..27937f5 100644
      memset(outregs, 0, sizeof outregs);
      outregs[3][3] = outregs[4][3] = 1.0f;      /* colours default opaque */
      /* Unwritten texture coordinates are (0,0,0,1), as xemu initialises them:
-@@ -345,50 +511,49 @@ int nv2a_vsh_run(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out)
+@@ -345,50 +515,49 @@ int nv2a_vsh_run(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out)
      outregs[9][3] = outregs[10][3] = outregs[11][3] = outregs[12][3] = 1.0f;
  
      for (s = s_start_slot; s < NV2A_VSH_SLOTS; s++) {
@@ -5599,7 +5614,7 @@ index 0000000..d975b79
 +    }
 +}
 diff --git a/src/video/fb_present.c b/src/video/fb_present.c
-index 08bae4b..fe091f1 100644
+index 08bae4b..1fd4dc9 100644
 --- a/src/video/fb_present.c
 +++ b/src/video/fb_present.c
 @@ -15,12 +15,15 @@
@@ -5929,7 +5944,7 @@ index 08bae4b..fe091f1 100644
  static DWORD WINAPI fb_thread(LPVOID unused)
  {
      HWND hwnd;
-@@ -274,13 +501,40 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -274,13 +501,44 @@ static DWORD WINAPI fb_thread(LPVOID unused)
          wc.lpszClassName = "XboxRecompFramebuffer";
          RegisterClassA(&wc);
      }
@@ -5960,7 +5975,11 @@ index 08bae4b..fe091f1 100644
 +        }
 +        for (;; scale -= 0.25) {
 +            r.left = 0; r.top = 0;
-+            r.right = (LONG)((double)s_fb_width * (scale > 1.0 ? scale : 1.0) + 0.5);
++            {   /* RECOMP_WIDESCREEN: the window is 16:9 (the renderer's frame is) */
++                const char *ws = getenv("RECOMP_WIDESCREEN");
++                double aspect_x = (ws && *ws && *ws != '0') ? 4.0 / 3.0 : 1.0;
++                r.right = (LONG)((double)s_fb_width * aspect_x * (scale > 1.0 ? scale : 1.0) + 0.5);
++            }
 +            r.bottom = (LONG)((double)s_fb_height * (scale > 1.0 ? scale : 1.0) + 0.5);
 +            AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
 +            if (scale <= 1.0 || (r.right - r.left <= work.right - work.left
@@ -5977,7 +5996,7 @@ index 08bae4b..fe091f1 100644
      if (!hwnd) {
          InterlockedExchange(&s_fb_running, 0);
          return 0;
-@@ -299,6 +553,8 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -299,6 +557,8 @@ static DWORD WINAPI fb_thread(LPVOID unused)
  
      fprintf(stderr, "  [FBWIN] framebuffer window open (%ux%u)\n",
              s_fb_width, s_fb_height);
@@ -5986,7 +6005,7 @@ index 08bae4b..fe091f1 100644
  
      while (InterlockedCompareExchange(&s_fb_running, 1, 1)) {
          MSG msg;
-@@ -314,18 +570,39 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -314,18 +574,39 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              if (s_present[idx])
                  memcpy(s_rgb, s_present[idx],
                         (size_t)s_fb_width * s_fb_height * 4);
@@ -6032,7 +6051,7 @@ index 08bae4b..fe091f1 100644
          }
          {
              /* One dump a few seconds in, so the title has had time to render
-@@ -365,9 +642,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -365,9 +646,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
                  t0 = now; f0 = f;
              }
          }
@@ -6046,7 +6065,7 @@ index 08bae4b..fe091f1 100644
      ReleaseDC(hwnd, hdc);
      DestroyWindow(hwnd);
      free(s_rgb);
-@@ -390,11 +670,4 @@ void xbox_FramebufferWindowStart(void)
+@@ -390,11 +674,4 @@ void xbox_FramebufferWindowStart(void)
          InterlockedExchange(&s_fb_running, 0);
  }
  

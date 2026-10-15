@@ -20,6 +20,7 @@ layout(push_constant) uniform PC {
     vec2 fog_param;
     float point_size;   /* pixels (SET_POINT_SIZE / 8) */
     float point_params; /* unused here: no oPts on the CPU path */
+    layout(offset = 48) float squeeze2d;   /* widescreen: x of 2D vertices (w == 1) times this */
 } pc;
 
 layout(location = 0) out vec4 v_d0;
@@ -55,6 +56,11 @@ void main()
 {
     float w = in_pos.w;
     vec2 ndc = in_pos.xy * pc.inv_size * 2.0 - 1.0;
+    /* 2D (screen space, w == 1): keep 4:3 proportions around the centre --
+     * except vertices on the screen's left/right edge (full-screen quads:
+     * fades, colour/blur passes), which stay at the edges of the 16:9 frame. */
+    if (w == 1.0 && abs(ndc.x) < 0.999)
+        ndc.x *= pc.squeeze2d;
     gl_Position = vec4(ndc * w, in_pos.z * pc.inv_zmax * w, w);
     /* The NV2A clamps the vertex colours to 0..1 before they are
      * interpolated (xemu does the same): lighting that adds up past 1 must

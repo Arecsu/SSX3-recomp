@@ -676,6 +676,26 @@ static int be_draw_vsh(const Nv2aTarget *t, uint32_t prim, const float *in, uint
             if (no_shadow && samples_rt(&st))
                 return 1;
         }
+        {
+            /* RECOMP_DUMP_CONSTS=1: each distinct program's constants, once
+             * (finding the camera projection for the widescreen work). */
+            static int on = -1, nseen;
+            static uint32_t seen[64];
+            int i;
+            if (on < 0) on = getenv("RECOMP_DUMP_CONSTS") != NULL;
+            if (on) {
+                for (i = 0; i < nseen && seen[i] != p->hash; i++)
+                    ;
+                if (i == nseen && nseen < 64) {
+                    seen[nseen++] = p->hash;
+                    fprintf(stderr, "[CONSTS] program %08X (%u insns) prim %u n %u\n", p->hash, p->nins, prim, n);
+                    for (i = 0; i < 192; i++)
+                        if (p->consts[i][0] || p->consts[i][1] || p->consts[i][2] || p->consts[i][3])
+                            fprintf(stderr, "[CONSTS]   c[%d] %g %g %g %g\n", i, p->consts[i][0],
+                                    p->consts[i][1], p->consts[i][2], p->consts[i][3]);
+                }
+            }
+        }
         t2 = s_stats ? now_ms() : 0;
         if (!vkr_draw_vsh(s_vk, in, n, p->nin, &p->ins[0][0], p->nins, p->hash, p->consts,
                           idx, k, &st))
