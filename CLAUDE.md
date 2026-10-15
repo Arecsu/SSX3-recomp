@@ -750,9 +750,14 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
     SSX 3's ramp is a mild contrast S-curve (64->52, 128->125, 192->198):
     darker shadows, closer to console captures of the character screen.
     The user's console captures (TV video) still show riders with stronger
-    directional shading and a more saturated picture; part of that is the
-    capture. Next if it matters: compare against an xemu frame (lossless)
-    and check the vertex-program lighting path (nv2a_vsh_interp.c).
+    directional shading and a more saturated picture.
+  * Character lighting (2026-10-15, compared with xemu 0.8.136 on the Select
+    Character screen, Griff): riders were washed out because the vertex
+    colour outputs oD0/oD1 were interpolated unclamped -- SSX 3's lighting
+    programs push them well above 1. The NV2A (and xemu) clamp them to 0..1
+    per vertex. Now clamped in nv2a_vsh_interp.c (CPU/software path),
+    xbox.vert and xbox_vsh.vert. xemu window capture without touching it:
+    tools\xemu_cap.ps1 (PrintWindow) -> shots\xemu\cap.png.
 - FRAME PACING (2026-10-14): SSX 3 paces frames with a self-correcting
   one-shot XAPI timer (sub_001AE480 sets it up, callback sub_001AE020 ->
   sub_001AE030: period 1000/60 ms, re-armed from KeTickCount, wakes the main

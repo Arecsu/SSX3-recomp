@@ -221,6 +221,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-15 — Character lighting matches xemu: vertex colours (oD0/oD1) are now clamped to 0..1 before interpolation, as on the NV2A. Lit riders were washed out (Griff's shirt pale cyan instead of deep blue).
 - 2026-10-15 — 2-hour soak: 120/120 race/quit cycles in one session, no crash or hang, 58.6-59.4 FPS throughout.
 - 2026-10-15 — Long-session slowdown fixed (60 -> ~20 FPS after ~5 min): two threads blocked while holding the guest CPU (unimpl-instruction warning, APU waiting for audio-queue room under its lock). 20-cycle soak at 59-60 FPS throughout.
 - 2026-10-15 — Race/quit cycles: tools/cycle_test.ps1, 12/12. Fence-wake rescue at 20 ms (was 200).

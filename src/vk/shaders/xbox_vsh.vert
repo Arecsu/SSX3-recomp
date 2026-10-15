@@ -185,7 +185,8 @@ void main()
     float w = pos.w;
     vec2 ndc = pos.xy * pc.inv_size * 2.0 - 1.0;
     gl_Position = vec4(ndc * w, pos.z * pc.inv_zmax * w, w);
-    v_d0 = O[3]; v_d1 = O[4];
+    /* Vertex colours are clamped to 0..1 before interpolation (NV2A, xemu). */
+    v_d0 = clamp(O[3], 0.0, 1.0); v_d1 = clamp(O[4], 0.0, 1.0);
     v_fog = vec4(fog_factor(O[5].x), 0.0, 0.0, 0.0);
     v_tex0 = O[9]; v_tex1 = O[10]; v_tex2 = O[11]; v_tex3 = O[12];
 }

@@ -54,7 +54,10 @@ void main()
     float w = in_pos.w;
     vec2 ndc = in_pos.xy * pc.inv_size * 2.0 - 1.0;
     gl_Position = vec4(ndc * w, in_pos.z * pc.inv_zmax * w, w);
-    v_d0 = in_d0; v_d1 = in_d1;
+    /* The NV2A clamps the vertex colours to 0..1 before they are
+     * interpolated (xemu does the same): lighting that adds up past 1 must
+     * not reach the combiners -- it washed every lit model out. */
+    v_d0 = clamp(in_d0, 0.0, 1.0); v_d1 = clamp(in_d1, 0.0, 1.0);
     v_fog = vec4(fog_factor(in_fog.x), 0.0, 0.0, 0.0);
     v_tex0 = in_tex0; v_tex1 = in_tex1; v_tex2 = in_tex2; v_tex3 = in_tex3;
 }

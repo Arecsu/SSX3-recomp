@@ -3918,7 +3918,7 @@ index 65bbedb..4bc1add 100644
      uint32_t words, jumps = 0, unknown = 0;
  
 diff --git a/src/kernel/nv2a_vsh_interp.c b/src/kernel/nv2a_vsh_interp.c
-index 7fae74c..3f39e8d 100644
+index 7fae74c..27937f5 100644
 --- a/src/kernel/nv2a_vsh_interp.c
 +++ b/src/kernel/nv2a_vsh_interp.c
 @@ -39,6 +39,7 @@ static float    s_const[NV2A_VSH_CONSTANTS][4];
@@ -4262,7 +4262,7 @@ index 7fae74c..3f39e8d 100644
      memset(outregs, 0, sizeof outregs);
      outregs[3][3] = outregs[4][3] = 1.0f;      /* colours default opaque */
      /* Unwritten texture coordinates are (0,0,0,1), as xemu initialises them:
-@@ -345,48 +511,42 @@ int nv2a_vsh_run(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out)
+@@ -345,50 +511,49 @@ int nv2a_vsh_run(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out)
      outregs[9][3] = outregs[10][3] = outregs[11][3] = outregs[12][3] = 1.0f;
  
      for (s = s_start_slot; s < NV2A_VSH_SLOTS; s++) {
@@ -4331,11 +4331,20 @@ index 7fae74c..3f39e8d 100644
          }
 -        if (field(ins, 3, 0, 1)) {
 -            memcpy(out->pos, opos.v, sizeof out->pos);
+-            memcpy(out->d0, outregs[3], sizeof out->d0);
+-            memcpy(out->d1, outregs[4], sizeof out->d1);
 +        if (d->final) {
 +            memcpy(out->pos, reg[12].v, sizeof out->pos);
-             memcpy(out->d0, outregs[3], sizeof out->d0);
-             memcpy(out->d1, outregs[4], sizeof out->d1);
++            /* NV2A clamps the colour outputs to 0..1 before they are
++             * interpolated (as xemu does); lit riders exceed 1 a lot. */
++            for (int k = 0; k < 4; k++) {
++                float c0 = outregs[3][k], c1 = outregs[4][k];
++                out->d0[k] = c0 > 1.0f ? 1.0f : (c0 >= 0.0f ? c0 : 0.0f);
++                out->d1[k] = c1 > 1.0f ? 1.0f : (c1 >= 0.0f ? c1 : 0.0f);
++            }
              memcpy(out->fog, outregs[5], sizeof out->fog);
+             memcpy(out->tex[0], outregs[9], sizeof out->tex[0]);
+             memcpy(out->tex[1], outregs[10], sizeof out->tex[1]);
 diff --git a/src/kernel/nv2a_vsh_interp.h b/src/kernel/nv2a_vsh_interp.h
 index 8acb0af..aa6c0e8 100644
 --- a/src/kernel/nv2a_vsh_interp.h
