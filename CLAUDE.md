@@ -767,6 +767,24 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   (intervals, how late the timer fired, fire->callback), RECOMP_TIMER_STATS=1
   (kernel timer lateness), RECOMP_VKR_SKIP_RT=1 (drop shadow-map draws:
   only ~2 FPS, so GPU shadow maps are not the 60 FPS lever).
+- LONG-SESSION SLOWDOWN (fixed 2026-10-15): in one session race FPS fell
+  from 60 to ~20 after ~5 minutes (cycle_test soak). Found by sampling the
+  guest-CPU holder from a host thread (RECOMP_GUESTCPU_STATS=1, in the
+  rescue watchdog: longest hold per second, and a [HOLDSTACK] native stack
+  of any hold over 25 ms, ssx3_StackOfThread in thread_dump.c). Two holders
+  blocked while holding the guest CPU: (1) recomp_unimpl -- the GPU ISR's
+  `in al, dx` (0x0023B50D) runs on every interrupt and each call read the
+  environment / printed (CRT locks; once 2.3 s); now the setting is read
+  once and each address reported once; (2) the APU frame thread slept for
+  XAudio2 queue room while holding the APU locks (my earlier crackle fix),
+  so the guest's DirectSound MMIO writes (fe_method -> voice_lock) waited
+  with the guest CPU held -- the queue drifts full over minutes; the pacing
+  now happens in throttle() with the lock released. Result: 20-cycle soak at
+  59-60 FPS throughout, audio 3 underruns in 20 min. Also from the hunt: the
+  Vulkan texture cache is hash-indexed with age-based eviction (was a
+  linear search over every texture ever made), the process opts out of
+  Windows power/timer-resolution throttling, and the window thread sleeps
+  while its swap chain is occluded.
 - Untranslated instructions reached (no-ops): `wbinvd`, `out`/`in`, `ldmxcsr`.
 - Upstream candidates: the toolkit fixes in `patches/`; `tools.split`
   ignoring applied names (docs/DECOMP.md says otherwise); template

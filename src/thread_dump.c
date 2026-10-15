@@ -245,6 +245,39 @@ static int td_walk(CONTEXT *ctx, DWORD64 *out)
     return n;
 }
 
+/* One thread's native stack, now, on one line ([HOLDSTACK] <why> <tid>:
+ * rebased return addresses; tools/symbolize.py or the map names them) --
+ * for a caller that has spotted a thread misbehaving (the guest-CPU hold
+ * sampler in ssx3_overrides.c). */
+void ssx3_StackOfThread(unsigned long tid, const char *why)
+{
+    DWORD64 frames[TD_MAX_FRAMES];
+    CONTEXT ctx;
+    int n = 0, k;
+    HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, (DWORD)tid);
+    if (!h)
+        return;
+    if (!s_exe_base) {
+        HMODULE m = GetModuleHandleA(NULL);
+        IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)((BYTE *)m + ((IMAGE_DOS_HEADER *)m)->e_lfanew);
+        s_exe_base = (DWORD64)(uintptr_t)m;
+        s_exe_end = s_exe_base + nt->OptionalHeader.SizeOfImage;
+    }
+    if (SuspendThread(h) != (DWORD)-1) {
+        ZeroMemory(&ctx, sizeof ctx);
+        ctx.ContextFlags = CONTEXT_FULL;
+        if (GetThreadContext(h, &ctx))
+            n = td_walk(&ctx, frames);
+        ResumeThread(h);
+    }
+    CloseHandle(h);
+    fprintf(stderr, "[HOLDSTACK] %s %lu:", why, tid);
+    for (k = 0; k < n; k++)
+        fprintf(stderr, " 0x%llX", (unsigned long long)td_rebase(frames[k]));
+    fprintf(stderr, "\n");
+    fflush(stderr);
+}
+
 static char s_mem_spec[512];  /* from the trigger file, if it had content */
 
 static unsigned long g_cpu_tid, g_cpu_ms;

@@ -5,9 +5,11 @@
 # (up, A), wait for the frontend. Reports per cycle, stops on a crash or a
 # cycle that does not get back.
 #   powershell -File tools\cycle_test.ps1 [-Cycles 5] [-RaceSec 8] [-Env @{...}] [-Dir instance]
-#     [-Rider N -Mode N -Event N]
+#     [-Rider N -Mode N -Event N] [-ProfileEnd]
+# -ProfileEnd: after the last cycle, into one more race and take a sampling
+# profile of every thread there (tools/profile_tally.py reads it).
 param([int]$Cycles = 5, [int]$RaceSec = 8, [hashtable]$Env = @{}, [string]$Dir = "",
-      [int]$Rider = 0, [int]$Mode = 0, [int]$Event = 0)
+      [int]$Rider = 0, [int]$Mode = 0, [int]$Event = 0, [switch]$ProfileEnd)
 
 . (Join-Path $PSScriptRoot "game_state.ps1")
 $root = if ($Dir) { $Dir } else { Split-Path -Parent $PSScriptRoot }
@@ -84,6 +86,15 @@ for ($c = 1; $c -le $Cycles; $c++) {
     if (-not $back) { $result = "FAIL cycle ${c}: not back in the frontend"; break }
     "cycle ${c}: OK in {0:N0} s, bad calls so far $(BadCalls)" -f ((Get-Date) - $t0).TotalSeconds
     Start-Sleep -Seconds 3
+}
+if ($result -eq "OK" -and $ProfileEnd) {
+    $out = & $nav -TimeoutSec 240 -Dir $Dir -Rider $Rider -Mode $Mode -Event $Event 2>&1 | Select-Object -Last 1
+    Start-Sleep -Seconds 4; Press "start:300"; Start-Sleep -Seconds 10
+    & $live dump -Mem profile -Dir $Dir | Out-Null
+    Start-Sleep -Seconds 20
+    & $live dump -Dir $Dir | Out-Null       # and the threads ([GUESTCPU]: who holds it)
+    Start-Sleep -Seconds 15
+    "profile and thread dump taken in the race after cycle $Cycles"
 }
 if ($result -ne "OK") {
     & $live snap -Out "cycle_fail.png" -Dir $Dir | Out-Null

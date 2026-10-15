@@ -16,6 +16,7 @@
 struct VkrTex {
     uint64_t key;
     uint32_t w, h;
+    uint32_t last_use;              /* flip serial of the last lookup/update */
     VkImage img;
     VkDeviceMemory mem;
     VkImageView view;
@@ -62,6 +63,14 @@ struct VkrContext {
     VkrTex **texs;                  /* every texture, for lookup and teardown */
     uint32_t ntexs, captexs;
     uint64_t tex_bytes;
+    /* Lookup by key: open addressing over indices into texs (-1 empty),
+     * a power of two at least twice ntexs. The linear search it replaces
+     * scanned every texture ever made, for every stage of every draw --
+     * after ~6 minutes of play the cache held tens of thousands and the
+     * race fell from 60 to ~23 FPS. */
+    int32_t *hidx;
+    uint32_t hcap;
+    uint32_t flip_serial;
 
     /* target */
     uint32_t w, h;
@@ -510,6 +519,66 @@ static void tex_free_all(VkrContext *c)
     }
     free(c->texs);
     c->texs = NULL; c->ntexs = c->captexs = 0; c->tex_bytes = 0; c->white = NULL;
+    free(c->hidx);
+    c->hidx = NULL; c->hcap = 0;
+}
+
+static uint32_t tex_slot(uint64_t key, uint32_t cap)
+{
+    key ^= key >> 33; key *= 0xff51afd7ed558ccdull; key ^= key >> 33;
+    return (uint32_t)key & (cap - 1);
+}
+
+/* (Re)build the key index for the current texs. */
+static int tex_rehash(VkrContext *c)
+{
+    uint32_t cap = 1024, i;
+    while (cap < c->ntexs * 2 + 2)
+        cap <<= 1;
+    free(c->hidx);
+    c->hidx = (int32_t *)malloc(cap * sizeof *c->hidx);
+    if (!c->hidx) { c->hcap = 0; return 0; }
+    c->hcap = cap;
+    for (i = 0; i < cap; i++)
+        c->hidx[i] = -1;
+    for (i = 0; i < c->ntexs; i++) {
+        uint32_t h = tex_slot(c->texs[i]->key, cap);
+        while (c->hidx[h] >= 0)
+            h = (h + 1) & (cap - 1);
+        c->hidx[h] = (int32_t)i;
+    }
+    return 1;
+}
+
+static void tex_free_one(VkrContext *c, VkrTex *t)
+{
+    vkDestroyImageView(c->dev, t->view, NULL);
+    vkDestroyImage(c->dev, t->img, NULL);
+    vkFreeMemory(c->dev, t->mem, NULL);
+    c->tex_bytes -= (uint64_t)t->w * t->h * 4;
+    free(t);
+}
+
+/* Textures not used for `age` flips: certainly not in flight (two frames
+ * at most), and very likely dead -- a texture whose content changes every
+ * frame gets a new key each time. Freed, the index rebuilt, and the
+ * generation bumped so the backend drops the pointers it keeps. */
+static void tex_evict_old(VkrContext *c, uint32_t age)
+{
+    uint32_t i, k = 0, freed = 0;
+    for (i = 0; i < c->ntexs; i++) {
+        VkrTex *t = c->texs[i];
+        if (t != c->white && c->flip_serial - t->last_use > age) {
+            tex_free_one(c, t);
+            freed++;
+        } else
+            c->texs[k++] = t;
+    }
+    if (!freed)
+        return;
+    c->ntexs = k;
+    c->tex_gen++;
+    tex_rehash(c);
 }
 
 void vkr_destroy(VkrContext *c)
@@ -687,10 +756,16 @@ void vkr_clear_depth(VkrContext *c, float depth)
 
 VkrTex *vkr_tex_find(VkrContext *c, uint64_t key)
 {
-    uint32_t i;
-    for (i = 0; i < c->ntexs; i++)
-        if (c->texs[i]->key == key)
-            return c->texs[i];
+    uint32_t h;
+    if (!c->hcap)
+        return NULL;
+    for (h = tex_slot(key, c->hcap); c->hidx[h] >= 0; h = (h + 1) & (c->hcap - 1)) {
+        VkrTex *t = c->texs[c->hidx[h]];
+        if (t->key == key) {
+            t->last_use = c->flip_serial;
+            return t;
+        }
+    }
     return NULL;
 }
 
@@ -719,7 +794,11 @@ int vkr_tex_update(VkrContext *c, VkrTex *t, uint64_t key, const uint32_t *pixel
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-    t->key = key;
+    t->last_use = c->flip_serial;
+    if (t->key != key) {
+        t->key = key;
+        tex_rehash(c);                  /* the index is by key */
+    }
     return 1;
 }
 
@@ -778,8 +857,17 @@ VkrTex *vkr_tex_create(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
         c->captexs = c->captexs ? c->captexs * 2 : 256;
         c->texs = (VkrTex **)realloc(c->texs, c->captexs * sizeof *c->texs);
     }
+    t->last_use = c->flip_serial;
     c->texs[c->ntexs++] = t;
     c->tex_bytes += bytes;
+    if (c->ntexs * 2 + 2 > c->hcap)
+        tex_rehash(c);
+    else {
+        uint32_t h = tex_slot(key, c->hcap);
+        while (c->hidx[h] >= 0)
+            h = (h + 1) & (c->hcap - 1);
+        c->hidx[h] = (int32_t)(c->ntexs - 1);
+    }
     return t;
 }
 
@@ -1006,6 +1094,8 @@ int vkr_flip_submit(VkrContext *c)
     use_frame(c, (slot + 1) % VKR_FRAMES);
     c->buf_used = 0;
     c->upload_serial++;
+    if (++c->flip_serial % 120 == 0)     /* every ~2 s: textures unused for 5 s */
+        tex_evict_old(c, 300);
     if (c->tex_bytes > (768ull << 20)) {  /* drop the cache once nothing is in flight */
         vkDeviceWaitIdle(c->dev);
         tex_free_all(c);

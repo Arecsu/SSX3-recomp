@@ -200,17 +200,31 @@ void recomp_icall_not_code_log(uint32_t va)
 
 void recomp_unimpl(const char *text, uint32_t va)
 {
-    static int printed;
-    const char *trap = getenv("RECOMP_UNIMPL_TRAP");
-    int stop = trap && *trap && *trap != '0';
+    /* Called on every execution of the instruction -- the GPU interrupt
+     * handler runs an `in al, dx` (0x0023B50D) on every interrupt, with the
+     * guest CPU held. Reading the environment and printing each time put the
+     * handler behind the CRT's locks (once for 2.3 s) and made long sessions
+     * crawl. So: the setting read once, each address reported once. */
+    static int stop = -1, printed;
+    static uint32_t seen[64];
+    int i;
 
-    if (printed < 50 || stop) {
-        printed++;
-        fprintf(stderr,
-                "[UNIMPL] untranslated instruction REACHED: `%s` at 0x%08X"
-                " (a no-op; set RECOMP_UNIMPL_TRAP=1 to stop here)\n",
-                text, va);
-        fflush(stderr);
+    if (stop < 0) {
+        const char *trap = getenv("RECOMP_UNIMPL_TRAP");
+        stop = trap && *trap && *trap != '0';
     }
+    if (!stop) {
+        for (i = 0; i < printed; i++)
+            if (seen[i] == va)
+                return;
+        if (printed >= 64)
+            return;
+        seen[printed++] = va;
+    }
+    fprintf(stderr,
+            "[UNIMPL] untranslated instruction REACHED: `%s` at 0x%08X"
+            " (a no-op; set RECOMP_UNIMPL_TRAP=1 to stop here)\n",
+            text, va);
+    fflush(stderr);
     if (stop) abort();
 }

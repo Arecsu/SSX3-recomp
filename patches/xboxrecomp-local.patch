@@ -1,5 +1,5 @@
 diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
-index 258048c..3328f86 100644
+index 258048c..35fafd2 100644
 --- a/src/apu/apu_core.c
 +++ b/src/apu/apu_core.c
 @@ -377,12 +377,72 @@ void mcpx_apu_monitor_finalize(MCPXAPUState *d)
@@ -83,7 +83,7 @@ index 258048c..3328f86 100644
          xa2_submit_samples((const int16_t *)xa2_tmp, buf_size);
          return;
      }
-@@ -483,10 +544,26 @@ static void throttle(MCPXAPUState *d)
+@@ -483,10 +544,32 @@ static void throttle(MCPXAPUState *d)
  
      int64_t now_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
  
@@ -108,10 +108,16 @@ index 258048c..3328f86 100644
 +        }
 +    }
 +#endif
++
++    /* The sound card's clock, not just the system's: with the output queue
++     * filling up (10+ of its 12 buffers) this side is ahead -- take one
++     * frame's time longer, waiting below with the lock released. */
++    if (xa2_is_active() && xa2_queued() >= 10)
++        d->next_frame_time_us += EP_FRAME_US;
  
      while (!d->pause_requested) {
          now_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
-@@ -530,7 +607,9 @@ static void se_frame(MCPXAPUState *d)
+@@ -530,7 +613,9 @@ static void se_frame(MCPXAPUState *d)
  
      mcpx_apu_vp_frame(d, mixbins);
      mcpx_apu_dsp_frame(d, mixbins);
@@ -121,7 +127,7 @@ index 258048c..3328f86 100644
  
      d->ep_frame_div++;
  
-@@ -544,6 +623,12 @@ static void se_frame(MCPXAPUState *d)
+@@ -544,6 +629,12 @@ static void se_frame(MCPXAPUState *d)
  static void *mcpx_apu_frame_thread(void *arg)
  {
      MCPXAPUState *d = MCPX_APU_DEVICE(arg);
@@ -134,7 +140,7 @@ index 258048c..3328f86 100644
      qemu_mutex_lock(&d->lock);
  
      while (!qatomic_read(&d->exiting)) {
-@@ -693,6 +778,14 @@ MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr)
+@@ -693,6 +784,14 @@ MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr)
          warn_reportf_err(local_err, "mcpx_apu_monitor_init failed: ");
      }
  
@@ -150,7 +156,7 @@ index 258048c..3328f86 100644
      qemu_thread_create(&d->apu_thread, "mcpx.apu_thread",
                         mcpx_apu_frame_thread, d, QEMU_THREAD_JOINABLE);
 diff --git a/src/apu/apu_xaudio2.c b/src/apu/apu_xaudio2.c
-index cd69e57..f423dcd 100644
+index cd69e57..33a8d6f 100644
 --- a/src/apu/apu_xaudio2.c
 +++ b/src/apu/apu_xaudio2.c
 @@ -25,7 +25,8 @@
@@ -172,7 +178,7 @@ index cd69e57..f423dcd 100644
  
  int xa2_init(void)
  {
-@@ -138,7 +141,50 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
+@@ -138,7 +141,44 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
      if (!g_xa2_initialized || !g_xa2_source) return 0;
  
      IXAudio2SourceVoice_GetState(g_xa2_source, &state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
@@ -205,26 +211,20 @@ index cd69e57..f423dcd 100644
 +     * delivers (8 VP frames of 32), which arrive in step with real time and
 +     * need the slack to ride out a frame thread that is a little late. */
 +    {
-+        int max_queued = num_samples <= 256 ? 12 : 3, waited = 0;
-+        /* A full queue means this side runs ahead of the sound card: the
++        /* A full queue means this side runs ahead of the sound card (the
 +         * frame thread is paced by the system clock, which drifts against
-+         * the card's. Dropping the buffer is an audible click (one every
-+         * few seconds in a race); waiting for room lets the card set the
-+         * pace, as the APU's own clock does on the console. Bounded, so a
-+         * stalled device still cannot hold the frame thread. */
-+        while ((int)state.BuffersQueued >= max_queued && num_samples <= 256 && waited < 20) {
-+            Sleep(1);
-+            waited++;
-+            IXAudio2SourceVoice_GetState(g_xa2_source, &state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
-+        }
-+        if (waited)
-+            g_xa2_waits++;
++         * the card's). The pacing is done by the frame thread before it
++         * mixes (apu_core.c throttle, lock released); waiting here held the
++         * APU's locks, and the guest's DirectSound writes queued behind them
++         * with the guest CPU held -- long sessions crawled at ~20 FPS.
++         * Dropping is the last resort. */
++        int max_queued = num_samples <= 256 ? 12 : 3;
 +        if ((int)state.BuffersQueued >= max_queued) { g_xa2_drops++; return 0; }
 +    }
  
      idx = g_xa2_next_buf;
      copy_samples = (num_samples > XA2_BUF_SAMPLES) ? XA2_BUF_SAMPLES : num_samples;
-@@ -156,6 +202,22 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
+@@ -156,6 +196,32 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
      return 1;
  }
  
@@ -244,24 +244,36 @@ index cd69e57..f423dcd 100644
 +    g_xa2_min_queued = 1 << 30;
 +}
 +
++/* Buffers queued for the device now (0 without XAudio2). */
++int xa2_queued(void)
++{
++    XAUDIO2_VOICE_STATE state;
++    if (!g_xa2_initialized || !g_xa2_source)
++        return 0;
++    IXAudio2SourceVoice_GetState(g_xa2_source, &state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
++    return (int)state.BuffersQueued;
++}
++
  int xa2_get_buffer_size(void)
  {
      return XA2_BUF_SAMPLES;
-@@ -168,5 +230,6 @@ void xa2_shutdown(void)                               {}
+@@ -168,5 +234,7 @@ void xa2_shutdown(void)                               {}
  int  xa2_is_active(void)                              { return 0; }
  int  xa2_submit_samples(const int16_t *s, int n)      { (void)s; (void)n; return 0; }
  int  xa2_get_buffer_size(void)                        { return 0; }
++int  xa2_queued(void)                                 { return 0; }
 +void xa2_take_stats(int *u, int *d, int *m, int *w, int *r) { *u = *d = *w = *r = 0; *m = -1; }
  
  #endif /* _WIN32 */
 diff --git a/src/apu/apu_xaudio2.h b/src/apu/apu_xaudio2.h
-index 83e652d..e4ec703 100644
+index 83e652d..aa540a3 100644
 --- a/src/apu/apu_xaudio2.h
 +++ b/src/apu/apu_xaudio2.h
-@@ -20,5 +20,6 @@ int xa2_submit_samples(const int16_t *samples, int num_samples);
+@@ -20,5 +20,7 @@ int xa2_submit_samples(const int16_t *samples, int num_samples);
  
  /* Get the preferred buffer size in samples. */
  int xa2_get_buffer_size(void);
++int xa2_queued(void);   /* buffers queued for the device */
 +void xa2_take_stats(int *underruns, int *drops, int *min_queued, int *waits, int *refills);
  
  #endif /* APU_XAUDIO2_H */
@@ -4326,7 +4338,7 @@ index 8acb0af..aa6c0e8 100644
  /* Direct access, for the self-test. */
  void nv2a_vsh_set_constant(uint32_t index, const float v[4]);
 diff --git a/src/kernel/xbox_memory_layout.c b/src/kernel/xbox_memory_layout.c
-index 72d5131..4939d26 100644
+index 72d5131..a4f23a5 100644
 --- a/src/kernel/xbox_memory_layout.c
 +++ b/src/kernel/xbox_memory_layout.c
 @@ -15,6 +15,10 @@
@@ -4429,7 +4441,7 @@ index 72d5131..4939d26 100644
      for (int i = 0; i < g_fence_mirror_count; i++) {
          uint32_t dev, get_ptr;
  
-@@ -873,6 +936,123 @@ static void framebuffer_probe_tick(void)
+@@ -873,6 +936,148 @@ static void framebuffer_probe_tick(void)
      fflush(stderr);
  }
  
@@ -4462,6 +4474,31 @@ index 72d5131..4939d26 100644
 +    }
 +    QueryPerformanceCounter(&now);
 +    return base + (uint32_t)((now.QuadPart - t0.QuadPart) * 1000 / f.QuadPart);
++}
++
++/* Windows 11 throttles a process whose window is not visible (minimised,
++ * covered, display off): it stops honouring timeBeginPeriod -- every 1 ms
++ * wait here becomes ~15.6 ms -- and may run its threads under EcoQoS on
++ * efficiency cores. Unattended, the game fell from 60 to 6-23 FPS some
++ * minutes in (when the display slept). A game opts out. */
++static void opt_out_of_power_throttling(void)
++{
++#if defined(_WIN32)
++    typedef struct { ULONG Version, ControlMask, StateMask; } PowerThrottlingState;
++    typedef BOOL (WINAPI *SetProcInfo)(HANDLE, int, LPVOID, DWORD);
++    SetProcInfo f = (SetProcInfo)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"),
++                                                        "SetProcessInformation");
++    if (f) {
++        PowerThrottlingState st;
++        st.Version = 1;
++        st.ControlMask = 0x1 | 0x4;   /* EXECUTION_SPEED | IGNORE_TIMER_RESOLUTION */
++        st.StateMask = 0;             /* ...both off: full speed, timers honoured */
++        if (!f(GetCurrentProcess(), 4 /* ProcessPowerThrottling */, &st, sizeof st)) {
++            st.ControlMask = 0x1;     /* older Windows: no timer-resolution flag */
++            f(GetCurrentProcess(), 4, &st, sizeof st);
++        }
++    }
++#endif
 +}
 +
 +/* KeTickCount, every millisecond. It used to be written only by
@@ -4553,7 +4590,7 @@ index 72d5131..4939d26 100644
  static DWORD WINAPI nv2a_ack_thread(LPVOID param)
  {
      volatile uint32_t *regs = (volatile uint32_t *)param;
-@@ -931,6 +1111,49 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+@@ -931,6 +1136,49 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
              static uint32_t last_put;
              DWORD now_ms = GetTickCount();
              uint32_t put = *(volatile uint32_t *)((char *)regs + NV2A_USER_DMA_PUT);
@@ -4603,7 +4640,7 @@ index 72d5131..4939d26 100644
              if (put != last_put || (now_ms - last_put_ms) > 2000) {
                  /* Survey the segment the title just submitted, once. */
                  {
-@@ -1034,8 +1257,10 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+@@ -1034,8 +1282,10 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
              static uint32_t last_start = 0xFFFFFFFFu;
              uint32_t start = *(volatile uint32_t *)((char *)regs + 0x600800);
              if (start != last_start) {
@@ -4615,7 +4652,7 @@ index 72d5131..4939d26 100644
                  fflush(stderr);
              }
          }
-@@ -1055,20 +1280,58 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
+@@ -1055,20 +1305,59 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
           * hardware whether or not anyone is asleep. GetTickCount() shares the
           * millisecond unit, so the rate matches. */
          *(volatile uint32_t *)((uintptr_t)(XBOX_KERNEL_DATA_BASE + KDATA_TICK_COUNT)
@@ -4668,6 +4705,7 @@ index 72d5131..4939d26 100644
      g_nv2a_ack_stop = 0;
      g_nv2a_ack_thread = CreateThread(NULL, 0, nv2a_ack_thread,
                                       g_nv2a_memory, 0, NULL);
++    opt_out_of_power_throttling();
 +    CloseHandle(CreateThread(NULL, 0, tick_count_thread, NULL, 0, NULL));
 +    if (nv2a_async())
 +        CloseHandle(CreateThread(NULL, 0, nv2a_reg_ack_thread,
@@ -4675,7 +4713,7 @@ index 72d5131..4939d26 100644
      if (g_nv2a_ack_thread) {
          fprintf(stderr, "  NV2A busy-bit ack: %zu register(s) acknowledged\n",
                  sizeof(NV2A_ACK) / sizeof(NV2A_ACK[0]));
-@@ -1790,7 +2053,14 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+@@ -1790,7 +2079,14 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
           * this on Windows needs placeholder reservations (VirtualAlloc2). */
  #ifndef _WIN32
          g_span_size = g_memory_size * (size_t)(1 + XBOX_NUM_MIRRORS);
@@ -4874,7 +4912,7 @@ index 0000000..d975b79
 +    }
 +}
 diff --git a/src/video/fb_present.c b/src/video/fb_present.c
-index 08bae4b..d8a1f16 100644
+index 08bae4b..c04b24a 100644
 --- a/src/video/fb_present.c
 +++ b/src/video/fb_present.c
 @@ -15,12 +15,15 @@
@@ -5146,7 +5184,7 @@ index 08bae4b..d8a1f16 100644
  
      while (InterlockedCompareExchange(&s_fb_running, 1, 1)) {
          MSG msg;
-@@ -314,18 +501,22 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -314,18 +501,25 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              if (s_present[idx])
                  memcpy(s_rgb, s_present[idx],
                         (size_t)s_fb_width * s_fb_height * 4);
@@ -5154,8 +5192,10 @@ index 08bae4b..d8a1f16 100644
 -                          0, 0, (int)s_fb_width, (int)s_fb_height,
 -                          s_rgb, &bi, DIB_RGB_COLORS, SRCCOPY);
 +            xbox_FramebufferApplyGamma(s_rgb, (size_t)s_fb_width * s_fb_height);
-+            if (gpu_present_active())
-+                gpu_present_frame(s_rgb);      /* vsync-paced */
++            if (gpu_present_active()) {
++                if (!gpu_present_frame(s_rgb))  /* vsync-paced, unless occluded */
++                    Sleep(16);
++            }
 +            else
 +                gdi_blit(hwnd, hdc, &bi);
          } else if (s_fb_va && s_fb_pitch && s_rgb) {
@@ -5168,14 +5208,15 @@ index 08bae4b..d8a1f16 100644
 -                          0, 0, (int)s_fb_width, (int)s_fb_height,
 -                          s_rgb, &bi, DIB_RGB_COLORS, SRCCOPY);
 +            xbox_FramebufferApplyGamma(s_rgb, (size_t)s_fb_width * s_fb_height);
-+            if (gpu_present_active())
-+                gpu_present_frame(s_rgb);
-+            else
++            if (gpu_present_active()) {
++                if (!gpu_present_frame(s_rgb))
++                    Sleep(16);
++            } else
 +                gdi_blit(hwnd, hdc, &bi);
          }
          {
              /* One dump a few seconds in, so the title has had time to render
-@@ -365,9 +556,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -365,9 +559,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
                  t0 = now; f0 = f;
              }
          }
@@ -5189,7 +5230,7 @@ index 08bae4b..d8a1f16 100644
      ReleaseDC(hwnd, hdc);
      DestroyWindow(hwnd);
      free(s_rgb);
-@@ -390,11 +584,4 @@ void xbox_FramebufferWindowStart(void)
+@@ -390,11 +587,4 @@ void xbox_FramebufferWindowStart(void)
          InterlockedExchange(&s_fb_running, 0);
  }
  
@@ -5558,10 +5599,10 @@ index 0000000..2bb7e03
 +#endif /* !_WIN32 */
 diff --git a/src/video/gpu_present.c b/src/video/gpu_present.c
 new file mode 100644
-index 0000000..8254749
+index 0000000..a29ff7a
 --- /dev/null
 +++ b/src/video/gpu_present.c
-@@ -0,0 +1,231 @@
+@@ -0,0 +1,234 @@
 +/*
 + * D3D11 presentation for the framebuffer window (ROADMAP Phase 2.1).
 + *
@@ -5732,7 +5773,10 @@ index 0000000..8254749
 +    return 1;
 +}
 +
-+void gpu_present_frame(const uint32_t *pixels)
++/* Returns 0 when nothing was shown: the window is occluded or the display
++ * is off, and Present does not wait for vsync then -- the caller must pace
++ * itself instead of spinning. */
++int gpu_present_frame(const uint32_t *pixels)
 +{
 +    static const float black[4] = {0, 0, 0, 1};
 +    D3D11_VIEWPORT vp;
@@ -5740,7 +5784,7 @@ index 0000000..8254749
 +    float sx, sy;
 +
 +    if (!s_rtv || !pixels)
-+        return;
++        return 0;
 +    client_size(&cw, &ch);
 +    if (cw != s_bw || ch != s_bh) {
 +        /* The window was resized (or went fullscreen): a back buffer its size. */
@@ -5749,7 +5793,7 @@ index 0000000..8254749
 +        s_rtv = NULL;
 +        if (FAILED(IDXGISwapChain_ResizeBuffers(s_chain, 0, cw, ch, DXGI_FORMAT_UNKNOWN, 0))
 +            || !make_rtv())
-+            return;
++            return 0;
 +        s_bw = cw; s_bh = ch;
 +    }
 +    ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)s_frame, 0, NULL,
@@ -5772,7 +5816,7 @@ index 0000000..8254749
 +    ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 1, &s_srv);
 +    ID3D11DeviceContext_PSSetSamplers(s_ctx, 0, 1, &s_samp);
 +    ID3D11DeviceContext_Draw(s_ctx, 3, 0);
-+    IDXGISwapChain_Present(s_chain, (UINT)s_vsync, 0);
++    return IDXGISwapChain_Present(s_chain, (UINT)s_vsync, 0) == S_OK;
 +}
 +
 +void gpu_present_shutdown(void)
@@ -5795,7 +5839,7 @@ index 0000000..8254749
 +#endif
 diff --git a/src/video/gpu_present.h b/src/video/gpu_present.h
 new file mode 100644
-index 0000000..cb0810f
+index 0000000..2fdd6a0
 --- /dev/null
 +++ b/src/video/gpu_present.h
 @@ -0,0 +1,14 @@
@@ -5808,7 +5852,7 @@ index 0000000..cb0810f
 +
 +int  gpu_present_enabled(void);                 /* RECOMP_D3D_PRESENT=1 */
 +int  gpu_present_init(HWND hwnd, uint32_t width, uint32_t height);
-+void gpu_present_frame(const uint32_t *pixels); /* width*height B8G8R8A8 */
++int  gpu_present_frame(const uint32_t *pixels); /* width*height B8G8R8A8; 0 = not shown (occluded) */
 +int  gpu_present_active(void);
 +void gpu_present_shutdown(void);
 +#endif

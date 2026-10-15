@@ -1170,6 +1170,45 @@ static DWORD WINAPI block_rescue_thread(LPVOID unused)
         uint32_t t = s_block_t, dev, fence, cur;
         Sleep(1);
         now = xbox_TickCountMs();
+        {
+            /* RECOMP_GUESTCPU_STATS=1: once a second, the longest the guest
+             * CPU stayed with one thread (and which, host tid), the most
+             * threads waiting for it, and how many holds passed 10 ms --
+             * sampled from here, a host thread, every millisecond. */
+            static int on = -1;
+            static unsigned long hmax, htid, long_holds, last_tid, sec;
+            static long wmax;
+            extern void xbox_GuestCpuInfo(unsigned long *, unsigned long *, long *);
+            if (on < 0)
+                on = getenv("RECOMP_GUESTCPU_STATS") != NULL;
+            if (on) {
+                unsigned long tid, held;
+                long w;
+                xbox_GuestCpuInfo(&tid, &held, &w);
+                {
+                    /* A hold past 25 ms: that thread's stack, once per hold,
+                     * at most 20 in a run. */
+                    static unsigned long caught_tid, caught_since, caught;
+                    extern void ssx3_StackOfThread(unsigned long tid, const char *why);
+                    if (held > 25 && caught < 20 && (tid != caught_tid || now - held != caught_since)) {
+                        char why[48];
+                        caught_tid = tid; caught_since = now - held; caught++;
+                        snprintf(why, sizeof why, "held%lums", held);
+                        ssx3_StackOfThread(tid, why);
+                    }
+                }
+                if (held > hmax) { hmax = held; htid = tid; }
+                if (w > wmax) wmax = w;
+                if (held == 10 || (held > 10 && tid != last_tid)) long_holds++;
+                last_tid = tid;
+                if (now - sec >= 1000) {
+                    if (sec)
+                        fprintf(stderr, "[GUESTCPU-STATS] longest hold %lu ms (thread %lu), holds over 10 ms %lu,"
+                                " waiters <= %ld\n", hmax, htid, long_holds, wmax);
+                    sec = now; hmax = htid = long_holds = 0; wmax = 0;
+                }
+            }
+        }
         if (!since || since != s_block_since || now - since < 2)
             continue;
         dev = MEM32(0x0024B0D8u);
@@ -1379,9 +1418,21 @@ static void frametimer_stats(void)
 {
     static LARGE_INTEGER f, last, sec;
     static double sum, mn = 1e9, mx, gap_max, fire_late_max;
+    static unsigned long hold_max, hold_tid;
+    static long wait_max;
     static int n, late;
     LARGE_INTEGER now;
     extern double xbox_TimerLastFire(double *late_ms, double *now_ms);
+    extern void xbox_GuestCpuInfo(unsigned long *tid, unsigned long *held_ms, long *waiters);
+    {
+        /* Who holds the guest CPU right now, and for how long: the timer
+         * work (DPCs) needs it, and late in a long session it waited for it. */
+        unsigned long tid, held;
+        long waiters;
+        xbox_GuestCpuInfo(&tid, &held, &waiters);
+        if (held > hold_max) { hold_max = held; hold_tid = tid; }
+        if (waiters > wait_max) wait_max = waiters;
+    }
     {
         /* The last kernel timer to fire is (nearly always) the XAPI timer
          * queue's: the gap to here is its thread getting going. */
@@ -1405,9 +1456,11 @@ static void frametimer_stats(void)
     if ((double)(now.QuadPart - sec.QuadPart) >= (double)f.QuadPart) {
         if (n)
             fprintf(stderr, "[FRAMETIMER] %d calls, interval mean %.2f min %.2f max %.2f ms, %d over 20 ms"
-                    " | timer fired late <= %.2f ms, fire->callback <= %.2f ms\n",
-                    n, sum / n, mn, mx, late, fire_late_max, gap_max);
+                    " | timer fired late <= %.2f ms, fire->callback <= %.2f ms"
+                    " | guest CPU held <= %lu ms (thread %lu), waiters <= %ld\n",
+                    n, sum / n, mn, mx, late, fire_late_max, gap_max, hold_max, hold_tid, wait_max);
         sec = now; sum = 0; n = late = 0; mn = 1e9; mx = 0; gap_max = fire_late_max = 0;
+        hold_max = hold_tid = 0; wait_max = 0;
     }
     sub_001AE020();
 }

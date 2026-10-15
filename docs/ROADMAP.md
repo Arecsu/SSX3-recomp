@@ -221,6 +221,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-15 — Long-session slowdown fixed (60 -> ~20 FPS after ~5 min): two threads blocked while holding the guest CPU (unimpl-instruction warning, APU waiting for audio-queue room under its lock). 20-cycle soak at 59-60 FPS throughout.
 - 2026-10-15 — Race/quit cycles: tools/cycle_test.ps1, 12/12. Fence-wake rescue at 20 ms (was 200).
 - 2026-10-15 — Frontend sweep: every Options sub-screen, Rider Details, Music, Equip Gear, Conquer the Mountain intro; save and load work (hard disk).
 - 2026-10-15 — Equip Gear fixed (its screen setup code was outside every function); unresolved jump targets now run as entries into their function (61 of 87 stubs). Options, races 8/8, no bad indirect calls.
