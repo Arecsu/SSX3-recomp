@@ -59,6 +59,10 @@ for ($i = 1; $i -le $Runs; $i++) {
         }
     }
     if ($result -like "FAIL*") {
+        # What it looked like: logs\fail_<time>.png (kept beside the logs).
+        $shot = "logs\fail_{0:yyyyMMdd-HHmmss}.png" -f (Get-Date)
+        & $live snap -Out $shot -Dir $Dir | Out-Null
+        "  screenshot: $shot"
         # A stall: dump every thread (and the RECOMP_JOB_TRACE ring) before
         # the run is killed; the log is kept in logs\ by the next start.
         & $live dump -Dir $Dir | Out-Null
