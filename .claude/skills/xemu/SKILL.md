@@ -56,6 +56,7 @@ focus is never taken (`start` also hands focus back after the window opens).
 
 | Tag | State |
 |---|---|
+| `main_menu` | Main Menu (Single Event highlighted) |
 | `charsel_griff` | Select Character, Griff highlighted (the lighting reference screen) |
 | `race_briefing` | Snow Jam race briefing (Griff, Nate, Marisol, Marty, Psymon, Allegra) |
 | `race_go` | Race start, "GO!" (with `-Paused`: ~1 s into the race, riders leaving the gate) |
