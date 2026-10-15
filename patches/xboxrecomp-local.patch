@@ -1,5 +1,5 @@
 diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
-index 258048c..35fafd2 100644
+index 258048c..a261e7b 100644
 --- a/src/apu/apu_core.c
 +++ b/src/apu/apu_core.c
 @@ -377,12 +377,72 @@ void mcpx_apu_monitor_finalize(MCPXAPUState *d)
@@ -140,7 +140,25 @@ index 258048c..35fafd2 100644
      qemu_mutex_lock(&d->lock);
  
      while (!qatomic_read(&d->exiting)) {
-@@ -693,6 +784,14 @@ MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr)
+@@ -605,6 +696,17 @@ static void *mcpx_apu_frame_thread(void *arg)
+          * off every USB interrupt. */
+         qemu_mutex_unlock(&d->lock);
+         SwitchToThread();
++        {
++            /* Hand over, not just offer: a guest thread waiting in
++             * voice_lock (with the guest CPU held) did not always get in at
++             * this brief release -- waits of ~26 ms were seen. Yield until
++             * it has the lock, at most 2 ms. */
++            extern volatile long g_apu_lock_waiters;
++            int64_t until = qemu_clock_get_us(QEMU_CLOCK_REALTIME) + 2000;
++            while (qatomic_read(&g_apu_lock_waiters) > 0
++                   && qemu_clock_get_us(QEMU_CLOCK_REALTIME) < until)
++                SwitchToThread();
++        }
+         qemu_mutex_lock(&d->lock);
+     }
+ 
+@@ -693,6 +795,14 @@ MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr)
          warn_reportf_err(local_err, "mcpx_apu_monitor_init failed: ");
      }
  
@@ -155,6 +173,27 @@ index 258048c..35fafd2 100644
      /* Start background frame thread */
      qemu_thread_create(&d->apu_thread, "mcpx.apu_thread",
                         mcpx_apu_frame_thread, d, QEMU_THREAD_JOINABLE);
+diff --git a/src/apu/apu_vp.c b/src/apu/apu_vp.c
+index f45b42b..d03ef75 100644
+--- a/src/apu/apu_vp.c
++++ b/src/apu/apu_vp.c
+@@ -140,10 +140,16 @@ static void voice_off(MCPXAPUState *d, uint16_t v)
+     set_notify_status(d, v, notifier, NV1BA0_NOTIFICATION_STATUS_DONE_SUCCESS);
+ }
+ 
++/* Guest threads waiting for d->lock in voice_lock: the frame thread hands
++ * the lock over to them at its next frame boundary (apu_core.c). */
++volatile long g_apu_lock_waiters;
++
+ static void voice_lock(MCPXAPUState *d, uint16_t v, bool lock)
+ {
+     assert(v < MCPX_HW_MAX_VOICES);
++    qatomic_fetch_add(&g_apu_lock_waiters, 1);
+     qemu_mutex_lock(&d->lock);
++    qatomic_fetch_add(&g_apu_lock_waiters, -1);
+ 
+     uint64_t mask = 1ULL << (v % 64);
+     if (lock) {
 diff --git a/src/apu/apu_xaudio2.c b/src/apu/apu_xaudio2.c
 index cd69e57..33a8d6f 100644
 --- a/src/apu/apu_xaudio2.c
