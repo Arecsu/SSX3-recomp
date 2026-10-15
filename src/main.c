@@ -169,10 +169,10 @@ static DWORD WINAPI test_crash_thread(LPVOID arg)
     return 0;
 }
 
-/* A minidump of the crash in logs\crash_<time>.dmp (threads, stacks and
- * the exe's data; not the guest's memory, which would make it huge) -- open
- * it with Visual Studio or WinDbg next to build\ssx3_recomp.pdb. Once per run;
- * RECOMP_CRASH_DUMP=0 skips it. */
+/* A minidump of the crash in logs\crash_<time>.dmp: threads and stacks
+ * (~1 MB; RECOMP_CRASH_DUMP=full adds the exe's data, ~45 MB; never the
+ * guest's memory) -- open it with Visual Studio or WinDbg next to
+ * build\ssx3_recomp.pdb. Once per run; RECOMP_CRASH_DUMP=0 skips it. */
 static void write_crash_dump(EXCEPTION_POINTERS *ep)
 {
 #ifdef _WIN32
