@@ -756,8 +756,14 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
     colour outputs oD0/oD1 were interpolated unclamped -- SSX 3's lighting
     programs push them well above 1. The NV2A (and xemu) clamp them to 0..1
     per vertex. Now clamped in nv2a_vsh_interp.c (CPU/software path),
-    xbox.vert and xbox_vsh.vert. xemu window capture without touching it:
-    tools\xemu_cap.ps1 (PrintWindow) -> shots\xemu\cap.png.
+    xbox.vert and xbox_vsh.vert. The race (pink-lit start gate included) matches xemu too.
+- XEMU REFERENCE (2026-10-15): `tools\xemu.ps1` (skill: .claude/skills/xemu)
+  boots a separate, muted xemu instance with the ISO (own config + HDD copy
+  in work\xemu\, QMP on 127.0.0.1:4455), presses pad buttons by posting key
+  messages (no focus change), captures the window (PrintWindow) and saves/
+  loads VM snapshots: charsel_griff, race_briefing, race_go -- e.g.
+  `xemu.ps1 start -Snapshot race_go -Paused` is at the Snow Jam start in
+  ~2.5 s. The snapshots live in work\xemu\xbox_hdd.qcow2 (not in git).
 - FRAME PACING (2026-10-14): SSX 3 paces frames with a self-correcting
   one-shot XAPI timer (sub_001AE480 sets it up, callback sub_001AE020 ->
   sub_001AE030: period 1000/60 ms, re-armed from KeTickCount, wakes the main
