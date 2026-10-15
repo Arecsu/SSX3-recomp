@@ -47,7 +47,10 @@ Run `tools\play.bat` on Windows. Keyboard (the game window must have focus):
 | 1 3 | Left / right trigger | Arrows | D-pad |
 | Numpad 8/4/2/6 | Left stick | I J K L | Right stick |
 
-An Xbox/XInput controller needs no setting. Each run's log is kept in
+An Xbox/XInput controller needs no setting (rumble included). The window
+opens at 2x (`RECOMP_WINDOW_SCALE`), can be resized, and **Alt+Enter** or
+**F11** toggles borderless fullscreen; the picture keeps its 4:3 shape
+(`RECOMP_PRESENT_FILTER=point` for sharp pixels). Each run's log is kept in
 `logs\` (newest 40). `RECOMP_GPU=sw` uses the software rasteriser instead of
 Vulkan; `RECOMP_SKIP_INTRO=0` plays the intro movies.
 
