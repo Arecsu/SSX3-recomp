@@ -28,8 +28,12 @@
 # game_state.txt's screen field (src/ssx3_overrides.c sub_00202460):
 #   0 title, 1 hard-disk check, 2 main menu, 9 Select Character, 12 Setup Character,
 #   19 Select Peak -> Mode -> Event (one screen, three pages), 20 My Rules.
+# -Autonav: the game drives its own menus (RECOMP_AUTONAV=race,...,brief set
+# at start, src/autonav.c); this script presses nothing until the briefing,
+# waits for the next "[AUTONAV] t=<ms> at the briefing" line in stderr and
+# keeps its watchdogs.
 param([int]$TimeoutSec = 300, [switch]$StopAtBriefing, [string]$ShotDir = "", [string]$Dir = "",
-      [switch]$NoWatchdog, [int]$Rider = 0, [int]$Mode = 0, [int]$Event = 0)
+      [switch]$NoWatchdog, [int]$Rider = 0, [int]$Mode = 0, [int]$Event = 0, [switch]$Autonav)
 
 $liveScript = Join-Path $PSScriptRoot "live.ps1"
 function live { & $liveScript @args -Dir $Dir }
@@ -45,6 +49,9 @@ $lastDraws = -1; $drawsSince = Get-Date
 $lastState = ""; $stateSince = Get-Date
 $gs = $null
 $scripted = @{}         # screens whose extra presses have been sent
+$errFile = Join-Path $root "stderr.txt"
+function BriefingCount { @(Select-String -Path $errFile -Pattern '\[AUTONAV\] t=\d+ at the briefing' -ErrorAction SilentlyContinue).Count }
+$briefBase = if ($Autonav) { BriefingCount } else { 0 }
 
 function Stuck([string]$why) {
     "stuck: [$why] (state $($gs.Name) for $([int]$inState) s, $($gs.Draws) draws)"
@@ -89,6 +96,16 @@ while ((Get-Date) -lt $deadline) {
         }
     }
 
+    if ($Autonav) {
+        if ((BriefingCount) -gt $briefBase) {
+            if ($StopAtBriefing) { "at briefing ($($gs.Draws) draws)"; exit 0 }
+            Press "a:300"
+            "briefing: pressed A, racing"
+            exit 0
+        }
+        if (-not $firstPress) { $firstPress = Get-Date }    # the game presses: arm the pad check
+        continue
+    }
     $since = ((Get-Date) - $lastPress).TotalSeconds
     switch ($gs.Name) {
         "frontend" {

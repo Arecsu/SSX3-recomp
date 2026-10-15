@@ -9,7 +9,7 @@
 # -ProfileEnd: after the last cycle, into one more race and take a sampling
 # profile of every thread there (tools/profile_tally.py reads it).
 param([int]$Cycles = 5, [int]$RaceSec = 8, [hashtable]$Env = @{}, [string]$Dir = "",
-      [int]$Rider = 0, [int]$Mode = 0, [int]$Event = 0, [switch]$ProfileEnd, [string]$Save = "unlocked")
+      [int]$Rider = 0, [int]$Mode = 0, [int]$Event = 0, [switch]$ProfileEnd, [string]$Save = "unlocked", [switch]$NoAutonav)
 
 . (Join-Path $PSScriptRoot "game_state.ps1")
 $root = if ($Dir) { $Dir } else { Split-Path -Parent $PSScriptRoot }
@@ -20,12 +20,18 @@ function Press([string]$b) { & $live press -Buttons $b -Dir $Dir | Out-Null }
 function Crashed { Select-String -Path $err -SimpleMatch "[CRASH]" -List -ErrorAction SilentlyContinue }
 function BadCalls { @(Select-String -Path $err -SimpleMatch "is not code" -ErrorAction SilentlyContinue).Count }
 
+# The game drives its own menus (src/autonav.c, ~27 s to the briefing);
+# -NoAutonav = the old pad presses from to_race.ps1 (~40 s).
+if (-not $NoAutonav -and -not $Env.ContainsKey("RECOMP_AUTONAV")) {
+    $Env = $Env.Clone(); $Env["RECOMP_AUTONAV"] = "race,rider=$Rider,mode=$Mode,event=$Event,brief"
+}
+$navArgs = @{ Autonav = [bool]($Env.ContainsKey("RECOMP_AUTONAV")) }
 & $live start -Env $Env -Dir $Dir -Save $Save | Out-Null
 Start-Sleep -Seconds 2
 $result = "OK"
 for ($c = 1; $c -le $Cycles; $c++) {
     $t0 = Get-Date
-    $out = & $nav -TimeoutSec 240 -Dir $Dir -Rider $Rider -Mode $Mode -Event $Event 2>&1 | Select-Object -Last 1
+    $out = & $nav -TimeoutSec 240 -Dir $Dir -Rider $Rider -Mode $Mode -Event $Event @navArgs 2>&1 | Select-Object -Last 1
     if ($out -notmatch "briefing") { $result = "FAIL cycle ${c}: $out"; break }
     # Into the race, then paused: by screen (game_state.txt), not by time --
     # Start skips the race intro while it plays and pauses after it, and the
@@ -88,7 +94,7 @@ for ($c = 1; $c -le $Cycles; $c++) {
     Start-Sleep -Seconds 3
 }
 if ($result -eq "OK" -and $ProfileEnd) {
-    $out = & $nav -TimeoutSec 240 -Dir $Dir -Rider $Rider -Mode $Mode -Event $Event 2>&1 | Select-Object -Last 1
+    $out = & $nav -TimeoutSec 240 -Dir $Dir -Rider $Rider -Mode $Mode -Event $Event @navArgs 2>&1 | Select-Object -Last 1
     Start-Sleep -Seconds 4; Press "start:300"; Start-Sleep -Seconds 10
     & $live dump -Mem profile -Dir $Dir | Out-Null
     Start-Sleep -Seconds 20

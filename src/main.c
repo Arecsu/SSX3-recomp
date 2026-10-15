@@ -894,6 +894,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             extern void ssx3_GameStateStart(void);
             ssx3_GameStateStart();  /* [STATE] lines + game_state.txt */
         }
+        {
+            extern void ssx3_AutonavStart(void);
+            ssx3_AutonavStart();    /* RECOMP_AUTONAV=race,...: menus -> race */
+        }
     }
 
     /* Step 7: Call the recompiled entry point */

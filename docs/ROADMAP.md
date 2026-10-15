@@ -221,6 +221,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-15 — Faster, isolated test runs: RECOMP_AUTONAV (in-process menu driver, boot -> briefing ~27 s instead of ~40 s, re-arms per race; default in race_test/cycle_test) and RECOMP_SAVE_DIR + save fixtures (tests never write the player's saves; default fixture has everything unlocked).
 - 2026-10-15 — xemu as a scripted reference: tools/xemu.ps1 + xemu skill (boot with the ISO, snapshots at character select / briefing / race start, button presses without focus, screenshots). Confirms the pink start area is real and the race riders match.
 - 2026-10-15 — Character lighting matches xemu: vertex colours (oD0/oD1) are now clamped to 0..1 before interpolation, as on the NV2A. Lit riders were washed out (Griff's shirt pale cyan instead of deep blue).
 - 2026-10-15 — 2-hour soak: 120/120 race/quit cycles in one session, no crash or hang, 58.6-59.4 FPS throughout.

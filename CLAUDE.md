@@ -454,7 +454,7 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   to_race.ps1/race_test.ps1 -Rider/-Mode/-Event use them;
   menu_test.ps1 waits for id 2. The in-game HUD screen (vt 00293000)
   re-activates all the time and is left out of the screen field; field 9 is
-  the recorded screen's live state (5 = up). In a race: intro 00297E30,
+  the recorded screen's live state (5 = up). In a race: briefing panel 00297E30 (after the course fly-over),
   pause menu 002981D8, Quit dialog 00297B60. tools\cycle_test.ps1 drives
   race -> pause -> Quit -> Yes by these.
   Inside ingame, state+0xA8 moves with the phase (5 at the briefing, 8 and
@@ -757,6 +757,19 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
     programs push them well above 1. The NV2A (and xemu) clamp them to 0..1
     per vertex. Now clamped in nv2a_vsh_interp.c (CPU/software path),
     xbox.vert and xbox_vsh.vert. The race (pink-lit start gate included) matches xemu too.
+- FAST TEST RUNS (2026-10-15): `RECOMP_AUTONAV=race[,rider=N][,mode=N][,event=N][,brief]`
+  (src/autonav.c) drives the frontend from inside the process by the active
+  screen id/state, pressing through the toolkit's new `xbox_PadInject`:
+  boot -> briefing ~27 s (was ~40 s with to_race.ps1's pad-file presses);
+  re-arms after each race. race_test/cycle_test use it by default
+  (-NoAutonav = old way; to_race.ps1 -Autonav waits for its
+  "[AUTONAV] t=<ms> at the briefing" line). The rest is the game's own (boot
+  4.5 s, title logo 5 s, "Checking hard disk" 5 s, fly-over). Process
+  snapshots are not an option: guest call stacks are native stacks (return
+  addresses change with every build), plus Vulkan/XAudio2/kernel handles.
+  Saves: `RECOMP_SAVE_DIR=<dir>` (toolkit) moves UDATA/TDATA out of game\;
+  live.ps1 gives every scripted run a fresh copy of work\saves\<-Save>
+  (default "unlocked": every peak unlocked by cheat; "none", "user").
 - XEMU REFERENCE (2026-10-15): `tools\xemu.ps1` (skill: .claude/skills/xemu)
   boots a separate, muted xemu instance with the ISO (own config + HDD copy
   in work\xemu\, QMP on 127.0.0.1:4455), presses pad buttons by posting key
