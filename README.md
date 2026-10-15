@@ -4,14 +4,18 @@ Static recompilation of **SSX 3** (original Xbox, PAL) to a native Windows
 executable with [xboxrecomp](https://github.com/sp00nznet/xboxrecomp), plus a
 byte-exact per-function disassembly for hand decompilation.
 
-**Current state: playable.** It boots straight to the title (intro movies
-skipped by default), runs the menus, loads Snow Jam and plays full races
-with HUD, rider shadows and audio at **53–58 FPS** on the GPU (Vulkan
-renderer, the default; the software rasteriser runs at ~12). A keyboard or
-an XInput controller works as player 1. The Linux port and the Vulkan
-renderer are by Corné Dorrestijn (docs/LINUX.md, docs/VULKAN.html).
+**Current state: playable at a steady 60 FPS.** It boots straight to the
+title (intro movies skipped by default), and every menu works -- Options and
+its sub-screens, character setup, Equip Gear, Rider Details, Music, Conquer
+the Mountain. Saving and loading use `game\UDATA` like the console's hard
+disk. All Peak 1 courses play (Snow Jam, Metro-City, Happiness, Freestyle)
+with HUD, rider shadows and audio at **60 FPS** (p99 frame ~19 ms): the
+Vulkan renderer (default) runs the game's vertex programs and pixel
+combiners on the GPU, and frames are shown through D3D11 with vsync. A
+keyboard or an XInput controller works as player 1. The Linux port and the
+Vulkan renderer are by Corné Dorrestijn (docs/LINUX.md, docs/VULKAN.html).
 
-![race at 57 FPS on Vulkan](docs/screenshots/27-vulkan-race-57fps.png)
+![Metro-City at 60 FPS](docs/screenshots/29-metro-city-60fps.png)
 
 No game data or game code is in this repository. You need your own rip of the
 disc (`default.xbe` + `data/`) next to this repo in `../SSX3/`; everything
@@ -51,22 +55,36 @@ Vulkan; `RECOMP_SKIP_INTRO=0` plays the intro movies.
 
 | | |
 |---|---|
-| ![title](docs/screenshots/17-title-screen.png) | ![select peak](docs/screenshots/18-select-peak-keyboard.png) |
-| Title screen | Peak select, driven from the keyboard |
-| ![race start](docs/screenshots/19-race-start-cinematic.png) | ![briefing](docs/screenshots/20-race-briefing.png) |
-| Race-start cinematic (EA Radio track card) | Race briefing |
+| ![race](docs/screenshots/32-snow-jam-gpu-vertex-programs.png) | ![equip gear](docs/screenshots/30-equip-gear.png) |
+| Snow Jam, vertex programs on the GPU | Equip Gear |
+| ![load game](docs/screenshots/31-load-game.png) | ![title](docs/screenshots/17-title-screen.png) |
+| Load game (hard-disk save) | Title screen |
 
-Earlier milestones are in `docs/screenshots/01-16` (black window, first
-loading screen, intro movie, menus, first races).
+Earlier milestones are in `docs/screenshots/01-28` (black window, first
+loading screen, intro movie, menus, first races, the Vulkan bring-up).
 
 ## Known issues
 
-- **Black shapes in races** at some camera positions (e.g. over the first
-  jump), with both renderers -- being investigated.
-  ![black shapes](docs/screenshots/25-vulkan-race-black-sky-known-issue.png)
-- **Speed**: 53–58 FPS in races, not yet a locked 60 (p99 frame 24–33 ms).
-- `RECOMP_NV2A_ACK_THREAD=0` switches back to the older lock-step GPU mode
-  (4–7 FPS) if the default asynchronous mode misbehaves.
+- Peaks 2 and 3 are locked on a fresh save (the game's own progression).
+- Riders look a little flatter than on a real console capture (see
+  ROADMAP, "Phase 5"); the game's display gamma ramp is applied.
+- Under heavy parallel test load (8 instances) a run can occasionally miss
+  the controller on the title screen; not seen in normal play.
+- `RECOMP_GPU=sw` (software renderer), `RECOMP_GPU_VSH=0` (vertex programs on
+  the CPU) and `RECOMP_D3D_PRESENT=0` (GDI window) switch the newer paths off
+  if one misbehaves.
+
+## Testing
+
+All scripted runs are silent and ignore a real controller, so the PC stays
+usable while they run (Windows, from the repo root):
+
+- `tools\race_test.ps1 -Runs 1 -RaceSec 20 -Snap x.png [-Rider N -Mode N -Event N]`
+  -- boot to a race, ride, screenshot.
+- `tools\cycle_test.ps1 -Cycles 12` -- race, pause, quit to the title, again.
+- `tools\menu_test.ps1 -Steps "y,wait,down,a"` -- menu presses with a
+  screenshot per step.
+- `tools\race_par.ps1 -Instances 8 -Runs 2` -- parallel boot-to-race batches.
 
 ## Roadmap
 
