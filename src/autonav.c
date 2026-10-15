@@ -42,6 +42,8 @@
 #define VT_INGAME     0x00299D7Cu
 #define VT_BRIEFING   0x00297E30u   /* race briefing panel (ui screen) */
 #define VT_BRIEFING2  0x00297F68u   /* briefing of a one-on-one race (The Throne) */
+#define VT_PAUSE      0x002981D8u   /* pause menu */
+#define VT_QUIT       0x00297B60u   /* quit dialog */
 
 extern int xbox_PadInject(const char *line);
 extern volatile uint32_t g_ssx3_ui_screen_vt, g_ssx3_ui_screen_id, g_ssx3_ui_screen_ptr;
@@ -84,7 +86,7 @@ static DWORD WINAPI autonav_thread(LPVOID unused)
     uint32_t act_ptr = 0, done_ptr = 0;
     DWORD act_since = 0, done_at = 0, ingame_since = 0, brief_since = 0;
     int loading_seen = 0, skipped = 0;
-    uint32_t last_sp = 0;
+    uint32_t last_sp = 0, pre_ingame_sp = 0;
     unsigned last_sst = 99;
     (void)unused;
 
@@ -106,12 +108,26 @@ static DWORD WINAPI autonav_thread(LPVOID unused)
              * it accepts input. */
             if (!ingame_since) {
                 ingame_since = now;
+                pre_ingame_sp = g_ssx3_ui_screen_ptr;
                 fprintf(stderr, "[AUTONAV] t=%lu in game\n", (unsigned long)(now - s_t0));
                 fflush(stderr);
             }
             sp = g_ssx3_ui_screen_ptr;
-            if ((g_ssx3_ui_screen_vt == VT_BRIEFING || g_ssx3_ui_screen_vt == VT_BRIEFING2) && sp
-                && ((MEM16(sp + 0x1C) >> 8) & 0x3F) == 5) {
+            sst = sp ? (unsigned)((MEM16(sp + 0x1C) >> 8) & 0x3F) : 0;
+            if (sp != last_sp || sst != last_sst) {
+                fprintf(stderr, "[AUTONAV] t=%lu in-game screen vt %08X state %u\n",
+                        (unsigned long)(now - s_t0), g_ssx3_ui_screen_vt, sst);
+                fflush(stderr);
+                last_sp = sp;
+                last_sst = sst;
+            }
+            /* The briefing: the first in-game menu screen after the load
+             * (00297E30 races, 00297F68 one-on-one, others for the other
+             * event types); never the pause menu or the quit dialog. The
+             * HUD is not recorded as a screen at all. */
+            if (sp && sst == 5 && (g_ssx3_ui_screen_vt & 0xFFFF0000u) == 0x00290000u
+                && g_ssx3_ui_screen_vt != VT_PAUSE && g_ssx3_ui_screen_vt != VT_QUIT
+                && sp != pre_ingame_sp) {
                 if (!brief_since)
                     brief_since = now;
                 else if (now - brief_since >= 300) {
