@@ -266,7 +266,7 @@ index 83e652d..e4ec703 100644
  
  #endif /* APU_XAUDIO2_H */
 diff --git a/src/input/xinput_device.c b/src/input/xinput_device.c
-index a91edbe..a0cc203 100644
+index a91edbe..a05e8e0 100644
 --- a/src/input/xinput_device.c
 +++ b/src/input/xinput_device.c
 @@ -141,7 +141,17 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
@@ -288,7 +288,20 @@ index a91edbe..a0cc203 100644
      if (result != ERROR_SUCCESS) {
          g_controller_connected[dwPort] = FALSE;
          if (dwPort == 0 && keyboard_enabled()) {
-@@ -257,6 +267,57 @@ static SDL_GameController *g_pads[XBOX_MAX_CONTROLLERS];
+@@ -216,6 +226,12 @@ DWORD xbox_InputSetState(DWORD dwPort, const XBOX_VIBRATION *pVibration)
+ 
+     if (dwPort >= XBOX_MAX_CONTROLLERS || !pVibration)
+         return ERROR_DEVICE_NOT_CONNECTED;
++    {
++        /* RECOMP_NO_HOST_PAD (scripted runs): no rumble on someone's pad. */
++        const char *v = getenv("RECOMP_NO_HOST_PAD");
++        if (v && *v && *v != '0')
++            return ERROR_DEVICE_NOT_CONNECTED;
++    }
+ 
+     xi_vib.wLeftMotorSpeed = pVibration->wLeftMotorSpeed;
+     xi_vib.wRightMotorSpeed = pVibration->wRightMotorSpeed;
+@@ -257,6 +273,57 @@ static SDL_GameController *g_pads[XBOX_MAX_CONTROLLERS];
  static BOOL  g_controller_connected[XBOX_MAX_CONTROLLERS];
  static DWORD g_packet[XBOX_MAX_CONTROLLERS];
  
@@ -346,7 +359,7 @@ index a91edbe..a0cc203 100644
  /* Open up to XBOX_MAX_CONTROLLERS attached game controllers. */
  static void open_controllers(void)
  {
-@@ -287,6 +348,13 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+@@ -287,6 +354,13 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
      SDL_GameController *c = g_pads[dwPort];
      if (!c || !SDL_GameControllerGetAttached(c)) {
          g_controller_connected[dwPort] = FALSE;
@@ -360,7 +373,7 @@ index a91edbe..a0cc203 100644
          return ERROR_DEVICE_NOT_CONNECTED;
      }
  
-@@ -335,6 +403,8 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+@@ -335,6 +409,8 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
      pState->Gamepad.sThumbRY =
          (SHORT)(-1 - SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_RIGHTY));
  
@@ -4679,10 +4692,51 @@ index 72d5131..4939d26 100644
              VirtualFree(g_span_base, g_memory_size, MEM_RELEASE);
              g_memory_base = MapViewOfFileEx(g_mapping_handle,
 diff --git a/src/usb/ohci.c b/src/usb/ohci.c
-index 641a94d..58a34af 100644
+index 641a94d..222d4ba 100644
 --- a/src/usb/ohci.c
 +++ b/src/usb/ohci.c
-@@ -1278,7 +1278,7 @@ void xbox_OhciInit(void)
+@@ -639,6 +639,40 @@ static uint32_t ohci_do_td(OhciController *hc, uint32_t ed0, uint32_t td)
+          * engine-rev rumble on the Crash countdown and then paused with the
+          * pad unresponsive. */
+         moved = len;
++        /* Rumble: an XID output report -- 00 06, left motor, right motor
++         * (16-bit each) -- on the interrupt OUT endpoint, or as the data of
++         * a SET_REPORT (21 09) on the control pipe. Forwarded to the host
++         * pad (XInput); RECOMP_RUMBLE=0 ignores it. */
++        if (len >= 6 && guest_ptr(cbp, 6u)
++            && (endpoint != 0 || (g_setup_pending && g_setup.bmRequestType == 0x21
++                                  && g_setup.bRequest == 0x09))) {
++            static int rumble = -1;
++            const uint8_t *r = (const uint8_t *)guest_ptr(cbp, 6u);
++            if (rumble < 0) {
++                const char *e = getenv("RECOMP_RUMBLE");
++                rumble = !(e && *e == '0');
++            }
++            if (rumble && r[0] == 0x00 && r[1] >= 6) {
++                extern DWORD xbox_InputSetState(DWORD port, const void *vibration);
++                uint16_t v[2];
++                v[0] = (uint16_t)(r[2] | r[3] << 8);
++                v[1] = (uint16_t)(r[4] | r[5] << 8);
++                {
++                    /* RECOMP_RUMBLE_TRACE=1: the first 12 motor changes. */
++                    static int tr = -1, said;
++                    static uint16_t last[2];
++                    if (tr < 0)
++                        tr = getenv("RECOMP_RUMBLE_TRACE") != NULL;
++                    if (tr && said < 12 && (v[0] != last[0] || v[1] != last[1])) {
++                        said++;
++                        fprintf(stderr, "  [RUMBLE] pad %d left %u right %u (ep %u)\n",
++                                pad, v[0], v[1], endpoint);
++                    }
++                    last[0] = v[0]; last[1] = v[1];
++                }
++                xbox_InputSetState((DWORD)pad, v);
++            }
++        }
+         if (endpoint == 0) {
+             g_setup_pending = 0;
+             s_n_out_ep0++;
+@@ -1278,7 +1312,7 @@ void xbox_OhciInit(void)
      ohci_reset(&s_hc[0], XBOX_OHCI0_BASE, 0);
      ohci_reset(&s_hc[1], XBOX_OHCI1_BASE, 1);
  
@@ -4691,7 +4745,7 @@ index 641a94d..58a34af 100644
      /* The registers have to fault to be answered. The MCPX aperture is mapped
       * as plain committed memory, so both blocks are made inaccessible here and
       * the title's VEH routes the faults back to xbox_OhciHandleMmio.
-@@ -1314,7 +1314,7 @@ void xbox_OhciInit(void)
+@@ -1314,7 +1348,7 @@ void xbox_OhciInit(void)
              XBOX_OHCI0_BASE, XBOX_OHCI1_BASE, OHCI_PORTS);
      fflush(stderr);
  
@@ -4700,7 +4754,7 @@ index 641a94d..58a34af 100644
      {
          HANDLE th = CreateThread(NULL, 0, ohci_thread, NULL, 0, NULL);
          if (th)
-@@ -1340,6 +1340,21 @@ int xbox_OhciOwnsAddress(uint32_t xbox_va)
+@@ -1340,6 +1374,21 @@ int xbox_OhciOwnsAddress(uint32_t xbox_va)
      return hc_for(xbox_va) != NULL;
  }
  
