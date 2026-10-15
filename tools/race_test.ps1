@@ -11,7 +11,7 @@
 # (see to_race.ps1; default Zoe, Race, Snow Jam).
 param([int]$Runs = 3, [int]$TimeoutSec = 480, [hashtable]$Env = @{}, [string]$Dir = "",
       [int]$RaceSec = 0, [string]$Snap = "", [switch]$NoTaps, [switch]$Profile,
-      [int]$Rider = 0, [int]$Mode = 0, [int]$Event = 0, [string]$Save = "unlocked", [switch]$NoAutonav)
+      [int]$Rider = 0, [int]$Mode = 0, [int]$Event = 0, [string]$Save = "unlocked", [switch]$NoAutonav, [int]$Peak = 0)
 
 $root = if ($Dir) { $Dir } else { Split-Path -Parent $PSScriptRoot }
 $live = Join-Path $PSScriptRoot "live.ps1"
@@ -20,7 +20,7 @@ $nav = Join-Path $PSScriptRoot "to_race.ps1"
 # The game drives its own menus (src/autonav.c, ~27 s to the briefing);
 # -NoAutonav = the old pad presses from to_race.ps1 (~40 s).
 if (-not $NoAutonav -and -not $Env.ContainsKey("RECOMP_AUTONAV")) {
-    $Env = $Env.Clone(); $Env["RECOMP_AUTONAV"] = "race,rider=$Rider,mode=$Mode,event=$Event,brief"
+    $Env = $Env.Clone(); $Env["RECOMP_AUTONAV"] = "race,rider=$Rider,peak=$Peak,mode=$Mode,event=$Event,brief"
 }
 $navArgs = @{ Autonav = [bool]($Env.ContainsKey("RECOMP_AUTONAV")) }
 for ($i = 1; $i -le $Runs; $i++) {

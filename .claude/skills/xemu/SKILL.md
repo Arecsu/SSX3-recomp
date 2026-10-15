@@ -56,10 +56,22 @@ focus is never taken (`start` also hands focus back after the window opens).
 
 | Tag | State |
 |---|---|
-| `main_menu` | Main Menu (Single Event highlighted) |
-| `charsel_griff` | Select Character, Griff highlighted (the lighting reference screen) |
-| `race_briefing` | Snow Jam race briefing (Griff, Nate, Marisol, Marty, Psymon, Allegra) |
-| `race_go` | Race start, "GO!" (with `-Paused`: ~1 s into the race, riders leaving the gate) |
+| `unlocked_main` | Main Menu, the user's save with everything unlocked (cheat) loaded |
+| `unlocked_charsel` | Select Character (Griff highlighted) from that save |
+| `race_briefing` | Snow Jam race briefing -- made BEFORE the cheat save |
+| `race_go` | Snow Jam race start, "GO!" -- made BEFORE the cheat save |
+
+Snapshots include the hard disk: loading `race_*` rolls the HDD copy back to
+before the user's cheat save. Make new snapshots only after loading an
+`unlocked_*` one. Snapshots made with `-Pad` (extra USB hub) load only with
+`-Pad`, and vice versa -- keep making them without it.
+
+Peak page: the list reads Peak 3, Peak 2, Peak 1 with the cursor on Peak 1
+(Up = next peak; Down wraps to Peak 3). Race events: Peak 1 Snow Jam,
+Metro-City, Happiness; Peak 2 Ruthless Ridge, Intimidator, Ruthless; Peak 3
+Gravitude, The Throne. From `unlocked_charsel`: `a` (rider), `a` (setup),
+`up` x(peak-1), `a`, `a` (Race; `down` for Freestyle), `down` x event, `a`,
+`a` (rules) -> loading.
 
 A load restores a stale picture for the first frames; `-Paused` runs 150 ms
 (`-SettleMs`) before freezing, so the captured frame is current. Check what

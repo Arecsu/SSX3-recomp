@@ -2,9 +2,11 @@
  * RECOMP_AUTONAV: drive the frontend from inside the process, from boot to a
  * race, by the game's own state -- the in-process twin of tools\to_race.ps1.
  *
- *   RECOMP_AUTONAV=race[,rider=N][,mode=N][,event=N][,brief]
+ *   RECOMP_AUTONAV=race[,rider=N][,peak=N][,mode=N][,event=N][,brief]
  *
- * rider = right presses on Select Character, mode = down presses on the mode
+ * rider = right presses on Select Character, peak = down presses on the
+ * peak page (0-2: up presses, the list is Peak 3, 2, 1 with the cursor on 1;
+ * Peaks 2/3 need the unlocked save), mode = down presses on the mode
  * page (0 Race, 1 Freestyle), event = down presses on the event page (Peak 1
  * Race: 0 Snow Jam, 1 Metro-City, 2 Happiness); "brief" stops at the race
  * briefing (the course fly-over before it is skipped) instead of pressing A
@@ -43,7 +45,7 @@
 extern int xbox_PadInject(const char *line);
 extern volatile uint32_t g_ssx3_ui_screen_vt, g_ssx3_ui_screen_id, g_ssx3_ui_screen_ptr;
 
-static int s_rider, s_mode, s_event, s_brief;
+static int s_rider, s_peak, s_mode, s_event, s_brief;
 static DWORD s_t0;
 
 static int guest_ok(uint32_t va)
@@ -177,6 +179,7 @@ static DWORD WINAPI autonav_thread(LPVOID unused)
             press("a:150", "rider");
             break;
         case 19:                                    /* Peak -> Mode -> Event */
+            presses("up:100", s_peak, 300, "peak");     /* list: Peak 3, 2, 1; starts on 1 */
             press("a:150", "peak");
             Sleep(1500);
             presses("down:100", s_mode, 300, "mode");
@@ -209,12 +212,13 @@ void ssx3_AutonavStart(void)
     if (!e || strncmp(e, "race", 4) != 0)
         return;
     s_rider = opt(e, "rider=");
+    s_peak = opt(e, "peak=");
     s_mode = opt(e, "mode=");
     s_event = opt(e, "event=");
     s_brief = strstr(e, "brief") != NULL;
     s_t0 = GetTickCount();
-    fprintf(stderr, "[AUTONAV] to a race: rider %d, mode %d, event %d%s\n",
-            s_rider, s_mode, s_event, s_brief ? ", stop at the briefing" : "");
+    fprintf(stderr, "[AUTONAV] to a race: rider %d, peak %d, mode %d, event %d%s\n",
+            s_rider, s_peak, s_mode, s_event, s_brief ? ", stop at the briefing" : "");
     fflush(stderr);
     CloseHandle(CreateThread(NULL, 0, autonav_thread, NULL, 0, NULL));
 }
