@@ -204,9 +204,9 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 ## Phase 7 — Native Windows product
 
 - [ ] Build from a Windows checkout without WSL (Python pipeline + CMake on Windows; scripts in PowerShell or Python).
-- [ ] Game data location configurable (`game\` next to the exe or a config file); clear message when the rip is missing.
-- [ ] Release build: one exe, no console, logs to `logs\`, crash dump on failure.
-- [ ] Controller and keyboard remapping; fullscreen toggle. **2026-10-15:** window opens at 2x (fits the work area, RECOMP_WINDOW_SCALE), resizable; Alt+Enter / F11 borderless fullscreen (DXGI's exclusive Alt+Enter off); the D3D11 presenter draws the frame letterboxed to 4:3 at any size (GDI fallback too). Remapping still open.
+- [x] Game data location configurable (2026-10-15): `RECOMP_GAME_DIR`, else `game\` in the working directory, else next to the exe or one level up; a message box lists where it looked when `default.xbe` is missing.
+- [x] Release build: one exe, no console, logs to `logs\`, crash dump on failure (2026-10-15: the exe is a GUI program; started by double-click it logs to `logs\ssx3_<time>_stderr.txt`; minidumps since 2026-10-15).
+- [x] Controller and keyboard remapping; fullscreen toggle. **Remapping 2026-10-15:** `keys.ini` (`keys.example.ini`): every key, and the controller's buttons (`pad.<control>`), toolkit input layer. **2026-10-15:** window opens at 2x (fits the work area, RECOMP_WINDOW_SCALE), resizable; Alt+Enter / F11 borderless fullscreen (DXGI's exclusive Alt+Enter off); the D3D11 presenter draws the frame letterboxed to 4:3 at any size (GDI fallback too). Remapping still open.
 - [ ] Gate: fresh Windows machine → follow README → playing.
 
 ## Phase 8 — Hardening
