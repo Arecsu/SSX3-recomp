@@ -10,7 +10,9 @@
 # XBE: $env:XBE, else game\default.xbe, else ..\SSX3\default.xbe. The analysis
 # JSON is written beside it.
 param([string]$Step = "all")
-$ErrorActionPreference = "Stop"
+# Native tools write progress to stderr, which "Stop" would turn into a
+# fatal error under Windows PowerShell 5.1: exit codes are checked instead.
+$ErrorActionPreference = "Continue"
 $here = Split-Path -Parent $PSScriptRoot
 $tk = Join-Path (Split-Path -Parent $here) "xboxrecomp"
 $py = Join-Path $tk ".venv\Scripts\python.exe"

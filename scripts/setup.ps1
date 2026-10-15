@@ -8,7 +8,9 @@
 # Needs git and Python 3.9+ on PATH. Creates xboxrecomp\.venv with capstone.
 # Safe to re-run.
 #   powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
-$ErrorActionPreference = "Stop"
+# Native tools write progress to stderr, which "Stop" would turn into a
+# fatal error under Windows PowerShell 5.1: exit codes are checked instead.
+$ErrorActionPreference = "Continue"
 $Base = "193e299"                    # v0.13.1 "Cut Short"
 $Url = if ($env:XBOXRECOMP_URL) { $env:XBOXRECOMP_URL } else { "https://github.com/sp00nznet/xboxrecomp.git" }
 
