@@ -225,6 +225,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-15 — Parallel boots no longer collide on the shared partition images (RECOMP_SYSTEM_DIR per run directory): race_par 8x3 24/24 in 2.7 min (was 20/24, the 4 quit to the dashboard at boot).
 - 2026-10-15 — Audio: waveOut fallback fixed like XAudio2; intro movies and races produce sound by the meter (muted runs measure too).
 - 2026-10-15 — 2-player split-screen (Multi Play) works; a second XInput controller now enables it. Reliability batch race_par 4x3: 12/12.
 - 2026-10-15 — Frame-rate check on every peak: 60 FPS with occasional single slow frames; Metro-City's 30 FPS stretch is the game's own (xemu drops to 30 at the same point).

@@ -896,7 +896,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     /* Step 4: Set game directory for file I/O path translation */
     {
         extern void xbox_path_init(const char *game_dir, const char *save_dir);
-        xbox_path_init(s_game_dir, NULL);
+        /* RECOMP_SYSTEM_DIR: where the emulated hard disk's partition
+         * images and cache live (default %LOCALAPPDATA%\xboxrecomp). Scripted
+         * runs get their own (live.ps1): eight instances booting at once
+         * shared one Partition5.img, and the one that lost the open quit to
+         * the dashboard at boot. */
+        {
+            const char *sys = getenv("RECOMP_SYSTEM_DIR");
+            xbox_path_init(s_game_dir, sys && *sys ? sys : NULL);
+        }
     }
 
     /* Step 5: Initialize kernel bridge (thunk table in Xbox memory) */

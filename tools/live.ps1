@@ -51,6 +51,10 @@ switch ($Cmd) {
         $env:RECOMP_NO_HOST_PAD = "1"
         # ...and are silent (RECOMP_MUTE='0' in -Env for sound).
         $env:RECOMP_MUTE = "1"
+        # The emulated hard disk's partition images (and cache) per run
+        # directory: instances booting together collided on one shared
+        # Partition5.img and the loser quit to the dashboard.
+        $env:RECOMP_SYSTEM_DIR = Join-Path $work "system"
         if ($Save -ne "user") {
             $sd = Join-Path $work "save"
             Remove-Item -Recurse -Force $sd -ErrorAction SilentlyContinue

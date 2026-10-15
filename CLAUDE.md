@@ -791,6 +791,13 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   thread, no suspension), `live.ps1 dump -Mem "profile main"` (main thread
   only, 16 frames), RECOMP_GUESTCPU_STATS share per holder, tools\burst.ps1
   -Taps/-TapKeys.
+- PARALLEL BOOT COLLISION (fixed 2026-10-15): with 8 instances, ~1 boot in 6
+  opened \Device\Harddisk0\Partition5 with 0xC0000001 and the title quit to
+  the dashboard ("exit requested", state ? and 0 draws -> reported as
+  [no pad]): every instance shared the partition images in
+  %LOCALAPPDATA%\xboxrecomp. RECOMP_SYSTEM_DIR (main.c) moves them; live.ps1
+  gives each run directory its own (<dir>\system). Some older "[no pad]"
+  failures under parallel load were probably this.
 - XEMU REFERENCE (2026-10-15): `tools\xemu.ps1` (skill: .claude/skills/xemu)
   boots a separate, muted xemu instance with the ISO (own config + HDD copy
   in work\xemu\, QMP on 127.0.0.1:4455), presses pad buttons by posting key
