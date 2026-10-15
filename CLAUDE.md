@@ -770,6 +770,13 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   Saves: `RECOMP_SAVE_DIR=<dir>` (toolkit) moves UDATA/TDATA out of game\;
   live.ps1 gives every scripted run a fresh copy of work\saves\<-Save>
   (default "unlocked": every peak unlocked by cheat; "none", "user").
+- LINES AND POINTS (2026-10-15): SSX 3 draws trails and rail lights as line
+  strips and snow spray / fireworks as point sprites; the Vulkan backend now
+  draws both (topology in the pipeline key; xemu's point rules). The
+  briefing screens after a load: 00297E30 race, 00297F68 one-on-one,
+  00297E98 freestyle. `RECOMP_VKR_PRIMLOG=1` logs each distinct state a
+  line/point batch is drawn with; any primitive type the backend cannot draw
+  is logged once as `[VKR] primitive N`.
 - XEMU REFERENCE (2026-10-15): `tools\xemu.ps1` (skill: .claude/skills/xemu)
   boots a separate, muted xemu instance with the ISO (own config + HDD copy
   in work\xemu\, QMP on 127.0.0.1:4455), presses pad buttons by posting key

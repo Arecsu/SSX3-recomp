@@ -556,6 +556,38 @@ static uint32_t *build_idx(uint32_t prim, uint32_t n, uint32_t *k_out, uint32_t 
     return idx;
 }
 
+
+/* RECOMP_VKR_PRIMLOG=1: each distinct state a line or point batch is drawn
+ * with, once (topology, blend, stages, combiner, point state). */
+static void primlog(const VkrDrawState *st, uint32_t n, int gpu_vsh)
+{
+    static int on = -1;
+    static uint32_t seen[64];
+    static int nseen;
+    uint32_t h;
+    int i;
+    if (on < 0) on = getenv("RECOMP_VKR_PRIMLOG") != NULL;
+    if (!on || st->topology == VKR_TOPO_TRIANGLES)
+        return;
+    h = st->topology * 0x9E3779B1u ^ st->u.stage_program * 31u ^ st->u.color_icw[0] * 7u
+        ^ st->u.final0 ^ st->u.final1 * 3u ^ (st->blend_src << 8 | st->blend_dst) * 13u
+        ^ (uint32_t)st->blend_enable * 17u ^ st->u.color_ocw[0];
+    for (i = 0; i < nseen; i++)
+        if (seen[i] == h)
+            return;
+    if (nseen < 64)
+        seen[nseen++] = h;
+    fprintf(stderr, "[PRIMLOG] %s n %u vsh %d stage_prog %08X tex %d%d%d%d blend %d %X/%X eq %X"
+            " rc %u icw0 %08X ocw0 %08X ia0 %08X final %08X %08X fac0 %08X pt %.1f/%d/%d alpha %X/%u\n",
+            st->topology == VKR_TOPO_LINES ? "lines" : "points", n, gpu_vsh, st->u.stage_program,
+            st->tex[0] != NULL, st->tex[1] != NULL, st->tex[2] != NULL, st->tex[3] != NULL,
+            st->blend_enable, st->blend_src, st->blend_dst, st->blend_eq, st->u.control & 0xFF,
+            st->u.color_icw[0], st->u.color_ocw[0], st->u.alpha_icw[0], st->u.final0, st->u.final1,
+            st->u.factor0[0], st->point_size, st->point_params, st->point_sprite,
+            st->alpha_func, st->alpha_ref);
+    fflush(stderr);
+}
+
 static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, uint32_t n)
 {
     uint32_t *idx, k = 0, topo;
@@ -585,6 +617,7 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
         st.topology = topo;
         double t2;
         bind_textures(&st);
+        primlog(&st, n, 0);
         {
             static int no_shadow = -1;
             if (no_shadow < 0) no_shadow = getenv("RECOMP_VKR_NO_SHADOW") != NULL;
@@ -629,6 +662,7 @@ static int be_draw_vsh(const Nv2aTarget *t, uint32_t prim, const float *in, uint
         fill_state(t, &st);
         st.topology = topo;
         bind_textures(&st);
+        primlog(&st, n, 1);
         {
             static int no_shadow = -1;
             if (no_shadow < 0) no_shadow = getenv("RECOMP_VKR_NO_SHADOW") != NULL;

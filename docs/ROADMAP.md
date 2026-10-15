@@ -185,7 +185,7 @@ With rendering off the CPU, the game itself must fit in 16.7 ms.
 
 ## Phase 5 — Visual completeness
 
-- [ ] Shadow wedge (board shadow projected over steep terrain) — resolve on the GPU path (likely matches hardware once depth/clip are exact).
+- [x] Shadow wedge (board shadow projected over steep terrain) — 2026-10-15: not reproduced on the Vulkan renderer: 25 race frames in bursts over Snow Jam's first jump and Metro-City (work\probe\burst.ps1) show soft grey rider shadows and no black wedge (it was 2 in 8 frames on the software path). Reopen if seen again.
 - [x] Pink-lit start area — confirmed against xemu (2026-10-15, `tools\xemu.ps1` snapshot `race_briefing`/`race_go`): real lighting, not a bug.
 - [x] Character lighting (2026-10-15): riders were washed out; vertex colours oD0/oD1 are now clamped to 0..1 before interpolation like the NV2A. Select Character and race riders match xemu.
 - [ ] Particles, snow spray, trails, motion blur, glow, reflections, water; every peak's look. **2026-10-15:** line strips (board/hand trails) and point sprites (snow spray) drawn on the GPU (were declined by the Vulkan backend: lost or drawn black); Intimidator compared with xemu (`intimidator_brief` snapshot).
