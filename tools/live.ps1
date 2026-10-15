@@ -10,9 +10,14 @@
 # -Dir <dir>: run as a separate instance in <dir> (created on start, with a
 # junction game -> <project>\game): its own pad file, pid, logs, triggers and
 # game_state.txt, so several sessions can run at once (tools\race_par.ps1).
+# -Save <name>: the game's saves (UDATA/TDATA) for this run are a fresh copy
+# of the fixture work\saves\<name> in <dir>\save (RECOMP_SAVE_DIR), so
+# scripted runs start from a known profile and never write the player's
+# saves in game\UDATA. Default "unlocked" (everything unlocked by cheat);
+# "none" = empty (first boot), "user" = the player's own game\UDATA.
 param([Parameter(Position = 0)][string]$Cmd = "snap", [string]$Out = "snap.png",
       [string]$Buttons = "", [string]$Mem = "", [hashtable]$Env = @{},
-      [string]$Key = "0x0D", [int]$Hold = 200, [string]$Dir = "")
+      [string]$Key = "0x0D", [int]$Hold = 200, [string]$Dir = "", [string]$Save = "unlocked")
 
 $root = Split-Path -Parent $PSScriptRoot
 $work = if ($Dir) { $Dir } else { $root }
@@ -46,6 +51,17 @@ switch ($Cmd) {
         $env:RECOMP_NO_HOST_PAD = "1"
         # ...and are silent (RECOMP_MUTE='0' in -Env for sound).
         $env:RECOMP_MUTE = "1"
+        if ($Save -ne "user") {
+            $sd = Join-Path $work "save"
+            Remove-Item -Recurse -Force $sd -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Force -Path $sd | Out-Null
+            if ($Save -ne "none") {
+                $fx = Join-Path $root "work\saves\$Save"
+                if (Test-Path $fx) { Copy-Item -Recurse -Path "$fx\*" -Destination $sd }
+                else { Write-Warning "save fixture $fx not found: starting with no save" }
+            }
+            $env:RECOMP_SAVE_DIR = $sd
+        } else { Remove-Item env:RECOMP_SAVE_DIR -ErrorAction SilentlyContinue }
         $env:RECOMP_THREAD_DUMP_TRIGGER = (Join-Path $work "dump.trigger")
         $env:RECOMP_SNAP_TRIGGER = (Join-Path $work "snap.trigger")
         foreach ($k in $Env.Keys) { Set-Item -Path "env:$k" -Value $Env[$k] }

@@ -1566,10 +1566,67 @@ index 1ad4fff..e8d6d1d 100644
  
  /* ============================================================================
 diff --git a/src/kernel/kernel_path.c b/src/kernel/kernel_path.c
-index caf6390..a2d1345 100644
+index caf6390..af1e0ec 100644
 --- a/src/kernel/kernel_path.c
 +++ b/src/kernel/kernel_path.c
-@@ -485,6 +485,10 @@ translate:
+@@ -156,6 +156,19 @@ static int resolve_symlink(const char* xbox_path, char* out, size_t out_size)
+     return 0;
+ }
+ 
++/* RECOMP_SAVE_DIR=<dir> moves the title's UDATA and TDATA trees (its saves
++ * and title data, opened through Partition1 and so otherwise under the game
++ * dir) into <dir>: scripted test runs get their own save files -- a fixture
++ * copied in -- and never touch the player's. Returns 1 when `rem`, the part
++ * of a game-dir path below the root, is one of those trees. */
++static int is_title_save_path(const char *rem)
++{
++    int n = match_prefix(rem, "UDATA");
++    if (!n)
++        n = match_prefix(rem, "TDATA");
++    return n && (rem[n] == '\0' || rem[n] == '\\' || rem[n] == '/');
++}
++
+ /* ======================================================================== */
+ /* Shared by both backends, for the same reason as xbox_LastFileError: the
+  * bridge calls it unconditionally, and a _WIN32-only definition breaks every
+@@ -177,6 +190,7 @@ const wchar_t *xbox_LastHostPath(void)
+ static WCHAR s_game_dir[MAX_PATH];
+ static WCHAR s_save_dir[MAX_PATH];
+ static BOOL  s_initialized = FALSE;
++static WCHAR s_title_save_dir[MAX_PATH];   /* RECOMP_SAVE_DIR, or empty */
+ 
+ /*
+  * The raw disk device, \Device\Harddisk0\Partition0.
+@@ -374,6 +388,19 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
+         }
+     }
+ 
++    {
++        const char *env = getenv("RECOMP_SAVE_DIR");
++        s_title_save_dir[0] = L'\0';
++        if (env && *env) {
++            WCHAR w[MAX_PATH];
++            MultiByteToWideChar(CP_UTF8, 0, env, -1, w, MAX_PATH);
++            if (!GetFullPathNameW(w, MAX_PATH, s_title_save_dir, NULL))
++                wcscpy_s(s_title_save_dir, MAX_PATH, w);
++            SHCreateDirectoryExW(NULL, s_title_save_dir, NULL);
++            fprintf(stderr, "[PATH] title saves (UDATA/TDATA) -> %S\n", s_title_save_dir);
++        }
++    }
++
+     s_initialized = TRUE;
+     xbox_log(XBOX_LOG_INFO, XBOX_LOG_PATH, "Path init: game=%S, save=%S", s_game_dir, s_save_dir);
+ }
+@@ -424,6 +451,8 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+         if (skip) {
+             remainder = xbox_path + skip;
+             base_dir  = s_rules[i].to_save ? s_save_dir : s_game_dir;
++            if (!s_rules[i].to_save && s_title_save_dir[0] && is_title_save_path(remainder))
++                base_dir = s_title_save_dir;
+             sub_dir   = s_rules[i].sub_win;
+             goto translate;
+         }
+@@ -485,10 +514,15 @@ translate:
  #include <sys/stat.h>
  #include <sys/types.h>
  #include <errno.h>
@@ -1580,7 +1637,29 @@ index caf6390..a2d1345 100644
  
  static char s_game_dir[MAX_PATH];
  static char s_save_dir[MAX_PATH];
-@@ -553,6 +557,116 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
+ static BOOL s_initialized = FALSE;
++static char s_title_save_dir[MAX_PATH];    /* RECOMP_SAVE_DIR, or empty */
+ 
+ /* Strip a single trailing '/' (but never the root '/'). */
+ static void strip_trailing_slash(char* s)
+@@ -548,11 +582,133 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
+     strip_trailing_slash(s_game_dir);
+     strip_trailing_slash(s_save_dir);
+ 
++    {
++        const char *env = getenv("RECOMP_SAVE_DIR");
++        s_title_save_dir[0] = '\0';
++        if (env && *env) {
++            if (!realpath(env, s_title_save_dir))
++                snprintf(s_title_save_dir, sizeof(s_title_save_dir), "%s", env);
++            mkdir_p(s_title_save_dir);
++            strip_trailing_slash(s_title_save_dir);
++            fprintf(stderr, "[PATH] title saves (UDATA/TDATA) -> %s\n", s_title_save_dir);
++        }
++    }
++
+     s_initialized = TRUE;
+     xbox_log(XBOX_LOG_INFO, XBOX_LOG_PATH, "Path init: game=%s, save=%s",
               s_game_dir, s_save_dir);
  }
  
@@ -1697,7 +1776,7 @@ index caf6390..a2d1345 100644
  BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, DWORD buf_size)
  {
      const char* remainder = NULL;
-@@ -566,6 +680,9 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+@@ -566,6 +722,9 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
      if (!s_initialized)
          xbox_path_init(NULL, NULL);
  
@@ -1707,7 +1786,16 @@ index caf6390..a2d1345 100644
      {
          char linked[512];
          if (resolve_symlink(xbox_path, linked, sizeof(linked)))
-@@ -616,6 +733,7 @@ translate:
+@@ -577,6 +736,8 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+         if (skip) {
+             remainder = xbox_path + skip;
+             base_dir  = s_rules[i].to_save ? s_save_dir : s_game_dir;
++            if (!s_rules[i].to_save && s_title_save_dir[0] && is_title_save_path(remainder))
++                base_dir = s_title_save_dir;
+             sub_dir   = s_rules[i].sub_posix;
+             goto translate;
+         }
+@@ -616,6 +777,7 @@ translate:
                  host_path_buf[--n] = '\0';
          }
  

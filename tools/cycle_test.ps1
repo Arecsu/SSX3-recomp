@@ -9,7 +9,7 @@
 # -ProfileEnd: after the last cycle, into one more race and take a sampling
 # profile of every thread there (tools/profile_tally.py reads it).
 param([int]$Cycles = 5, [int]$RaceSec = 8, [hashtable]$Env = @{}, [string]$Dir = "",
-      [int]$Rider = 0, [int]$Mode = 0, [int]$Event = 0, [switch]$ProfileEnd)
+      [int]$Rider = 0, [int]$Mode = 0, [int]$Event = 0, [switch]$ProfileEnd, [string]$Save = "unlocked")
 
 . (Join-Path $PSScriptRoot "game_state.ps1")
 $root = if ($Dir) { $Dir } else { Split-Path -Parent $PSScriptRoot }
@@ -20,7 +20,7 @@ function Press([string]$b) { & $live press -Buttons $b -Dir $Dir | Out-Null }
 function Crashed { Select-String -Path $err -SimpleMatch "[CRASH]" -List -ErrorAction SilentlyContinue }
 function BadCalls { @(Select-String -Path $err -SimpleMatch "is not code" -ErrorAction SilentlyContinue).Count }
 
-& $live start -Env $Env -Dir $Dir | Out-Null
+& $live start -Env $Env -Dir $Dir -Save $Save | Out-Null
 Start-Sleep -Seconds 2
 $result = "OK"
 for ($c = 1; $c -le $Cycles; $c++) {

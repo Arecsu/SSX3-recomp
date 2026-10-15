@@ -7,7 +7,7 @@
 # reached by pressing Start on the title until game_state.txt shows the main menu (screen id 2).
 # -Keep leaves the game running (stop it with tools\live.ps1 stop).
 param([string]$Steps = "", [string]$ShotDir = "shots\menu", [double]$WaitSec = 2,
-      [hashtable]$Env = @{}, [string]$Dir = "", [switch]$Keep, [int]$TimeoutSec = 120)
+      [hashtable]$Env = @{}, [string]$Dir = "", [switch]$Keep, [int]$TimeoutSec = 120, [string]$Save = "unlocked")
 
 . (Join-Path $PSScriptRoot "game_state.ps1")
 $root = if ($Dir) { $Dir } else { Split-Path -Parent $PSScriptRoot }
@@ -19,7 +19,7 @@ function Snap([string]$name) {
     & $live snap -Out (Join-Path $ShotDir "$name.png") -Dir $Dir | Out-Null
 }
 
-& $live start -Env $Env -Dir $Dir | Out-Null
+& $live start -Env $Env -Dir $Dir -Save $Save | Out-Null
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
 $front = $null
 while ((Get-Date) -lt $deadline) {

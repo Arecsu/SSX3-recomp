@@ -11,14 +11,14 @@
 # (see to_race.ps1; default Zoe, Race, Snow Jam).
 param([int]$Runs = 3, [int]$TimeoutSec = 480, [hashtable]$Env = @{}, [string]$Dir = "",
       [int]$RaceSec = 0, [string]$Snap = "", [switch]$NoTaps, [switch]$Profile,
-      [int]$Rider = 0, [int]$Mode = 0, [int]$Event = 0)
+      [int]$Rider = 0, [int]$Mode = 0, [int]$Event = 0, [string]$Save = "unlocked")
 
 $root = if ($Dir) { $Dir } else { Split-Path -Parent $PSScriptRoot }
 $live = Join-Path $PSScriptRoot "live.ps1"
 $nav = Join-Path $PSScriptRoot "to_race.ps1"
 
 for ($i = 1; $i -le $Runs; $i++) {
-    & $live start -Env $Env -Dir $Dir | Out-Null
+    & $live start -Env $Env -Dir $Dir -Save $Save | Out-Null
     Start-Sleep -Seconds 2
     $out = & $nav -TimeoutSec $TimeoutSec -Dir $Dir -Rider $Rider -Mode $Mode -Event $Event 2>&1 | Select-Object -Last 1
     $err = Get-Content (Join-Path $root "stderr.txt") -ErrorAction SilentlyContinue
