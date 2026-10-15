@@ -1,8 +1,29 @@
 diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
-index 258048c..a261e7b 100644
+index 258048c..ce8ded3 100644
 --- a/src/apu/apu_core.c
 +++ b/src/apu/apu_core.c
-@@ -377,12 +377,72 @@ void mcpx_apu_monitor_finalize(MCPXAPUState *d)
+@@ -319,12 +319,15 @@ void mcpx_apu_monitor_init(MCPXAPUState *d, Error **errp)
+     d->monitor.queued_bytes_low = 1024;
+     d->monitor.queued_bytes_high = 3072;
+ 
+-    /* Try XAudio2 first (lower latency) */
+-    if (xa2_init()) {
+-        fprintf(stderr, "[APU] Using XAudio2 audio backend\n");
+-        return;
++    /* Try XAudio2 first (lower latency); RECOMP_AUDIO=waveout skips it. */
++    {
++        const char *ab = getenv("RECOMP_AUDIO");
++        if (!(ab && !strcmp(ab, "waveout")) && xa2_init()) {
++            fprintf(stderr, "[APU] Using XAudio2 audio backend\n");
++            return;
++        }
+     }
+-    fprintf(stderr, "[APU] XAudio2 unavailable, falling back to waveOut\n");
++    fprintf(stderr, "[APU] XAudio2 unavailable or not wanted, using waveOut\n");
+ 
+     WAVEFORMATEX wfx = { 0 };
+     wfx.wFormatTag      = WAVE_FORMAT_PCM;
+@@ -377,12 +380,74 @@ void mcpx_apu_monitor_finalize(MCPXAPUState *d)
              g_waveout.frames_written);
  }
  
@@ -63,11 +84,13 @@ index 258048c..a261e7b 100644
 +                    g_test_tone.phase -= 2.0 * M_PI;
 +            }
 +        }
++        if (!g_audio_muted)
++            mixer_render(d->monitor.frame_buf, 256);
++        /* Measured before the mute: a muted test run still shows whether
++         * the title produced sound. */
++        apu_level_note(&d->monitor.frame_buf[0][0], 256, 1);
 +        if (g_audio_muted)
 +            memset(d->monitor.frame_buf, 0, sizeof(d->monitor.frame_buf));
-+        else
-+            mixer_render(d->monitor.frame_buf, 256);
-+        apu_level_note(&d->monitor.frame_buf[0][0], 256, 1);
 +        xa2_submit_samples(&d->monitor.frame_buf[0][0], 256);
 +        return;
 +    }
@@ -75,7 +98,7 @@ index 258048c..a261e7b 100644
      /* XAudio2 path: render and submit a buffer */
      if (xa2_is_active()) {
          int buf_size = xa2_get_buffer_size();
-@@ -413,6 +473,7 @@ void mcpx_apu_monitor_frame(MCPXAPUState *d)
+@@ -413,12 +478,48 @@ void mcpx_apu_monitor_frame(MCPXAPUState *d)
              remaining -= chunk;
          }
  
@@ -83,7 +106,48 @@ index 258048c..a261e7b 100644
          xa2_submit_samples((const int16_t *)xa2_tmp, buf_size);
          return;
      }
-@@ -483,10 +544,32 @@ static void throttle(MCPXAPUState *d)
+ 
+     if (!g_waveout.initialized) return;
+ 
++    /* waveOut, voice-processor frame: the same fix as XAudio2 above -- keep
++     * the guest's 256 samples (plus the software mixer) instead of clearing
++     * them, and fill the 2048-sample waveOut buffer from successive frames,
++     * submitting it when full. */
++    if (g_vp_frame) {
++        static int16_t acc[WAVEOUT_BUF_SAMPLES][2];
++        static int acc_n;
++        if (!g_audio_muted)
++            mixer_render(d->monitor.frame_buf, 256);
++        apu_level_note(&d->monitor.frame_buf[0][0], 256, 1);
++        if (g_audio_muted)
++            memset(d->monitor.frame_buf, 0, sizeof(d->monitor.frame_buf));
++        memcpy(acc[acc_n], d->monitor.frame_buf, 256 * 2 * sizeof(int16_t));
++        acc_n += 256;
++        if (acc_n < WAVEOUT_BUF_SAMPLES)
++            return;
++        acc_n = 0;
++        {
++            int vi = g_waveout.next_buf, wl = 0;
++            WAVEHDR *vh = &g_waveout.hdrs[vi];
++            while (!(vh->dwFlags & WHDR_DONE) && (vh->dwFlags & WHDR_INQUEUE)) {
++                qemu_mutex_unlock(&d->lock);
++                Sleep(1);
++                qemu_mutex_lock(&d->lock);
++                if (++wl > 50) break;
++            }
++            memcpy(g_waveout.bufs[vi], acc, sizeof acc);
++            vh->dwFlags &= ~WHDR_DONE;
++            waveOutWrite(g_waveout.hwo, vh, sizeof(WAVEHDR));
++            g_waveout.next_buf = (vi + 1) % WAVEOUT_NUM_BUFS;
++            g_waveout.frames_written++;
++        }
++        return;
++    }
++
+     int idx = g_waveout.next_buf;
+     WAVEHDR *hdr = &g_waveout.hdrs[idx];
+ 
+@@ -483,10 +584,32 @@ static void throttle(MCPXAPUState *d)
  
      int64_t now_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
  
@@ -117,7 +181,7 @@ index 258048c..a261e7b 100644
  
      while (!d->pause_requested) {
          now_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
-@@ -530,7 +613,9 @@ static void se_frame(MCPXAPUState *d)
+@@ -530,7 +653,9 @@ static void se_frame(MCPXAPUState *d)
  
      mcpx_apu_vp_frame(d, mixbins);
      mcpx_apu_dsp_frame(d, mixbins);
@@ -127,7 +191,7 @@ index 258048c..a261e7b 100644
  
      d->ep_frame_div++;
  
-@@ -544,6 +629,12 @@ static void se_frame(MCPXAPUState *d)
+@@ -544,6 +669,12 @@ static void se_frame(MCPXAPUState *d)
  static void *mcpx_apu_frame_thread(void *arg)
  {
      MCPXAPUState *d = MCPX_APU_DEVICE(arg);
@@ -140,7 +204,7 @@ index 258048c..a261e7b 100644
      qemu_mutex_lock(&d->lock);
  
      while (!qatomic_read(&d->exiting)) {
-@@ -605,6 +696,17 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -605,6 +736,17 @@ static void *mcpx_apu_frame_thread(void *arg)
           * off every USB interrupt. */
          qemu_mutex_unlock(&d->lock);
          SwitchToThread();
@@ -158,7 +222,7 @@ index 258048c..a261e7b 100644
          qemu_mutex_lock(&d->lock);
      }
  
-@@ -693,6 +795,14 @@ MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr)
+@@ -693,6 +835,14 @@ MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr)
          warn_reportf_err(local_err, "mcpx_apu_monitor_init failed: ");
      }
  

@@ -177,10 +177,10 @@ With rendering off the CPU, the game itself must fit in 16.7 ms.
 ## Phase 4 — Audio, complete
 
 - [ ] Verify by ear: music (EA Radio), speech, menu SFX, race SFX, 3D voices (`RECOMP_APU_LEVEL=1` shows 48 kHz and real levels today).
-- [ ] waveOut fallback path gets the same VP fix as XAudio2.
+- [x] waveOut fallback path gets the same VP fix as XAudio2. (2026-10-15: keeps the voice processor's 256-sample frames, eight per 2048-sample waveOut buffer; `RECOMP_AUDIO=waveout` selects it; race level meter: 188 buffers/s, peaks 10-30k, same as XAudio2.)
 - [ ] GP/EP DSP: real effects (reverb, mixdown) — DSP56300 emulation or HLE of the XDK effect images; replaces the doorbell ack.
 - [ ] A/V sync at 60 FPS, no underruns under load; volume/pan/3D positioning correct.
-- [ ] Intro/cutscene movies with sound.
+- [ ] Intro/cutscene movies with sound. **2026-10-15:** the three intro movies (eabig, thx, intro_dj) play with sound by the level meter (peaks 3-24k throughout, `RECOMP_SKIP_INTRO=0 RECOMP_APU_LEVEL=1`; the meter now measures before RECOMP_MUTE). Needs a check by ear.
 - [ ] Gate: a full race and the intro play with all expected sound, no gaps.
 
 ## Phase 5 — Visual completeness
@@ -225,6 +225,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-15 — Audio: waveOut fallback fixed like XAudio2; intro movies and races produce sound by the meter (muted runs measure too).
 - 2026-10-15 — 2-player split-screen (Multi Play) works; a second XInput controller now enables it. Reliability batch race_par 4x3: 12/12.
 - 2026-10-15 — Frame-rate check on every peak: 60 FPS with occasional single slow frames; Metro-City's 30 FPS stretch is the game's own (xemu drops to 30 at the same point).
 - 2026-10-15 — Conquer the Mountain: free-roam, pause menu, Transport and teleport work. Race shadow wedge not reproduced on Vulkan (25 frames).
