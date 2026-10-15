@@ -147,10 +147,15 @@ static DWORD WINAPI game_state_thread(LPVOID unused)
             extern uint32_t xbox_Nv2aDrawCount(void);
             /* 7th/8th fields: the active frontend screen (vtable and id,
              * ssx3_overrides.c sub_00204400) -- which menu page is up. */
-            extern volatile uint32_t g_ssx3_ui_screen_vt, g_ssx3_ui_screen_id;
-            snprintf(line, sizeof line, "%08X %s %lu %lu %u %u %08X %d\n", vt, state_name(vt),
+            /* 9th: that screen's live state (5 = active; it moves on when the
+             * screen closes) -- the in-game HUD is left out of fields 7/8,
+             * so a pause menu over the race shows as the pause menu. */
+            extern volatile uint32_t g_ssx3_ui_screen_vt, g_ssx3_ui_screen_id, g_ssx3_ui_screen_ptr;
+            uint32_t sp = g_ssx3_ui_screen_ptr;
+            unsigned sst = sp ? (unsigned)((MEM16(sp + 0x1C) >> 8) & 0x3F) : 0;
+            snprintf(line, sizeof line, "%08X %s %lu %lu %u %u %08X %d %u\n", vt, state_name(vt),
                      (unsigned long)(now - t0), (unsigned long)((now - since) / 1000), sub,
-                     xbox_Nv2aDrawCount(), g_ssx3_ui_screen_vt, (int)g_ssx3_ui_screen_id);
+                     xbox_Nv2aDrawCount(), g_ssx3_ui_screen_vt, (int)g_ssx3_ui_screen_id, sst);
             f = fopen("game_state.tmp", "w");
             if (f) {
                 fputs(line, f);

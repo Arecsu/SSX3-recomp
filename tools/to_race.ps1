@@ -104,14 +104,19 @@ while ((Get-Date) -lt $deadline) {
             }
             elseif ($scr -like "*:19" -and -not $scripted[$scr]) {
                 # Peak 1, then the mode, then the event: one screen, so by time.
-                $scripted[$scr] = $true
-                Start-Sleep -Seconds 1.5; Press "a"; Start-Sleep -Seconds 2
-                for ($m = 0; $m -lt $Mode; $m++) { Press "down"; Start-Sleep -Milliseconds 700 }
-                Press "a"; Start-Sleep -Seconds 2
-                for ($e = 0; $e -lt $Event; $e++) { Press "down"; Start-Sleep -Milliseconds 700 }
-                Press "a"
+                $scripted[$scr] = Get-Date
+                Start-Sleep -Seconds 1.5; Press "a"; Start-Sleep -Seconds 2.5
+                for ($m = 0; $m -lt $Mode; $m++) { Press "down"; Start-Sleep -Milliseconds 800 }
+                Start-Sleep -Milliseconds 500; Press "a"; Start-Sleep -Seconds 2.5
+                for ($e = 0; $e -lt $Event; $e++) { Press "down"; Start-Sleep -Milliseconds 800 }
+                Start-Sleep -Milliseconds 500; Press "a"
             }
-            elseif ($scr -like "*:19") { }    # wait for the event to load the rules
+            elseif ($scr -like "*:19") {
+                # Waiting for the event to load the rules. A press the menu
+                # dropped leaves it on the event page: after 10 s, A again
+                # (the event page is the last, so this only goes forward).
+                if (((Get-Date) - $scripted[$scr]).TotalSeconds -ge 10 -and $since -ge 3) { Press "a" }
+            }
             elseif ($since -ge 2) { Press "a" }
         }
         "intro" { if ($since -ge 2) { Press "start" } }   # only if the movies play (RECOMP_SKIP_INTRO=0)

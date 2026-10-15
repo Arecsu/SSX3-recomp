@@ -452,7 +452,11 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   Rules, 24 Options (28 Game, 29 Sound, 30 HUD, 31 Controller, 32 Save/Load,
   35 Load game, 36 Credits), 13 Rider Details, 14 Equip Gear, 16 Music.
   to_race.ps1/race_test.ps1 -Rider/-Mode/-Event use them;
-  menu_test.ps1 waits for id 2.
+  menu_test.ps1 waits for id 2. The in-game HUD screen (vt 00293000)
+  re-activates all the time and is left out of the screen field; field 9 is
+  the recorded screen's live state (5 = up). In a race: intro 00297E30,
+  pause menu 002981D8, Quit dialog 00297B60. tools\cycle_test.ps1 drives
+  race -> pause -> Quit -> Yes by these.
   Inside ingame, state+0xA8 moves with the phase (5 at the briefing, 8 and
   0xC during a race); the remaining values (finish, results, replay) still
   have to be mapped -- to_race.ps1 prints the state for every new screen.

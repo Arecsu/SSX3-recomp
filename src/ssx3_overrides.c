@@ -268,7 +268,8 @@ void sub_00205D40(void)
  * screen fields (game_state.c). (A wrapper on the screen manager's branch
  * sub_00204400 never ran: it is a jump target inside its parent.) */
 extern void sub_00202460_gen(void);
-volatile uint32_t g_ssx3_ui_screen_vt, g_ssx3_ui_screen_id;
+volatile uint32_t g_ssx3_ui_screen_vt, g_ssx3_ui_screen_id, g_ssx3_ui_screen_ptr;
+#define SSX3_HUD_SCREEN_VT 0x00293000u  /* in-game HUD: re-activates all the time */
 
 void sub_00202460(void)
 {
@@ -296,8 +297,9 @@ void sub_00202460(void)
             fflush(stderr);
         }
     }
-    if (scr && ((MEM16(scr + 0x1C) >> 8) & 0x3F) == 5) {
+    if (scr && ((MEM16(scr + 0x1C) >> 8) & 0x3F) == 5 && MEM32(scr) != SSX3_HUD_SCREEN_VT) {
         uint32_t vt = MEM32(scr), id = MEM32(scr + 0xC);
+        g_ssx3_ui_screen_ptr = scr;
         if (vt != g_ssx3_ui_screen_vt || id != g_ssx3_ui_screen_id) {
             g_ssx3_ui_screen_vt = vt;
             g_ssx3_ui_screen_id = id;
@@ -1143,14 +1145,16 @@ extern void sub_00234BE0_gen(void);
  * one wake. In ~1 run in 10 the wake never comes: the main thread waited
  * 417 s for time 0x1ECF while the fence stood at 0x1ED3 -- already past it --
  * with the executor idle, and the race never loaded ("43%" with draws
- * stopped). A watchdog thread checks every 50 ms: a wait older than 200 ms
- * whose time the fence has reached (D3D's own test: cur - time >= cur -
+ * stopped). A watchdog thread checks every 5 ms: a wait older than 20 ms
+ * (was 200 ms: each rescue was a visible hitch, and input pressed during it
+ * could be lost) whose time the fence has reached (D3D's own test: cur - time >= cur -
  * fence) gets the wake it was owed, set from the host, and is logged as
  * [BLOCK-RESCUE] with the state of the software-method chain so the cause
  * can still be found. A wait whose time is NOT reached after 2 s is logged
  * once ([BLOCK-STUCK]) and left alone.
  */
 extern void xbox_Nv2aSwmDiag(char *buf, size_t n);
+extern uint32_t xbox_TickCountMs(void);
 extern int  xbox_KeSetEventFromHost(uint32_t guest_va);
 
 static DWORD WINAPI block_rescue_thread(LPVOID unused)
@@ -1162,9 +1166,9 @@ static DWORD WINAPI block_rescue_thread(LPVOID unused)
     for (;;) {
         DWORD since = s_block_since, now;
         uint32_t t = s_block_t, dev, fence, cur;
-        Sleep(50);
-        now = GetTickCount();
-        if (!since || since != s_block_since || now - since < 200)
+        Sleep(5);
+        now = xbox_TickCountMs();
+        if (!since || since != s_block_since || now - since < 20)
             continue;
         dev = MEM32(0x0024B0D8u);
         if (!dev)
@@ -1235,7 +1239,7 @@ void sub_00234BE0(void)
             CloseHandle(CreateThread(NULL, 0, block_rescue_thread, NULL, 0, NULL));
     }
     s_block_t = t;
-    s_block_since = GetTickCount();
+    s_block_since = xbox_TickCountMs();
     sub_00234BE0_gen();
     s_block_since = 0;
 }
