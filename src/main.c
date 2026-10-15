@@ -39,6 +39,10 @@
 #include <dbghelp.h>
 #endif
 #include <stdio.h>
+#ifdef _WIN32
+#include <xinput.h>
+#pragma comment(lib, "xinput.lib")
+#endif
 #include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
@@ -720,6 +724,30 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
      *     enumerates it, reads the XID descriptor and polls reports; input
      *     comes from a host pad, RECOMP_KEYBOARD or the RECOMP_PAD_* probes. */
     if (!getenv("RECOMP_USB"))           _putenv_s("RECOMP_USB", "1");
+#ifdef _WIN32
+    /* RECOMP_USB_PADS: as many emulated pads as XInput controllers are
+     * plugged in at start (1..4), so a second controller makes Multi Play
+     * (2-player split-screen) available. Scripted runs (RECOMP_NO_HOST_PAD)
+     * keep one; set it to force a count. */
+    if (!getenv("RECOMP_USB_PADS")) {
+        const char *nh = getenv("RECOMP_NO_HOST_PAD");
+        int pads = 0;
+        if (!(nh && *nh && *nh != '0')) {
+            DWORD i;
+            for (i = 0; i < 4; i++) {
+                XINPUT_STATE st;
+                if (XInputGetState(i, &st) == ERROR_SUCCESS)
+                    pads++;
+            }
+        }
+        if (pads > 1) {
+            char n[4];
+            snprintf(n, sizeof n, "%d", pads);
+            _putenv_s("RECOMP_USB_PADS", n);
+            fprintf(stderr, "[BOOT] %d controllers: %d emulated pads\n", pads, pads);
+        }
+    }
+#endif
     /*   RECOMP_GUEST_LOCK: one guest thread runs guest code at a time, as on
      *     the Xbox's single CPU (threads switch at kernel calls). Without it
      *     the race load intermittently hung at 43% (resources stuck in state
