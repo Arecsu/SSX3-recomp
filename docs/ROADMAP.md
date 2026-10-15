@@ -8,12 +8,14 @@ lands the work, and add a dated line to the [log](#progress-log) for every
 milestone change. Gates are measured, not judged by eye — each phase says
 which test proves it.
 
-**Where we are (2026-10-15):** playable on the Vulkan renderer at a steady
-60 FPS in races (GPU vertex programs), audio through the emulated APU with no
+**Where we are (2026-10-15, evening):** playable on the Vulkan renderer at a steady
+60 FPS in races (GPU vertex programs; Metro-City's tunnel is 30 FPS in xemu too), audio through the emulated APU with no
 crackle, keyboard/XInput input with rumble, save/load, fullscreen. 20/20
 boot→race, 2-hour soak 120/120 race/quit cycles. Character and race lighting
-match xemu. Open: Peaks 2/3 coverage, audio by ear, effects DSP, native
-Windows build, upstreaming. See README and CLAUDE.md.
+match xemu; every peak's Race and Freestyle events, Conquer the Mountain and
+2-player split-screen run; Windows-only build verified; 48/48 parallel boots.
+Open: audio by ear, effects DSP (licence decision), lodge shop, upstreaming,
+optional direct present / higher resolution. See README and CLAUDE.md.
 
 ---
 
@@ -211,7 +213,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Phase 8 — Hardening
 
-- [ ] 2-hour automated soak, 20/20 boot→race, every Phase 6 item: 0 crashes, 0 hangs. **2026-10-15:** 2-hour soak passed -- `cycle_test -Cycles 120 -RaceSec 20` in one session: 120/120 race -> pause -> quit -> title -> race, 0 crashes, 0 hangs, 0 bad indirect calls, race 58.6-59.4 FPS in every 10-minute block (6 fence-wake rescues, 3 guest-CPU holds over 25 ms). 20/20 boot->race done earlier (Phase 1 gate); Phase 6 coverage still partial (Peaks 2/3 locked).
+- [ ] 2-hour automated soak, 20/20 boot→race, every Phase 6 item: 0 crashes, 0 hangs. **2026-10-15:** race_par 8x6 48/48 (0 crashes, 0 hangs); Phase 6 now covered except the lodge shop, progression over many events and audio by ear. **2026-10-15:** 2-hour soak passed -- `cycle_test -Cycles 120 -RaceSec 20` in one session: 120/120 race -> pause -> quit -> title -> race, 0 crashes, 0 hangs, 0 bad indirect calls, race 58.6-59.4 FPS in every 10-minute block (6 fence-wake rescues, 3 guest-CPU holds over 25 ms). 20/20 boot->race done earlier (Phase 1 gate); Phase 6 coverage still partial (Peaks 2/3 locked).
 - [ ] Upstream the toolkit fixes in `patches/xboxrecomp-local.patch` where they are general.
 
 ---
@@ -225,6 +227,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-15 — Reliability: race_par 8x6 48/48 in 4.6 min (autonav, per-run saves and partition images). Conquer the Mountain teleport to Green Station (lodge/transport station) works; entering the lodge shop needs steering, left for a manual check.
 - 2026-10-15 — Parallel boots no longer collide on the shared partition images (RECOMP_SYSTEM_DIR per run directory): race_par 8x3 24/24 in 2.7 min (was 20/24, the 4 quit to the dashboard at boot).
 - 2026-10-15 — Audio: waveOut fallback fixed like XAudio2; intro movies and races produce sound by the meter (muted runs measure too).
 - 2026-10-15 — 2-player split-screen (Multi Play) works; a second XInput controller now enables it. Reliability batch race_par 4x3: 12/12.
