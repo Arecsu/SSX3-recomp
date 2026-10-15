@@ -58,6 +58,7 @@ static void stats_tick(void)
 #include "vkr_backend.h"
 
 extern ptrdiff_t xbox_GetMemoryOffset(void);
+extern void xbox_FramebufferPublishImage(const uint32_t *px, uint32_t w, uint32_t h);
 
 _Static_assert(sizeof(VkrVertex) == sizeof(Nv2aVshOutput),
                "VkrVertex must mirror Nv2aVshOutput");
@@ -103,9 +104,15 @@ static void *flip_thread(void *unused)
         px = vkr_frame_pixels(s_vk, j.slot);
         if (px) {
             uint8_t *mem = (uint8_t *)xbox_GetMemoryOffset();
+            uint32_t fw, fh;
+            const uint8_t *full;
             for (y = 0; y < j.h; y++)
                 memcpy(mem + j.offset + (size_t)(j.y + y) * j.pitch + (size_t)j.x * 4,
                        px + (size_t)y * j.w * 4, (size_t)j.w * 4);
+            /* Higher internal resolution: the window shows the full image. */
+            full = vkr_frame_pixels_full(s_vk, j.slot, &fw, &fh);
+            if (full)
+                xbox_FramebufferPublishImage((const uint32_t *)full, fw, fh);
         }
         pthread_mutex_lock(&s_job_lock);
         s_job_head = (s_job_head + 1) % 4;

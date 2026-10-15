@@ -97,5 +97,8 @@ int vkr_read_back(VkrContext *c, uint8_t *out);
 int vkr_flip_submit(VkrContext *c);
 const uint8_t *vkr_frame_pixels(VkrContext *c, int slot);
 void vkr_frame_release(VkrContext *c, int slot);
+/* With RECOMP_RES above the guest's: the full-resolution image of the frame
+ * (after vkr_frame_pixels), else NULL. */
+const uint8_t *vkr_frame_pixels_full(VkrContext *c, int slot, uint32_t *w, uint32_t *h);
 
 #endif
