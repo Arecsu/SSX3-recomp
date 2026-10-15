@@ -51,7 +51,8 @@ An Xbox/XInput controller needs no setting (rumble included). The window
 opens at 2x (`RECOMP_WINDOW_SCALE`), can be resized, and **Alt+Enter** or
 **F11** toggles borderless fullscreen; the picture keeps its 4:3 shape
 (`RECOMP_PRESENT_FILTER=point` for sharp pixels). Each run's log is kept in
-`logs\` (newest 40). `RECOMP_GPU=sw` uses the software rasteriser instead of
+`logs\` (newest 40); a crash also leaves a minidump there
+(`crash_<time>.dmp`, open it in Visual Studio next to `build\ssx3_recomp.pdb`). `RECOMP_GPU=sw` uses the software rasteriser instead of
 Vulkan; `RECOMP_SKIP_INTRO=0` plays the intro movies.
 
 ## Screenshots

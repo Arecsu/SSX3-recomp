@@ -162,6 +162,49 @@ static void print_guest_context(void *rip)
 }
 #endif /* _WIN32 */
 
+static DWORD WINAPI test_crash_thread(LPVOID arg)
+{
+    Sleep((DWORD)(intptr_t)arg * 1000);
+    *(volatile int *)(uintptr_t)8 = 1;
+    return 0;
+}
+
+/* A minidump of the crash in logs\crash_<time>.dmp (threads, stacks and
+ * the exe's data; not the guest's memory, which would make it huge) -- open
+ * it with Visual Studio or WinDbg next to build\ssx3_recomp.pdb. Once per run;
+ * RECOMP_CRASH_DUMP=0 skips it. */
+static void write_crash_dump(EXCEPTION_POINTERS *ep)
+{
+#ifdef _WIN32
+    static volatile LONG done;
+    const char *e = getenv("RECOMP_CRASH_DUMP");
+    char path[MAX_PATH];
+    SYSTEMTIME st;
+    HANDLE f;
+    MINIDUMP_EXCEPTION_INFORMATION mei;
+    if ((e && *e == '0') || InterlockedExchange(&done, 1))
+        return;
+    CreateDirectoryA("logs", NULL);
+    GetLocalTime(&st);
+    snprintf(path, sizeof path, "logs\\crash_%04u%02u%02u-%02u%02u%02u.dmp", st.wYear, st.wMonth,
+             st.wDay, st.wHour, st.wMinute, st.wSecond);
+    f = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE)
+        return;
+    mei.ThreadId = GetCurrentThreadId();
+    mei.ExceptionPointers = ep;
+    mei.ClientPointers = FALSE;
+    if (MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), f,
+                          (MINIDUMP_TYPE)((e && (*e == 'f' || *e == 'F') ? MiniDumpWithDataSegs : 0)
+                                          | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules),
+                          &mei, NULL, NULL))
+        fprintf(stderr, "[CRASH] minidump written to %s\n", path);
+    CloseHandle(f);
+#else
+    (void)ep;
+#endif
+}
+
 #define GUEST_RAM(a) (((a) >= 0x10000 && (a) < 0x04000000) || ((a) >= 0x80000000u && (a) < 0x84000000u))
 
 /* Guest registers (this thread's) and the stack's return addresses -- for
@@ -386,6 +429,7 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
             }
         }
 
+        write_crash_dump(ep);
         fprintf(stderr, "[CRASH] Access violation at RIP=0x%llX, fault addr=0x%llX (%s)\n",
             (unsigned long long)ep->ContextRecord->Rip,
             (unsigned long long)fault_addr,
@@ -410,12 +454,17 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
          *   fprintf(stderr, "  Game state: %u\n", state);
          */
 
-        /* Print native stack return addresses for debugging */
+        /* Print native stack return addresses for debugging (the exe's own,
+         * wherever ASLR put it -- a fixed 0x140000000 range found none). */
         {
             uintptr_t *sp = (uintptr_t *)ep->ContextRecord->Rsp;
-            fprintf(stderr, "  Native stack (first 8 return addrs):\n");
+            uintptr_t lo = (uintptr_t)GetModuleHandleA(NULL);
+            uintptr_t hi = lo + ((IMAGE_NT_HEADERS *)(lo + ((IMAGE_DOS_HEADER *)lo)->e_lfanew))
+                                    ->OptionalHeader.SizeOfImage;
+            fprintf(stderr, "  Native stack (exe return addrs, image base 0x%llX):\n",
+                    (unsigned long long)lo);
             for (int i = 0; i < 64 && sp[i]; i++) {
-                if (sp[i] >= 0x140000000ULL && sp[i] < 0x150000000ULL) {
+                if (sp[i] >= lo && sp[i] < hi) {
                     fprintf(stderr, "    [%d] 0x%llX\n", i, (unsigned long long)sp[i]);
                 }
             }
@@ -681,6 +730,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
     SymInitialize(GetCurrentProcess(), NULL, TRUE);
     AddVectoredExceptionHandler(1, veh_handler);
+    {
+        /* RECOMP_TEST_CRASH=<seconds>: fault on purpose after that long, to
+         * test the crash report and minidump. */
+        const char *tc = getenv("RECOMP_TEST_CRASH");
+        if (tc && atoi(tc) > 0)
+            CloseHandle(CreateThread(NULL, 0, test_crash_thread, (LPVOID)(intptr_t)atoi(tc), 0, NULL));
+    }
 #else
     install_crash_handler();
 #endif
