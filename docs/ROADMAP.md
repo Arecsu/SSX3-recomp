@@ -203,11 +203,11 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Phase 7 — Native Windows product
 
-- [ ] Build from a Windows checkout without WSL (Python pipeline + CMake on Windows; scripts in PowerShell or Python).
+- [x] Build from a Windows checkout without WSL (2026-10-15): `scripts\setup.ps1` (toolkit clone with LF endings + patch, venv with capstone) and `scripts\regen.ps1` (~7 min; output identical to WSL's), then `tools\build.bat` (~17 min).
 - [x] Game data location configurable (2026-10-15): `RECOMP_GAME_DIR`, else `game\` in the working directory, else next to the exe or one level up; a message box lists where it looked when `default.xbe` is missing.
 - [x] Release build: one exe, no console, logs to `logs\`, crash dump on failure (2026-10-15: the exe is a GUI program; started by double-click it logs to `logs\ssx3_<time>_stderr.txt`; minidumps since 2026-10-15).
 - [x] Controller and keyboard remapping; fullscreen toggle. **Remapping 2026-10-15:** `keys.ini` (`keys.example.ini`): every key, and the controller's buttons (`pad.<control>`), toolkit input layer. **2026-10-15:** window opens at 2x (fits the work area, RECOMP_WINDOW_SCALE), resizable; Alt+Enter / F11 borderless fullscreen (DXGI's exclusive Alt+Enter off); the D3D11 presenter draws the frame letterboxed to 4:3 at any size (GDI fallback too). Remapping still open.
-- [ ] Gate: fresh Windows machine → follow README → playing.
+- [x] Gate: fresh Windows machine → follow README → playing. (2026-10-15: fresh clone in C:\Code\Xbox\wintest -> setup.ps1 -> regen.ps1 -> build.bat -> race_test OK, Snow Jam at 60 FPS, 0 bad calls. Same machine, so VS/Vulkan SDK/Python were already installed.)
 
 ## Phase 8 — Hardening
 
@@ -225,6 +225,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-15 — Phase 7 done: Windows-only build path (setup.ps1/regen.ps1, verified from a fresh clone), game folder found next to the exe, double-click logging, keys.ini remapping.
 - 2026-10-15 — Freestyle on Peaks 1-3 (8 events) loads and runs, 0 bad calls; autonav takes any event type's briefing screen.
 - 2026-10-15 — Peaks 2/3: all five races (Ruthless Ridge, Intimidator, Ruthless, Gravitude, The Throne) load and run with random riders, 0 crashes / bad calls. Lines and points now drawn on the GPU (they were dropped / came out black): board trails are white ribbons as in xemu, snow-spray point sprites (oPts size, gl_PointCoord on stage 3, xemu rules).
 - 2026-10-15 — Faster, isolated test runs: RECOMP_AUTONAV (in-process menu driver, boot -> briefing ~27 s instead of ~40 s, re-arms per race; default in race_test/cycle_test) and RECOMP_SAVE_DIR + save fixtures (tests never write the player's saves; default fixture has everything unlocked).
