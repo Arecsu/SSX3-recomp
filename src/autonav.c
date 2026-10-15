@@ -41,6 +41,7 @@
 #define VT_LOADING    0x0029B0DCu
 #define VT_INGAME     0x00299D7Cu
 #define VT_BRIEFING   0x00297E30u   /* race briefing panel (ui screen) */
+#define VT_BRIEFING2  0x00297F68u   /* briefing of a one-on-one race (The Throne) */
 
 extern int xbox_PadInject(const char *line);
 extern volatile uint32_t g_ssx3_ui_screen_vt, g_ssx3_ui_screen_id, g_ssx3_ui_screen_ptr;
@@ -101,19 +102,15 @@ static DWORD WINAPI autonav_thread(LPVOID unused)
         if (vt == VT_INGAME && loading_seen) {
             /* After the load: a fly-over of the course ("Press A to skip"),
              * then the briefing panel (screen vtable 00297E30, one item,
-             * "Continue"). A skips the fly-over; the briefing takes A once
+             * "Continue"; 00297F68 for a one-on-one race, shown at once). A skips the fly-over; the briefing takes A once
              * it accepts input. */
             if (!ingame_since) {
                 ingame_since = now;
                 fprintf(stderr, "[AUTONAV] t=%lu in game\n", (unsigned long)(now - s_t0));
                 fflush(stderr);
             }
-            if (!skipped && now - ingame_since >= 1000) {
-                skipped = 1;
-                press("a:150", "skip fly-over");
-            }
             sp = g_ssx3_ui_screen_ptr;
-            if (g_ssx3_ui_screen_vt == VT_BRIEFING && sp
+            if ((g_ssx3_ui_screen_vt == VT_BRIEFING || g_ssx3_ui_screen_vt == VT_BRIEFING2) && sp
                 && ((MEM16(sp + 0x1C) >> 8) & 0x3F) == 5) {
                 if (!brief_since)
                     brief_since = now;
@@ -129,8 +126,15 @@ static DWORD WINAPI autonav_thread(LPVOID unused)
                     act_ptr = done_ptr = 0;
                     continue;
                 }
-            } else
+            } else {
                 brief_since = 0;
+                /* No briefing up yet: a fly-over (one-on-one races show
+                 * their briefing at once, and A there would start the race). */
+                if (!skipped && now - ingame_since >= 1000) {
+                    skipped = 1;
+                    press("a:150", "skip fly-over");
+                }
+            }
             continue;
         }
         if (vt != VT_FRONTEND)
