@@ -807,6 +807,17 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   a linear-blit 640x480 copy for guest memory. Software-drawn surfaces
   (shadow maps, offscreen) stay native. SSX 3 is 4:3 only (no widescreen
   option; the 4/3 float at 0x284E80 is not the camera aspect).
+- WIDESCREEN (2026-10-16, branch `widescreen`): RECOMP_WIDESCREEN=1 (main.c
+  default there; live.ps1 sets 0). The main camera's projection is D3DX
+  PerspectiveFovLH 0x0024EA13, called only by the renderer's camera setup
+  sub_001EAB40 with aspect 640/480; a _gen wrapper (ssx3_overrides.c)
+  multiplies it by 4/3 while the app state is ingame (ssx3_WidescreenNow), so
+  the game renders (and culls) a 16:9 view into 640x480. src/vk: target x
+  4/3 wider (scale_x), 2D vertices (w == 1) narrowed back to 4:3 except on
+  the screen edges (full-screen passes); outside ingame everything is
+  pillarboxed (vkr_set_pillarbox: all vertices narrowed, scissor mapped to
+  the middle, bars cleared black at the flip). Finding it: RECOMP_DUMP_CONSTS=1
+  (each program's constants), RECOMP_VSH_DUMP=N (disassemble N programs).
 - XEMU REFERENCE (2026-10-15): `tools\xemu.ps1` (skill: .claude/skills/xemu)
   boots a separate, muted xemu instance with the ISO (own config + HDD copy
   in work\xemu\, QMP on 127.0.0.1:4455), presses pad buttons by posting key

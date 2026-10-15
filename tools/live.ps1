@@ -58,6 +58,7 @@ switch ($Cmd) {
         # Native 640x480 rendering for scripted runs (fast, small screenshots);
         # -Env @{RECOMP_RES='1080'} for the full-HD path players get.
         $env:RECOMP_RES = "1"
+        $env:RECOMP_WIDESCREEN = "0"
         if ($Save -ne "user") {
             $sd = Join-Path $work "save"
             Remove-Item -Recurse -Force $sd -ErrorAction SilentlyContinue
