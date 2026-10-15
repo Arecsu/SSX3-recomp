@@ -724,6 +724,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
      *     enumerates it, reads the XID descriptor and polls reports; input
      *     comes from a host pad, RECOMP_KEYBOARD or the RECOMP_PAD_* probes. */
     if (!getenv("RECOMP_USB"))           _putenv_s("RECOMP_USB", "1");
+    /*   RECOMP_RES: the Vulkan renderer's internal resolution, 1080 =
+     *   1440x1080 (4:3 at full-HD height), shown directly in the window;
+     *   the guest still gets 640x480. Scripted runs set 1 (live.ps1). */
+    if (!getenv("RECOMP_RES"))           _putenv_s("RECOMP_RES", "1080");
 #ifdef _WIN32
     /* RECOMP_USB_PADS: as many emulated pads as XInput controllers are
      * plugged in at start (1..4), so a second controller makes Multi Play

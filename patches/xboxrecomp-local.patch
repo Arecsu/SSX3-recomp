@@ -5599,7 +5599,7 @@ index 0000000..d975b79
 +    }
 +}
 diff --git a/src/video/fb_present.c b/src/video/fb_present.c
-index 08bae4b..3545936 100644
+index 08bae4b..fe091f1 100644
 --- a/src/video/fb_present.c
 +++ b/src/video/fb_present.c
 @@ -15,12 +15,15 @@
@@ -5929,7 +5929,7 @@ index 08bae4b..3545936 100644
  static DWORD WINAPI fb_thread(LPVOID unused)
  {
      HWND hwnd;
-@@ -274,13 +501,32 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -274,13 +501,40 @@ static DWORD WINAPI fb_thread(LPVOID unused)
          wc.lpszClassName = "XboxRecompFramebuffer";
          RegisterClassA(&wc);
      }
@@ -5944,19 +5944,27 @@ index 08bae4b..3545936 100644
 +        /* RECOMP_WINDOW_SCALE (default 2): the client area is the frame times
 +         * this, made smaller until the window fits the desktop work area;
 +         * centred on it. The window can be resized freely afterwards. */
-+        const char *e = getenv("RECOMP_WINDOW_SCALE");
-+        int scale = e && atoi(e) > 0 ? atoi(e) : 2;
++        /* Default: the internal resolution's scale (RECOMP_RES, e.g. 1080 =
++         * x2.25), else 2 -- stepped down by quarters until it fits. */
++        const char *e = getenv("RECOMP_WINDOW_SCALE"), *res = getenv("RECOMP_RES");
++        double scale = 2.0, rv = res ? atof(res) : 0;
 +        RECT work;
++        if (e && atof(e) > 0)
++            scale = atof(e);
++        else if (rv >= 240)
++            scale = rv / 480.0;
++        else if (rv >= 1.0 && rv <= 8.0)
++            scale = rv;
 +        if (!SystemParametersInfoA(SPI_GETWORKAREA, 0, &work, 0)) {
 +            work.left = work.top = 0; work.right = 1920; work.bottom = 1080;
 +        }
-+        for (;; scale--) {
++        for (;; scale -= 0.25) {
 +            r.left = 0; r.top = 0;
-+            r.right = (LONG)s_fb_width * (scale > 0 ? scale : 1);
-+            r.bottom = (LONG)s_fb_height * (scale > 0 ? scale : 1);
++            r.right = (LONG)((double)s_fb_width * (scale > 1.0 ? scale : 1.0) + 0.5);
++            r.bottom = (LONG)((double)s_fb_height * (scale > 1.0 ? scale : 1.0) + 0.5);
 +            AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
-+            if (scale <= 1 || (r.right - r.left <= work.right - work.left
-+                               && r.bottom - r.top <= work.bottom - work.top))
++            if (scale <= 1.0 || (r.right - r.left <= work.right - work.left
++                                 && r.bottom - r.top <= work.bottom - work.top))
 +                break;
 +        }
 +        hwnd = CreateWindowExA(0, "XboxRecompFramebuffer", "Xbox Recomp - Framebuffer",
@@ -5969,7 +5977,7 @@ index 08bae4b..3545936 100644
      if (!hwnd) {
          InterlockedExchange(&s_fb_running, 0);
          return 0;
-@@ -299,6 +545,8 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -299,6 +553,8 @@ static DWORD WINAPI fb_thread(LPVOID unused)
  
      fprintf(stderr, "  [FBWIN] framebuffer window open (%ux%u)\n",
              s_fb_width, s_fb_height);
@@ -5978,7 +5986,7 @@ index 08bae4b..3545936 100644
  
      while (InterlockedCompareExchange(&s_fb_running, 1, 1)) {
          MSG msg;
-@@ -314,18 +562,39 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -314,18 +570,39 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              if (s_present[idx])
                  memcpy(s_rgb, s_present[idx],
                         (size_t)s_fb_width * s_fb_height * 4);
@@ -6024,7 +6032,7 @@ index 08bae4b..3545936 100644
          }
          {
              /* One dump a few seconds in, so the title has had time to render
-@@ -365,9 +634,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -365,9 +642,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
                  t0 = now; f0 = f;
              }
          }
@@ -6038,7 +6046,7 @@ index 08bae4b..3545936 100644
      ReleaseDC(hwnd, hdc);
      DestroyWindow(hwnd);
      free(s_rgb);
-@@ -390,11 +662,4 @@ void xbox_FramebufferWindowStart(void)
+@@ -390,11 +670,4 @@ void xbox_FramebufferWindowStart(void)
          InterlockedExchange(&s_fb_running, 0);
  }
  

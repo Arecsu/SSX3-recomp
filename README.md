@@ -61,7 +61,10 @@ Run `tools\play.bat` on Windows. Keyboard (the game window must have focus):
 
 Two controllers plugged in at start make Multi Play (2-player split-screen)
 available. Keys and controller buttons can be remapped: copy `keys.example.ini` to
-`keys.ini` and edit it. An Xbox/XInput controller needs no setting (rumble included). The window
+`keys.ini` and edit it. An Xbox/XInput controller needs no setting (rumble included). The game renders at
+1440x1080 (full-HD height; the game itself is 4:3) -- `RECOMP_RES=480` for
+the original 640x480, `RECOMP_RES=1440` / `2160` for more; the window opens
+as large as fits, F11 for fullscreen. The window
 opens at 2x (`RECOMP_WINDOW_SCALE`), can be resized, and **Alt+Enter** or
 **F11** toggles borderless fullscreen; the picture keeps its 4:3 shape
 (`RECOMP_PRESENT_FILTER=point` for sharp pixels). Each run's log is kept in

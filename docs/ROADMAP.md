@@ -191,7 +191,7 @@ With rendering off the CPU, the game itself must fit in 16.7 ms.
 - [x] Pink-lit start area — confirmed against xemu (2026-10-15, `tools\xemu.ps1` snapshot `race_briefing`/`race_go`): real lighting, not a bug.
 - [x] Character lighting (2026-10-15): riders were washed out; vertex colours oD0/oD1 are now clamped to 0..1 before interpolation like the NV2A. Select Character and race riders match xemu.
 - [ ] Particles, snow spray, trails, motion blur, glow, reflections, water; every peak's look. **2026-10-15:** line strips (board/hand trails) and point sprites (snow spray) drawn on the GPU (were declined by the Vulkan backend: lost or drawn black); Intimidator compared with xemu (`intimidator_brief` snapshot).
-- [ ] Optional: 720p/widescreen, higher internal resolution (only after correctness).
+- [ ] Optional: 720p/widescreen, higher internal resolution (only after correctness). **2026-10-15:** higher internal resolution done -- `RECOMP_RES` (default 1080 = 1440x1080 when playing, 1 in scripted runs): the Vulkan target, viewport, scissor, clears, point sizes and line widths scale, the full image goes straight to the window, a filtered 640x480 copy to guest memory; Snow Jam 60 FPS at 1440x1080. Widescreen open: SSX 3 has no 16:9 mode (ignores the console's widescreen flag, no option); a widescreen patch would need the camera projection and culling found and changed.
 
 ## Phase 6 — Full game coverage
 
@@ -227,6 +227,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-15 — Full-HD rendering: 1440x1080 internal resolution by default when playing (RECOMP_RES), 60 FPS, menus and races checked.
 - 2026-10-15 — Reliability: race_par 8x6 48/48 in 4.6 min (autonav, per-run saves and partition images). Conquer the Mountain teleport to Green Station (lodge/transport station) works; entering the lodge shop needs steering, left for a manual check.
 - 2026-10-15 — Parallel boots no longer collide on the shared partition images (RECOMP_SYSTEM_DIR per run directory): race_par 8x3 24/24 in 2.7 min (was 20/24, the 4 quit to the dashboard at boot).
 - 2026-10-15 — Audio: waveOut fallback fixed like XAudio2; intro movies and races produce sound by the meter (muted runs measure too).

@@ -55,6 +55,9 @@ switch ($Cmd) {
         # directory: instances booting together collided on one shared
         # Partition5.img and the loser quit to the dashboard.
         $env:RECOMP_SYSTEM_DIR = Join-Path $work "system"
+        # Native 640x480 rendering for scripted runs (fast, small screenshots);
+        # -Env @{RECOMP_RES='1080'} for the full-HD path players get.
+        $env:RECOMP_RES = "1"
         if ($Save -ne "user") {
             $sd = Join-Path $work "save"
             Remove-Item -Recurse -Force $sd -ErrorAction SilentlyContinue

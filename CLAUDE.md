@@ -798,6 +798,15 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   %LOCALAPPDATA%\xboxrecomp. RECOMP_SYSTEM_DIR (main.c) moves them; live.ps1
   gives each run directory its own (<dir>\system). Some older "[no pad]"
   failures under parallel load were probably this.
+- INTERNAL RESOLUTION (2026-10-15): RECOMP_RES (main.c default 1080 =
+  1440x1080; live.ps1 sets 1 for scripted runs; a value >= 240 is a frame
+  height, else a factor). src/vk/vkr.c renders into sw x sh = guest size x
+  scale (positions stay guest pixels: the shaders divide by the guest size),
+  scales scissor/clears/point size/line width, and at a flip reads back the
+  full image (published to the window via xbox_FramebufferPublishImage) plus
+  a linear-blit 640x480 copy for guest memory. Software-drawn surfaces
+  (shadow maps, offscreen) stay native. SSX 3 is 4:3 only (no widescreen
+  option; the 4/3 float at 0x284E80 is not the camera aspect).
 - XEMU REFERENCE (2026-10-15): `tools\xemu.ps1` (skill: .claude/skills/xemu)
   boots a separate, muted xemu instance with the ISO (own config + HDD copy
   in work\xemu\, QMP on 127.0.0.1:4455), presses pad buttons by posting key
