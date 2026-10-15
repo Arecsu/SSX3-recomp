@@ -796,6 +796,30 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             MessageBoxA(NULL, msg, "SSX 3", MB_ICONERROR);
             return 1;
         }
+#ifdef _WIN32
+        {
+            /* Started without a console or redirection (a double-click: the
+             * exe is a GUI program): the log goes to logs\ beside the game
+             * folder instead of nowhere. play.bat and the scripts redirect. */
+            HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+            if (!h || h == INVALID_HANDLE_VALUE || GetFileType(h) == FILE_TYPE_UNKNOWN) {
+                char base[512], logp[600], *slash;
+                SYSTEMTIME st;
+                GetFullPathNameA(s_game_dir, sizeof base, base, NULL);
+                if ((slash = strrchr(base, '\\')) != NULL)
+                    *slash = 0;
+                snprintf(logp, sizeof logp, "%s\\logs", base);
+                CreateDirectoryA(logp, NULL);
+                GetLocalTime(&st);
+                snprintf(logp + strlen(logp), sizeof logp - strlen(logp),
+                         "\\ssx3_%04u%02u%02u-%02u%02u%02u_stderr.txt", st.wYear, st.wMonth,
+                         st.wDay, st.wHour, st.wMinute, st.wSecond);
+                if (freopen(logp, "w", stderr))
+                    setvbuf(stderr, NULL, _IONBF, 0);
+                freopen("NUL", "w", stdout);
+            }
+        }
+#endif
         fprintf(stderr, "[BOOT] game folder: %s\n", s_game_dir);
     }
     if (!load_xbe(s_game_xbe, &xbe_data, &xbe_size)) {
