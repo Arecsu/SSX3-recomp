@@ -16,17 +16,17 @@ $here = Split-Path -Parent $PSScriptRoot
 $tk = Join-Path (Split-Path -Parent $here) "xboxrecomp"
 $patch = Join-Path $here "patches\xboxrecomp-local.patch"
 
-function Git { & git @args; if ($LASTEXITCODE) { throw "git $args failed" } }
+function RunGit { & git @args; if ($LASTEXITCODE) { throw "git $args failed" } }
 
 if (-not (Test-Path (Join-Path $tk ".git"))) {
     # LF working tree, like upstream: the local patch is LF and would not
     # apply to CRLF files (core.autocrlf=true is the Windows default).
-    Git clone -c core.autocrlf=false $Url $tk
+    RunGit clone -c core.autocrlf=false $Url $tk
 }
 $dirty = & git -C $tk status --porcelain --untracked-files=no
 if (-not $dirty) {
-    Git -C $tk checkout -q $Base
-    Git -C $tk apply --whitespace=nowarn $patch
+    RunGit -C $tk checkout -q $Base
+    RunGit -C $tk apply --whitespace=nowarn $patch
     "toolkit: $Base + local patch applied"
 } else {
     & git -C $tk apply --reverse --check $patch 2>$null
