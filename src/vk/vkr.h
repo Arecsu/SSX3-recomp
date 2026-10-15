@@ -43,7 +43,15 @@ typedef struct {
     VkrTex  *tex[4];                /* NULL = white */
     uint32_t addr_u[4], addr_v[4];  /* 1 wrap 2 mirror 3 clamp 4 border 5 clamp-to-edge */
     int      linear[4];
+    uint32_t topology;              /* VKR_TOPO_*: what the index list holds */
+    float    point_size;            /* pixels, when !point_params */
+    int      point_params;          /* size from the program's oPts.x */
+    int      point_sprite;          /* stage 3 coordinates = gl_PointCoord */
 } VkrDrawState;
+
+#define VKR_TOPO_TRIANGLES 0
+#define VKR_TOPO_LINES     1
+#define VKR_TOPO_POINTS    2
 
 /* Headless device (no window). Returns NULL and prints why on failure. */
 VkrContext *vkr_create(void);
@@ -62,7 +70,7 @@ VkrTex *vkr_tex_create(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
 int vkr_tex_update(VkrContext *c, VkrTex *t, uint64_t key, const uint32_t *pixels);
 uint32_t vkr_tex_generation(VkrContext *c);   /* changes when all textures were freed */
 
-/* Draw an indexed triangle list. */
+/* Draw an indexed triangle, line or point list (st->topology). */
 int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
              const uint32_t *idx, uint32_t nidx, const VkrDrawState *st);
 

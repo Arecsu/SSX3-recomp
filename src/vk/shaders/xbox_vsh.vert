@@ -14,7 +14,8 @@ layout(push_constant) uniform PC {
     float inv_zmax;     /* 1 / depth range */
     float fog_mode;     /* 0 = fog off, else the NV097 fog mode (0x800..0x804) */
     vec2 fog_param;
-    vec2 pad;
+    float point_size;   /* pixels (SET_POINT_SIZE / 8) */
+    float point_params; /* 1: the size is the program's oPts.x (xemu vsh.c) */
     uint in_base;       /* vec4 index of vertex 0's inputs */
     uint nin;           /* inputs per vertex */
     uint prog_base;     /* uvec4 index of the program (2 per instruction) */
@@ -189,4 +190,5 @@ void main()
     v_d0 = clamp(O[3], 0.0, 1.0); v_d1 = clamp(O[4], 0.0, 1.0);
     v_fog = vec4(fog_factor(O[5].x), 0.0, 0.0, 0.0);
     v_tex0 = O[9]; v_tex1 = O[10]; v_tex2 = O[11]; v_tex3 = O[12];
+    gl_PointSize = pc.point_params > 0.5 ? max(O[6].x, 1.0) : pc.point_size;
 }

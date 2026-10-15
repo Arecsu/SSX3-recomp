@@ -30,6 +30,7 @@ layout(push_constant) uniform PC {
     layout(offset = 64) uint alpha_func;  /* 0 = test off, else GL func 0x200..0x207 */
     uint alpha_ref;                       /* 0..255 */
     float w_scale;                        /* W-buffering: depth = w * this; 0 = off */
+    uint point_sprite;                    /* stage 3 coordinates = gl_PointCoord (xemu psh.c) */
 } pc;
 
 uint U(uvec4 a[2], uint i) { return a[i >> 2][i & 3u]; }
@@ -136,7 +137,7 @@ void main()
         t[0] = stage_fetch(0, v_tex0, kill);
         t[1] = stage_fetch(1, v_tex1, kill);
         t[2] = stage_fetch(2, v_tex2, kill);
-        t[3] = stage_fetch(3, v_tex3, kill);
+        t[3] = stage_fetch(3, pc.point_sprite != 0u ? vec4(gl_PointCoord, 1.0, 1.0) : v_tex3, kill);
 
         for (int i = 0; i < 16; i++)
             R[i] = vec4(0.0);

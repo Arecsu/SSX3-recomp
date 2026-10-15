@@ -18,6 +18,8 @@ layout(push_constant) uniform PC {
     float inv_zmax;     /* 1 / depth range: 0xFFFFFF (Z24) or 0xFFFF (Z16) */
     float fog_mode;     /* 0 = fog off, else the NV097 fog mode (0x800..0x804) */
     vec2 fog_param;
+    float point_size;   /* pixels (SET_POINT_SIZE / 8) */
+    float point_params; /* unused here: no oPts on the CPU path */
 } pc;
 
 layout(location = 0) out vec4 v_d0;
@@ -60,4 +62,5 @@ void main()
     v_d0 = clamp(in_d0, 0.0, 1.0); v_d1 = clamp(in_d1, 0.0, 1.0);
     v_fog = vec4(fog_factor(in_fog.x), 0.0, 0.0, 0.0);
     v_tex0 = in_tex0; v_tex1 = in_tex1; v_tex2 = in_tex2; v_tex3 = in_tex3;
+    gl_PointSize = pc.point_size;
 }

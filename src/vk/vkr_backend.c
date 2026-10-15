@@ -62,6 +62,10 @@ extern ptrdiff_t xbox_GetMemoryOffset(void);
 _Static_assert(sizeof(VkrVertex) == sizeof(Nv2aVshOutput),
                "VkrVertex must mirror Nv2aVshOutput");
 
+#define PRIM_POINTS         1
+#define PRIM_LINES          2
+#define PRIM_LINE_LOOP      3
+#define PRIM_LINE_STRIP     4
 #define PRIM_TRIANGLES      5
 #define PRIM_TRIANGLE_STRIP 6
 #define PRIM_TRIANGLE_FAN   7
@@ -209,6 +213,9 @@ static void fill_state(const Nv2aTarget *t, VkrDrawState *st)
 {
     VkrUniforms *u = &st->u;
     int k;
+    st->point_size = t->point_size;
+    st->point_params = t->point_params;
+    st->point_sprite = t->point_sprite;
     st->depth_test = t->depth_test; st->depth_write = t->depth_write;
     st->depth_func = t->depth_func;
     st->w_buffer = t->w_buffer;
@@ -469,7 +476,9 @@ static void trace_black(uint32_t prim, const Nv2aVshOutput *v, uint32_t n, const
 /* Triangle-list indices for n vertices of primitive prim, in a buffer
  * reused across calls; *k gets the count. NULL: not drawable here (points,
  * lines) or out of memory. */
-static uint32_t *build_idx(uint32_t prim, uint32_t n, uint32_t *k_out)
+/* Index list for one NV2A primitive; *topo: 0 triangle list, 1 line list,
+ * 2 point list (VKR_TOPO_*). */
+static uint32_t *build_idx(uint32_t prim, uint32_t n, uint32_t *k_out, uint32_t *topo)
 {
     static uint32_t *idx;
     static uint32_t cap;
@@ -480,7 +489,29 @@ static uint32_t *build_idx(uint32_t prim, uint32_t n, uint32_t *k_out)
         idx = (uint32_t *)malloc(cap * sizeof *idx);
         if (!idx) { cap = 0; return NULL; }
     }
+    *topo = VKR_TOPO_TRIANGLES;
     switch (prim) {
+    case PRIM_POINTS:
+        *topo = VKR_TOPO_POINTS;
+        for (i = 0; i < n; i++)
+            idx[k++] = i;
+        break;
+    case PRIM_LINES:
+        *topo = VKR_TOPO_LINES;
+        for (i = 0; i + 1 < n; i += 2) {
+            idx[k++] = i; idx[k++] = i + 1;
+        }
+        break;
+    case PRIM_LINE_STRIP:
+    case PRIM_LINE_LOOP:
+        *topo = VKR_TOPO_LINES;
+        for (i = 0; i + 1 < n; i++) {
+            idx[k++] = i; idx[k++] = i + 1;
+        }
+        if (prim == PRIM_LINE_LOOP && n > 2) {
+            idx[k++] = n - 1; idx[k++] = 0;
+        }
+        break;
     case PRIM_TRIANGLES:
         for (i = 0; i + 2 < n; i += 3) {
             idx[k++] = i; idx[k++] = i + 1; idx[k++] = i + 2;
@@ -511,7 +542,15 @@ static uint32_t *build_idx(uint32_t prim, uint32_t n, uint32_t *k_out)
         }
         break;
     default:
-        return NULL;                    /* points and lines: not yet */
+        {   /* anything else: say so once per type */
+            static uint32_t said;
+            if (prim < 32 && !(said & (1u << prim))) {
+                said |= 1u << prim;
+                fprintf(stderr, "[VKR] primitive %u (%u vertices) not drawn on the GPU\n", prim, n);
+                fflush(stderr);
+            }
+        }
+        return NULL;
     }
     *k_out = k;
     return idx;
@@ -519,7 +558,7 @@ static uint32_t *build_idx(uint32_t prim, uint32_t n, uint32_t *k_out)
 
 static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, uint32_t n)
 {
-    uint32_t *idx, k = 0;
+    uint32_t *idx, k = 0, topo;
 
     double td = 0;
     if (s_stats < 0) s_stats = getenv("RECOMP_VKR_STATS") != NULL;
@@ -533,7 +572,7 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
             skip_rt = getenv("RECOMP_VKR_SKIP_RT") != NULL;
         return skip_rt && t->swizzled;
     }
-    if (!(idx = build_idx(prim, n, &k)))
+    if (!(idx = build_idx(prim, n, &k, &topo)))
         return 0;
     if (!k)
         return 1;
@@ -543,6 +582,7 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
         VkrDrawState st;
         memset(&st, 0, sizeof st);
         fill_state(t, &st);
+        st.topology = topo;
         double t2;
         bind_textures(&st);
         {
@@ -570,7 +610,7 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
 static int be_draw_vsh(const Nv2aTarget *t, uint32_t prim, const float *in, uint32_t n,
                        const Nv2aVshProgram *p)
 {
-    uint32_t *idx, k = 0;
+    uint32_t *idx, k = 0, topo;
     double td = 0;
     if (s_trace == 2)
         return 0;
@@ -578,7 +618,7 @@ static int be_draw_vsh(const Nv2aTarget *t, uint32_t prim, const float *in, uint
     if (s_stats) { td = now_ms(); stats_tick(); }
     if (!is_main(t))
         return 0;
-    if (!(idx = build_idx(prim, n, &k)))
+    if (!(idx = build_idx(prim, n, &k, &topo)))
         return 0;
     if (!k)
         return 1;
@@ -587,6 +627,7 @@ static int be_draw_vsh(const Nv2aTarget *t, uint32_t prim, const float *in, uint
         double t2;
         memset(&st, 0, sizeof st);
         fill_state(t, &st);
+        st.topology = topo;
         bind_textures(&st);
         {
             static int no_shadow = -1;

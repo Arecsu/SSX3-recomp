@@ -54,7 +54,7 @@ struct VkrContext {
     VkPipelineLayout layout;
     VkShaderModule vs, fs, vs_vsh;
 
-    struct PipeEntry { uint32_t key[6]; VkPipeline pipe; } pipes[160];
+    struct PipeEntry { uint32_t key[7]; VkPipeline pipe; } pipes[200];
     int npipes;
     struct SamplerEntry { uint32_t key; VkSampler s; } samplers[16];
     int nsamplers;
@@ -293,7 +293,7 @@ static int make_layout(VkrContext *c)
 /* Pipeline for one blend/write-mask combination (depth state is dynamic). */
 static VkPipeline get_pipeline(VkrContext *c, const VkrDrawState *st, int gpu_vsh)
 {
-    uint32_t key[6];
+    uint32_t key[7];
     VkPipelineShaderStageCreateInfo stg[2] = {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, 0, 0, VK_SHADER_STAGE_VERTEX_BIT, 0, "main", 0},
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, 0, 0, VK_SHADER_STAGE_FRAGMENT_BIT, 0, "main", 0},
@@ -322,6 +322,7 @@ static VkPipeline get_pipeline(VkrContext *c, const VkrDrawState *st, int gpu_vs
     key[3] = st->blend_eq; key[4] = st->write_mask;
     if (!st->blend_enable) key[1] = key[2] = key[3] = 0;
     key[5] = (uint32_t)gpu_vsh;
+    key[6] = st->topology;
     for (i = 0; i < c->npipes; i++)
         if (!memcmp(c->pipes[i].key, key, sizeof key))
             return c->pipes[i].pipe;
@@ -340,7 +341,9 @@ static VkPipeline get_pipeline(VkrContext *c, const VkrDrawState *st, int gpu_vs
         vin.vertexBindingDescriptionCount = 1; vin.pVertexBindingDescriptions = &bind;
         vin.vertexAttributeDescriptionCount = 8; vin.pVertexAttributeDescriptions = at;
     }
-    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    ia.topology = st->topology == VKR_TOPO_LINES  ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST
+                : st->topology == VKR_TOPO_POINTS ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+                : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     vp.viewportCount = 1; vp.scissorCount = 1;
     rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
     rs.frontFace = VK_FRONT_FACE_CLOCKWISE; rs.lineWidth = 1.0f;
@@ -910,7 +913,8 @@ int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
     pcv[0] = 1.0f / (float)c->w; pcv[1] = 1.0f / (float)c->h;
     pcv[2] = 1.0f / c->zmax;
     pcv[3] = st->u.fog_enable ? st->u.fog_param[2] : 0.0f;
-    pcv[4] = st->u.fog_param[0]; pcv[5] = st->u.fog_param[1]; pcv[6] = pcv[7] = 0.0f;
+    pcv[4] = st->u.fog_param[0]; pcv[5] = st->u.fog_param[1];
+    pcv[6] = st->point_size; pcv[7] = st->point_params ? 1.0f : 0.0f;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pcv);
     pcf[0] = st->alpha_func; pcf[1] = st->alpha_ref;
     {
@@ -919,7 +923,7 @@ int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
         float ws = st->w_buffer ? 1.0f / c->zmax : 0.0f;
         memcpy(&pcf[2], &ws, 4);
     }
-    pcf[3] = 0;
+    pcf[3] = st->topology == VKR_TOPO_POINTS && st->point_sprite;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 64, 16, pcf);
 
     for (k = 0; k < 4; k++) {
@@ -1019,7 +1023,8 @@ int vkr_draw_vsh(VkrContext *c, const float *in, uint32_t nverts, uint32_t nin,
     pcv[0] = 1.0f / (float)c->w; pcv[1] = 1.0f / (float)c->h;
     pcv[2] = 1.0f / c->zmax;
     pcv[3] = st->u.fog_enable ? st->u.fog_param[2] : 0.0f;
-    pcv[4] = st->u.fog_param[0]; pcv[5] = st->u.fog_param[1]; pcv[6] = pcv[7] = 0.0f;
+    pcv[4] = st->u.fog_param[0]; pcv[5] = st->u.fog_param[1];
+    pcv[6] = st->point_size; pcv[7] = st->point_params ? 1.0f : 0.0f;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pcv);
     pcu[0] = vb / 16; pcu[1] = nin ? nin : 1; pcu[2] = po / 16; pcu[3] = co / 16;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 32, 16, pcu);
@@ -1028,7 +1033,7 @@ int vkr_draw_vsh(VkrContext *c, const float *in, uint32_t nverts, uint32_t nin,
         float ws = st->w_buffer ? 1.0f / c->zmax : 0.0f;
         memcpy(&pcf[2], &ws, 4);
     }
-    pcf[3] = 0;
+    pcf[3] = st->topology == VKR_TOPO_POINTS && st->point_sprite;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 64, 16, pcf);
 
     for (k = 0; k < 4; k++) {
