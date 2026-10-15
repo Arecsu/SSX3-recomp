@@ -60,6 +60,9 @@ focus is never taken (`start` also hands focus back after the window opens).
 | `unlocked_charsel` | Select Character (Griff highlighted) from that save |
 | `race_briefing` | Snow Jam race briefing -- made BEFORE the cheat save |
 | `race_go` | Snow Jam race start, "GO!" -- made BEFORE the cheat save |
+| `intimidator_brief` | Peak 2 Intimidator race briefing (Griff) |
+| `launchtime_brief` | Peak 2 Freestyle "Launch Time" (Big Air) briefing |
+| `metro_brief` | Metro-City race briefing (Griff) |
 
 Snapshots include the hard disk: loading `race_*` rolls the HDD copy back to
 before the user's cheat save. Make new snapshots only after loading an
@@ -92,6 +95,15 @@ Recreating them from a cold boot (`X start`, fresh save, ~2.5 min):
 
 Start during the race intro opens the pause menu (Return/Restart/Audio/
 Options/Quit); `start` again resumes.
+
+## Frame rate in xemu
+
+`tools\xemu_fps.ps1 [-Seconds N] [-Tap]` prints rendered frames per second,
+read from SSX 3's renderer frame counter ([0x369528]+0x771C) through the
+monitor (`hmp -Cmd "x/1wx <va>"` reads any guest virtual address). xemu
+itself runs a little under 60 in places, so compare shapes (a halving), not
+absolute numbers. Example: Metro-City drops to exactly 30 in its tunnel
+section in xemu and in our build alike.
 
 ## Comparing with our build
 
