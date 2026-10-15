@@ -81,6 +81,8 @@ struct VkrContext {
      * pixels (w x h). */
     float scale, scale_x;           /* scale_x = scale x 4/3 in widescreen */
     float squeeze2d;                /* widescreen: 2D (w == 1) narrowed to 4:3 */
+    float squeeze_all;              /* 1: pillarbox -- every vertex narrowed to 4:3 */
+    uint32_t gsc[4];                /* the clip rectangle in guest pixels */
     uint32_t sw, sh;
     int wide_lines;
     float max_line;
@@ -698,6 +700,7 @@ int vkr_set_target(VkrContext *c, uint32_t w, uint32_t h, float zmax)
     c->sw = (uint32_t)((float)w * c->scale_x + 0.5f);
     c->sh = (uint32_t)((float)h * c->scale + 0.5f);
     c->sc.offset.x = c->sc.offset.y = 0; c->sc.extent.width = c->sw; c->sc.extent.height = c->sh;
+    c->gsc[0] = c->gsc[1] = 0; c->gsc[2] = w; c->gsc[3] = h;
     if (!make_image(c, VK_FORMAT_B8G8R8A8_UNORM,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, &c->color, &c->color_mem, &c->color_view,
@@ -791,15 +794,19 @@ static void end_pass(VkrContext *c)
 
 /* Draws and clears stay inside the NV2A clip rectangle; the target stays the
  * whole surface (a smaller clip must not recreate it mid-frame). */
-void vkr_set_scissor(VkrContext *c, uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+static void apply_scissor(VkrContext *c)
 {
+    uint32_t x = c->gsc[0], y = c->gsc[1], w = c->gsc[2], h = c->gsc[3];
     if (x >= c->w || y >= c->h) { x = y = 0; w = h = 0; }
     if (x + w > c->w) w = c->w - x;
     if (y + h > c->h) h = c->h - y;
     if (c->scale != 1.0f || c->scale_x != 1.0f) {   /* guest pixels -> target pixels */
-        uint32_t x1 = (uint32_t)((float)(x + w) * c->scale_x + 0.5f);
+        /* Pillarbox: the guest frame is the 4:3 middle of the target. */
+        float sx = c->squeeze_all > 0.5f ? c->scale : c->scale_x;
+        float ox = c->squeeze_all > 0.5f ? ((float)c->sw - (float)c->w * c->scale) * 0.5f : 0.0f;
+        uint32_t x1 = (uint32_t)(ox + (float)(x + w) * sx + 0.5f);
         uint32_t y1 = (uint32_t)((float)(y + h) * c->scale + 0.5f);
-        x = (uint32_t)((float)x * c->scale_x + 0.5f);
+        x = (uint32_t)(ox + (float)x * sx + 0.5f);
         y = (uint32_t)((float)y * c->scale + 0.5f);
         if (x1 > c->sw) x1 = c->sw;
         if (y1 > c->sh) y1 = c->sh;
@@ -813,6 +820,12 @@ void vkr_set_scissor(VkrContext *c, uint32_t x, uint32_t y, uint32_t w, uint32_t
     c->sc.extent.width = w; c->sc.extent.height = h;
     if (c->in_pass)
         vkCmdSetScissor(c->cmd, 0, 1, &c->sc);
+}
+
+void vkr_set_scissor(VkrContext *c, uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+{
+    c->gsc[0] = x; c->gsc[1] = y; c->gsc[2] = w; c->gsc[3] = h;
+    apply_scissor(c);
 }
 
 void vkr_clear(VkrContext *c, const float rgba[4], int clear_depth, float depth)
@@ -1001,7 +1014,10 @@ int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
     pcv[4] = st->u.fog_param[0]; pcv[5] = st->u.fog_param[1];
     pcv[6] = st->point_size * c->scale; pcv[7] = st->point_params ? c->scale : 0.0f;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pcv);
-    vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 48, 4, &c->squeeze2d);
+    {
+        float sq[2] = {c->squeeze2d, c->squeeze_all};
+        vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 48, 8, sq);
+    }
     pcf[0] = st->alpha_func; pcf[1] = st->alpha_ref;
     {
         /* W-buffering: depth is the interpolated clip w in depth-buffer
@@ -1112,7 +1128,10 @@ int vkr_draw_vsh(VkrContext *c, const float *in, uint32_t nverts, uint32_t nin,
     pcv[4] = st->u.fog_param[0]; pcv[5] = st->u.fog_param[1];
     pcv[6] = st->point_size * c->scale; pcv[7] = st->point_params ? c->scale : 0.0f;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pcv);
-    vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 48, 4, &c->squeeze2d);
+    {
+        float sq[2] = {c->squeeze2d, c->squeeze_all};
+        vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 48, 8, sq);
+    }
     pcu[0] = vb / 16; pcu[1] = nin ? nin : 1; pcu[2] = po / 16; pcu[3] = co / 16;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 32, 16, pcu);
     pcf[0] = st->alpha_func; pcf[1] = st->alpha_ref;
@@ -1152,6 +1171,17 @@ int vkr_draw_vsh(VkrContext *c, const float *in, uint32_t nverts, uint32_t nin,
     return 1;
 }
 
+/* Widescreen target: 1 = pillarbox (narrow every vertex to the 4:3 middle),
+ * 0 = widescreen (only 2D ones). */
+void vkr_set_pillarbox(VkrContext *c, int on)
+{
+    float v = on && c->squeeze2d != 1.0f ? 1.0f : 0.0f;
+    if (v != c->squeeze_all) {
+        c->squeeze_all = v;
+        apply_scissor(c);
+    }
+}
+
 uint32_t vkr_width(const VkrContext *c) { return c->w; }
 uint32_t vkr_height(const VkrContext *c) { return c->h; }
 
@@ -1161,6 +1191,17 @@ int vkr_flip_submit(VkrContext *c)
     VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
     int slot = c->cur;
     if (!begin_cmd(c)) return -1;
+    if (c->squeeze_all > 0.5f) {
+        /* Pillarboxed frame: the bars are black (nothing draws there). */
+        VkClearAttachment ca = {VK_IMAGE_ASPECT_COLOR_BIT, 0, {{{0, 0, 0, 1}}}};
+        uint32_t bw = (uint32_t)(((float)c->sw - (float)c->w * c->scale) * 0.5f);
+        VkClearRect cr[2] = {{{{0, 0}, {bw, c->sh}}, 0, 1},
+                             {{{(int32_t)(c->sw - bw), 0}, {bw, c->sh}}, 0, 1}};
+        if (bw) {
+            begin_pass(c);
+            vkCmdClearAttachments(c->cmd, 1, &ca, 2, cr);
+        }
+    }
     end_pass(c);
     barrier(c, c->color, VK_IMAGE_ASPECT_COLOR_BIT,
             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,

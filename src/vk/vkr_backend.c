@@ -59,6 +59,7 @@ static void stats_tick(void)
 
 extern ptrdiff_t xbox_GetMemoryOffset(void);
 extern void xbox_FramebufferPublishImage(const uint32_t *px, uint32_t w, uint32_t h);
+extern int ssx3_WidescreenNow(void);
 
 _Static_assert(sizeof(VkrVertex) == sizeof(Nv2aVshOutput),
                "VkrVertex must mirror Nv2aVshOutput");
@@ -218,6 +219,7 @@ static int is_main(const Nv2aTarget *t)
 
 static void fill_state(const Nv2aTarget *t, VkrDrawState *st)
 {
+    vkr_set_pillarbox(s_vk, !ssx3_WidescreenNow());
     VkrUniforms *u = &st->u;
     int k;
     st->point_size = t->point_size;

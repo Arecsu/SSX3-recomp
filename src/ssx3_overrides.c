@@ -139,13 +139,32 @@ void sub_0025BD81(void)
 extern void sub_0024EA13_gen(void);
 int ssx3_widescreen = -1;
 
+/* Widescreen applies in game only (races, free-roam: app state vtable
+ * 00299D7C). The frontend's art, loading screens and movies are designed
+ * for 4:3: they keep the 4:3 camera and are shown pillarboxed. */
+int ssx3_WidescreenNow(void)
+{
+    uint32_t app, cur;
+    if (ssx3_widescreen < 0) {
+        const char *e = getenv("RECOMP_WIDESCREEN");
+        ssx3_widescreen = e && *e && *e != '0';
+    }
+    if (!ssx3_widescreen)
+        return 0;
+    app = MEM32(0x003A930Cu);
+    if (app < 0x10000u)
+        return 0;
+    cur = MEM32(app + 4);
+    return cur >= 0x10000u && MEM32(cur) == 0x00299D7Cu;
+}
+
 void sub_0024EA13(void)
 {
     if (ssx3_widescreen < 0) {
         const char *e = getenv("RECOMP_WIDESCREEN");
         ssx3_widescreen = e && *e && *e != '0';
     }
-    if (ssx3_widescreen) {
+    if (ssx3_WidescreenNow()) {
         uint32_t bits = MEM32(g_esp + 12);
         float aspect;
         memcpy(&aspect, &bits, 4);

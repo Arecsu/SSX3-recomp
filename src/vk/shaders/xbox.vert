@@ -21,6 +21,7 @@ layout(push_constant) uniform PC {
     float point_size;   /* pixels (SET_POINT_SIZE / 8) */
     float point_params; /* unused here: no oPts on the CPU path */
     layout(offset = 48) float squeeze2d;   /* widescreen: x of 2D vertices (w == 1) times this */
+    float squeeze_all;  /* 1: every vertex (pillarboxed 4:3 picture) */
 } pc;
 
 layout(location = 0) out vec4 v_d0;
@@ -59,7 +60,7 @@ void main()
     /* 2D (screen space, w == 1): keep 4:3 proportions around the centre --
      * except vertices on the screen's left/right edge (full-screen quads:
      * fades, colour/blur passes), which stay at the edges of the 16:9 frame. */
-    if (w == 1.0 && abs(ndc.x) < 0.999)
+    if (pc.squeeze_all > 0.5 || (w == 1.0 && abs(ndc.x) < 0.999))
         ndc.x *= pc.squeeze2d;
     gl_Position = vec4(ndc * w, in_pos.z * pc.inv_zmax * w, w);
     /* The NV2A clamps the vertex colours to 0..1 before they are
