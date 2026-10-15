@@ -618,6 +618,48 @@ static void install_crash_handler(void)
 }
 #endif /* _WIN32 */
 
+/* The game folder (the rip: default.xbe + data\): RECOMP_GAME_DIR, else
+ * "game" in the working directory, else "game" next to the exe or one level
+ * up (build\ssx3_recomp.exe started by double-click). Fills `dir` with the
+ * first that holds default.xbe, else lists where it looked in `tried`. */
+static char s_game_dir[512], s_game_xbe[560];
+
+static int find_game_dir(char *tried, size_t tried_size)
+{
+    char cand[4][512];
+    int n = 0, i;
+    const char *env = getenv("RECOMP_GAME_DIR");
+    if (env && *env)
+        snprintf(cand[n++], sizeof cand[0], "%s", env);
+    snprintf(cand[n++], sizeof cand[0], "%s", YOUR_GAME_DIR);
+#ifdef _WIN32
+    {
+        char exe[512], *slash;
+        DWORD len = GetModuleFileNameA(NULL, exe, sizeof exe);
+        if (len && len < sizeof exe && (slash = strrchr(exe, '\\')) != NULL) {
+            *slash = 0;
+            snprintf(cand[n++], sizeof cand[0], "%s\\%s", exe, YOUR_GAME_DIR);
+            if ((slash = strrchr(exe, '\\')) != NULL) {
+                *slash = 0;
+                snprintf(cand[n++], sizeof cand[0], "%s\\%s", exe, YOUR_GAME_DIR);
+            }
+        }
+    }
+#endif
+    tried[0] = 0;
+    for (i = 0; i < n; i++) {
+        FILE *f;
+        snprintf(s_game_xbe, sizeof s_game_xbe, "%s/default.xbe", cand[i]);
+        if ((f = fopen(s_game_xbe, "rb")) != NULL) {
+            fclose(f);
+            snprintf(s_game_dir, sizeof s_game_dir, "%s", cand[i]);
+            return 1;
+        }
+        snprintf(tried + strlen(tried), tried_size - strlen(tried), "  %s\n", cand[i]);
+    }
+    return 0;
+}
+
 /* ── WinMain ───────────────────────────────────────────────── */
 
 #ifndef _WIN32
@@ -742,10 +784,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 #endif
 
     /* Step 1: Load XBE */
-    if (!load_xbe(YOUR_GAME_XBE_PATH, &xbe_data, &xbe_size)) {
-        MessageBoxA(NULL, "Failed to load default.xbe.\n"
-                    "Place the game files in the 'game' subdirectory.",
-                    "Recomp", MB_ICONERROR);
+    {
+        char tried[2200], msg[2600];
+        if (!find_game_dir(tried, sizeof tried)) {
+            snprintf(msg, sizeof msg,
+                     "SSX 3's default.xbe was not found. Looked in:\n%s\n"
+                     "Put your own rip of the disc (default.xbe and the data folder) in a\n"
+                     "folder named 'game' next to the program (or its parent folder),\n"
+                     "or set RECOMP_GAME_DIR to the folder that holds default.xbe.", tried);
+            fprintf(stderr, "%s\n", msg);
+            MessageBoxA(NULL, msg, "SSX 3", MB_ICONERROR);
+            return 1;
+        }
+        fprintf(stderr, "[BOOT] game folder: %s\n", s_game_dir);
+    }
+    if (!load_xbe(s_game_xbe, &xbe_data, &xbe_size)) {
+        MessageBoxA(NULL, "default.xbe could not be read.", "SSX 3", MB_ICONERROR);
         return 1;
     }
     printf("XBE loaded: %zu bytes\n", xbe_size);
@@ -786,7 +840,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     /* Step 4: Set game directory for file I/O path translation */
     {
         extern void xbox_path_init(const char *game_dir, const char *save_dir);
-        xbox_path_init(YOUR_GAME_DIR, NULL);
+        xbox_path_init(s_game_dir, NULL);
     }
 
     /* Step 5: Initialize kernel bridge (thunk table in Xbox memory) */
