@@ -207,7 +207,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Phase 8 — Hardening
 
-- [ ] 2-hour automated soak, 20/20 boot→race, every Phase 6 item: 0 crashes, 0 hangs.
+- [ ] 2-hour automated soak, 20/20 boot→race, every Phase 6 item: 0 crashes, 0 hangs. **2026-10-15:** 2-hour soak passed -- `cycle_test -Cycles 120 -RaceSec 20` in one session: 120/120 race -> pause -> quit -> title -> race, 0 crashes, 0 hangs, 0 bad indirect calls, race 58.6-59.4 FPS in every 10-minute block (6 fence-wake rescues, 3 guest-CPU holds over 25 ms). 20/20 boot->race done earlier (Phase 1 gate); Phase 6 coverage still partial (Peaks 2/3 locked).
 - [ ] Upstream the toolkit fixes in `patches/xboxrecomp-local.patch` where they are general.
 
 ---
@@ -221,6 +221,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-15 — 2-hour soak: 120/120 race/quit cycles in one session, no crash or hang, 58.6-59.4 FPS throughout.
 - 2026-10-15 — Long-session slowdown fixed (60 -> ~20 FPS after ~5 min): two threads blocked while holding the guest CPU (unimpl-instruction warning, APU waiting for audio-queue room under its lock). 20-cycle soak at 59-60 FPS throughout.
 - 2026-10-15 — Race/quit cycles: tools/cycle_test.ps1, 12/12. Fence-wake rescue at 20 ms (was 200).
 - 2026-10-15 — Frontend sweep: every Options sub-screen, Rider Details, Music, Equip Gear, Conquer the Mountain intro; save and load work (hard disk).
