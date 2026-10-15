@@ -8,9 +8,12 @@ lands the work, and add a dated line to the [log](#progress-log) for every
 milestone change. Gates are measured, not judged by eye — each phase says
 which test proves it.
 
-**Where we are (2026-10-13):** playable races at 9–12 FPS on the software
-rasteriser (asynchronous GPU executor), audio through the emulated APU,
-keyboard/XInput input, boot→race reliability ~5/6. See README and CLAUDE.md.
+**Where we are (2026-10-15):** playable on the Vulkan renderer at a steady
+60 FPS in races (GPU vertex programs), audio through the emulated APU with no
+crackle, keyboard/XInput input with rumble, save/load, fullscreen. 20/20
+boot→race, 2-hour soak 120/120 race/quit cycles. Character and race lighting
+match xemu. Open: Peaks 2/3 coverage, audio by ear, effects DSP, native
+Windows build, upstreaming. See README and CLAUDE.md.
 
 ---
 
@@ -34,7 +37,7 @@ keyboard/XInput input, boot→race reliability ~5/6. See README and CLAUDE.md.
 - [x] Scripted play: periodic A taps ride a whole race (it finishes by itself); `tools/soak.ps1` races back to back via the restart dialog.
 - [x] Navigation from game state only (2026-10-14): `tools/to_race.ps1` reads `game_state.txt` (state, sub-state, GPU draw count) and nothing else -- frontend: Start, then A every 2 s; event_enter/loading: wait; ingame after a load: the briefing. Works on every renderer and with the window covered. Freeze = draw count still for 15 s. Intro movies skipped by default (`RECOMP_SKIP_INTRO`, mask 0x3083B8, found by Corné): boot -> title 3.4 s, boot -> race briefing ~25 s.
 - [x] Game state hook (`src/game_state.c`): the game's own state machine published as `[STATE]` lines and `game_state.txt` (`tools/game_state.ps1`); top-level states named. Next: map the in-race sub-states and switch the scripts from draw counts to it.
-- [ ] `tools/race_test.ps1` extended: all peaks/events (2026-10-14: `-Rider N -Mode N -Event N` pick the rider, mode and Peak 1 event by the frontend screen id in game_state.txt; Peaks 2/3 are locked on a fresh save -- needs unlock progress or a save file), configurable run count (done), summary table; failures auto-dump with a 20 s write window (done) and are classified from the last screen -- `[title: no input]`, `[menu hang]`, `[load stall]`, `[other]`, `CRASH` (done).
+- [ ] `tools/race_test.ps1` extended: all peaks/events (2026-10-14: `-Rider N -Mode N -Event N` pick the rider, mode and Peak 1 event by the frontend screen id in game_state.txt; Peaks 2/3 are locked on a fresh save -- 2026-10-15: the default save fixture `work\saves\unlocked` has everything unlocked; left: a peak choice in RECOMP_AUTONAV / to_race.ps1), configurable run count (done), summary table; failures auto-dump with a 20 s write window (done) and are classified from the last screen -- `[title: no input]`, `[menu hang]`, `[load stall]`, `[other]`, `CRASH` (done).
 - [x] Parallel test runs (2026-10-14): `tools/race_par.ps1 -Instances N -Runs M [-Env @{...}]` runs N game instances at once, each in its own directory `work\i<k>` (junction `game` -> the shared rip; own pad file, pid, logs, triggers, `game_state.txt`; `live.ps1` / `to_race.ps1` / `race_test.ps1` take `-Dir`), with `RECOMP_RASTER_THREADS` = cores / N each. Summary printed and saved to `logs/race_par_<ts>.txt`. 2 instances = 2 runs in the time of one; use 6-10 for the ~1-in-10 bugs (63 GB RAM / 32 cores here). Default for reliability work from now on.
 - [x] Watchdog in `to_race.ps1` (2026-10-14, default on, `-NoWatchdog` off): a run ends early with `stuck: [<class>]` when Start presses go unread for 45 s (`[no pad]`), FPS is 0 for 15 s in the menus/loading/race (`[freeze]`), or a game state outlives its budget (boot 60 s, intro 120 s, frontend 180 s, event_enter 30 s, loading 90 s: `[<state> stall]`); `race_test.ps1` reports that class and still dumps threads first. A stuck run costs 20-50 s instead of the 5-8 min timeout: race_par 8x2 went from 22 to 4.6 min.
 - [ ] Watchdog: also keep a screenshot of every stuck run (`live.ps1 snap` before the dump) as a record of what it looked like.
@@ -183,7 +186,8 @@ With rendering off the CPU, the game itself must fit in 16.7 ms.
 ## Phase 5 — Visual completeness
 
 - [ ] Shadow wedge (board shadow projected over steep terrain) — resolve on the GPU path (likely matches hardware once depth/clip are exact).
-- [ ] Pink-lit start area and the stage-1 texture holding unrelated bytes — confirm against xemu or real footage.
+- [x] Pink-lit start area — confirmed against xemu (2026-10-15, `tools\xemu.ps1` snapshot `race_briefing`/`race_go`): real lighting, not a bug.
+- [x] Character lighting (2026-10-15): riders were washed out; vertex colours oD0/oD1 are now clamped to 0..1 before interpolation like the NV2A. Select Character and race riders match xemu.
 - [ ] Particles, snow spray, trails, motion blur, glow, reflections, water; every peak's look.
 - [ ] Optional: 720p/widescreen, higher internal resolution (only after correctness).
 
