@@ -1145,9 +1145,11 @@ extern void sub_00234BE0_gen(void);
  * one wake. In ~1 run in 10 the wake never comes: the main thread waited
  * 417 s for time 0x1ECF while the fence stood at 0x1ED3 -- already past it --
  * with the executor idle, and the race never loaded ("43%" with draws
- * stopped). A watchdog thread checks every 5 ms: a wait older than 20 ms
- * (was 200 ms: each rescue was a visible hitch, and input pressed during it
- * could be lost) whose time the fence has reached (D3D's own test: cur - time >= cur -
+ * stopped). A watchdog thread checks every millisecond: a wait older than
+ * 2 ms (was 200 ms: each rescue was a visible hitch, and input pressed
+ * during it could be lost; D3D's own wake for a reached fence often took
+ * 25-45 ms -- the executor's idle wake waits 30 ms on a 16 ms clock) whose
+ * time the fence has reached (D3D's own test: cur - time >= cur -
  * fence) gets the wake it was owed, set from the host, and is logged as
  * [BLOCK-RESCUE] with the state of the software-method chain so the cause
  * can still be found. A wait whose time is NOT reached after 2 s is logged
@@ -1166,9 +1168,9 @@ static DWORD WINAPI block_rescue_thread(LPVOID unused)
     for (;;) {
         DWORD since = s_block_since, now;
         uint32_t t = s_block_t, dev, fence, cur;
-        Sleep(5);
+        Sleep(1);
         now = xbox_TickCountMs();
-        if (!since || since != s_block_since || now - since < 20)
+        if (!since || since != s_block_since || now - since < 2)
             continue;
         dev = MEM32(0x0024B0D8u);
         if (!dev)
@@ -1180,7 +1182,7 @@ static DWORD WINAPI block_rescue_thread(LPVOID unused)
                 continue;               /* already woken; let it run */
             rescued_call = since;
             n++;
-            if (n <= 20 || n % 100 == 0) {
+            if (n <= 5 || n % 1000 == 0) {
                 xbox_Nv2aSwmDiag(diag, sizeof diag);
                 fprintf(stderr, "[BLOCK-RESCUE] #%u waited %lu ms for time %08X, fence %08X cur %08X"
                         " put %08X get %08X | %s\n", n, (unsigned long)(now - since), t, fence, cur,

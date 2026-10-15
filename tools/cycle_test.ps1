@@ -58,6 +58,13 @@ for ($c = 1; $c -le $Cycles; $c++) {
             if ($fresh) { Press "up:150"; Start-Sleep -Milliseconds 800 }
             Press "a:200"; Start-Sleep -Seconds 2
             $fresh = $false
+        } elseif ($active -and $gs.Name -eq "ingame" -and $gs.Screen -notlike "00297E30:*") {
+            # Another in-race menu (a stray press opened Options or Audio):
+            # back out to the pause menu.
+            # back out to the pause menu, then unpause too: the next pause
+            # starts on Return again.
+            Press "b:200"; Start-Sleep -Seconds 2
+            Press "b:200"; Start-Sleep -Seconds 2
         } elseif ($gs -and $gs.Name -eq "ingame") {                  # racing
             Press "start:300"; Start-Sleep -Seconds 2
             $fresh = $true
