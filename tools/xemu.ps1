@@ -4,7 +4,9 @@
 #
 #   powershell -File tools\xemu.ps1 <command> [options]
 #
-#   start  [-Iso path] [-Exe path] [-Audio] [-Port 4455] [-Snapshot tag [-Paused]]
+#   start  [-Iso path] [-Exe path] [-Audio] [-Pad] [-Port 4455] [-Snapshot tag [-Paused]]
+#          -Pad: also bind the user's own gamepad (port 2, from their xemu.toml)
+#          -- only when the user wants to play in it themselves
 #          boot our own instance; -Snapshot restores a saved state right away
 #          (~1 s, e.g. race_go) instead of playing through the menus
 #   stop                                     quit our instance (QMP, then its PID)
@@ -34,7 +36,7 @@
 # keyboard focus is never taken. -Target user sends to the user's own xemu
 # window (any xemu not started by this script) -- only when asked.
 param([Parameter(Position = 0)][string]$Command = "status",
-      [string]$Iso = "", [string]$Exe = "", [int]$Port = 4455, [switch]$Audio,
+      [string]$Iso = "", [string]$Exe = "", [int]$Port = 4455, [switch]$Audio, [switch]$Pad,
       [string]$Out = "", [string]$Keys = "", [string]$Target = "",
       [int]$Gap = 250, [string]$Name = "", [string]$Cmd = "", [int]$BootWaitSec = 30,
       [string]$Snapshot = "", [switch]$Paused, [int]$SettleMs = 150)
@@ -170,6 +172,15 @@ switch ($Command) {
     if (-not (Test-Path $ourHdd)) { Copy-Item -LiteralPath $hdd $ourHdd }
     if (-not (Test-Path $ourEeprom) -and $eeprom -and (Test-Path -LiteralPath $eeprom)) { Copy-Item -LiteralPath $eeprom $ourEeprom }
     $vol = if ($Audio) { "1.0" } else { "0.0" }
+    $padLines = ""
+    if ($Pad) {
+        $drv = TomlValue $u "port2_driver"; $id = TomlValue $u "port2"
+        if (-not $id) { $drv = TomlValue $u "port1_driver"; $id = TomlValue $u "port1" }
+        if ($id -and $id -ne "keyboard") {
+            if (-not $drv) { $drv = "usb-xbox-gamepad" }
+            $padLines = "port2_driver = '$drv'`r`nport2 = '$id'"
+        }
+    }
     $cfg = Join-Path $work "xemu.toml"
     @"
 [general]
@@ -179,6 +190,7 @@ skip_boot_anim = true
 [input.bindings]
 port1_driver = 'usb-xbox-gamepad'
 port1 = 'keyboard'
+$padLines
 
 [display]
 renderer = 'VULKAN'

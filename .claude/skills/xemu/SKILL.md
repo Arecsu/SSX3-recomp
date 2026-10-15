@@ -23,7 +23,7 @@ Windows copy is what runs).
 
 | Command | What |
 |---|---|
-| `start [-Snapshot tag [-Paused]] [-Iso p] [-Exe p] [-Audio] [-Port 4455]` | Boot **our own instance** (see below). With `-Snapshot` it restores that state right away. |
+| `start [-Snapshot tag [-Paused]] [-Iso p] [-Exe p] [-Audio] [-Pad] [-Port 4455]` | Boot **our own instance** (see below). With `-Snapshot` it restores that state right away; `-Pad` also binds the user's own gamepad (port 2) for when they play in it. |
 | `stop` | Quit our instance (QMP `quit`, then its PID). Never kills other xemu processes. |
 | `status` | Our instance (pid, run state) and any user xemu. |
 | `cap [-Out file] [-Target ours\|user]` | Screenshot of the client area (1280x960 = 2x our 640x480), PrintWindow: no focus change, works when covered, not when minimised. Default target: ours if running, else the user's. |
