@@ -3,27 +3,31 @@
 # time) for -Seconds of riding. Writes logs\bench_<timestamp>.json and prints
 # a one-line summary. ROADMAP gate: p99 <= 16.7 ms.
 #   powershell -File tools\bench.ps1 [-Seconds 120] [-Env @{...}] [-Label name]
+#     [-Rider N -Peak N -Mode N -Event N]   (RECOMP_AUTONAV picks the race)
 param([int]$Seconds = 120, [hashtable]$Env = @{}, [string]$Label = "",
-      [int]$TimeoutSec = 480)
+      [int]$TimeoutSec = 480, [int]$Rider = 0, [int]$Peak = 0, [int]$Mode = 0, [int]$Event = 0)
 
 $root = Split-Path -Parent $PSScriptRoot
 $live = Join-Path $PSScriptRoot "live.ps1"
 $nav  = Join-Path $PSScriptRoot "to_race.ps1"
 $err  = Join-Path $root "stderr.txt"
 
+$Env = $Env.Clone()
 $Env["RECOMP_FRAME_STATS"] = "1"
+# The game drives its menus and starts the race itself (src/autonav.c).
+$Env["RECOMP_AUTONAV"] = "race,rider=$Rider,peak=$Peak,mode=$Mode,event=$Event"
 & $live start -Env $Env | Out-Null
-Start-Sleep -Seconds 15
-$navOut = & $nav -TimeoutSec $TimeoutSec 2>&1 | Select-Object -Last 1
-if ($navOut -notmatch "briefing") {
-    & $live stop | Out-Null
-    "bench: did not reach the race ($navOut)"
-    exit 1
+$t0 = Get-Date
+while (-not (Select-String -Path $err -Pattern "t=\d+ at the briefing" -List -ErrorAction SilentlyContinue)) {
+    if (((Get-Date) - $t0).TotalSeconds -gt $TimeoutSec) {
+        & $live stop | Out-Null
+        "bench: did not reach the race"
+        exit 1
+    }
+    Start-Sleep -Milliseconds 500
 }
-# Make sure the briefing is dismissed, then let the race start.
-Start-Sleep -Seconds 8
-& $live press -Buttons "a:300" | Out-Null
-Start-Sleep -Seconds 30
+# Into the race, past its start.
+Start-Sleep -Seconds 15
 
 $skip = @(Get-Content $err | Select-String -SimpleMatch "[FRAMES]").Count
 $rows = @()

@@ -1,8 +1,9 @@
 # Burst of screenshots during a race: boots with RECOMP_AUTONAV (straight to
 # the race), then takes a screenshot every -Every seconds between -From and
 # -To seconds after the briefing, into -Dir (contact sheet: tools\montage.ps1).
-#   powershell -File tools\burst.ps1 [-Nav "race,rider=3,peak=0,event=1"] [-From 14] [-To 30] [-Every 1.5] [-Dir shots\burst] [-Env @{...}]
-param([string]$Nav = "race,rider=3", [int]$From = 14, [int]$To = 30, [double]$Every = 1.5, [string]$Dir = "shots\burst", [hashtable]$Env = @{})
+#   powershell -File tools\burst.ps1 [-Nav "race,rider=3,peak=0,event=1"] [-From 14] [-To 30] [-Every 1.5] [-Dir shots\burst] [-Env @{...}] [-Taps 5]
+# -Taps N: press A every N seconds while riding (as bench.ps1 does).
+param([string]$Nav = "race,rider=3", [int]$From = 14, [int]$To = 30, [double]$Every = 1.5, [string]$Dir = "shots\burst", [hashtable]$Env = @{}, [double]$Taps = 0, [string]$TapKeys = "a:200")
 $root = Split-Path -Parent $PSScriptRoot; $t = $PSScriptRoot
 New-Item -ItemType Directory -Force -Path "$root\$Dir" | Out-Null
 $e = $Env.Clone(); $e["RECOMP_AUTONAV"] = $Nav
@@ -14,8 +15,13 @@ while (((Get-Date) - $t0).TotalSeconds -lt 90) {
 }
 $tr = Get-Date
 $k = 0
+$lastTap = Get-Date
 while (((Get-Date) - $tr).TotalSeconds -lt $To) {
     $s = ((Get-Date) - $tr).TotalSeconds
+    if ($Taps -gt 0 -and ((Get-Date) - $lastTap).TotalSeconds -ge $Taps) {
+        foreach ($k2 in ($TapKeys -split ",")) { & "$t\live.ps1" press -Buttons $k2 | Out-Null }
+        $lastTap = Get-Date
+    }
     if ($s -ge $From) {
         & "$t\live.ps1" snap -Out ("{0}\b{1:D2}_{2:N0}s.png" -f $Dir, $k, $s) | Out-Null
         $k++

@@ -777,6 +777,20 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   00297E98 freestyle. `RECOMP_VKR_PRIMLOG=1` logs each distinct state a
   line/point batch is drawn with; any primitive type the backend cannot draw
   is logged once as `[VKR] primitive N`.
+- METRO-CITY 30 FPS (2026-10-15): in Metro-City's glowing tunnel section
+  (~35-65 s into the race) the game renders every other 60 Hz tick: exactly
+  30 FPS. xemu does the same at the same point (tools\xemu_fps.ps1 reads the
+  game's renderer frame counter [0x369528]+0x771C through xemu's monitor) --
+  game behaviour, not ours. Mechanism: app loop sub_001AD880 renders after an
+  update only if the state's render method (ingame vtable +0x18 =
+  sub_000D3880) gets past renderer +0x44 = sub_001EA6A0 (current draw list
+  empty); the main thread idles in its frame wait (sub_001ADF40) ~85% of the
+  time meanwhile. Not the vblank phase (RECOMP_VBLANK_HZ=59/61: same).
+  Tools from the hunt: RECOMP_WAIT_STATS=1 ([WAITS]: kernel-call time per
+  thread/ordinal/guest call site), RECOMP_CPU_STATS=1 ([CPU]: host CPU per
+  thread, no suspension), `live.ps1 dump -Mem "profile main"` (main thread
+  only, 16 frames), RECOMP_GUESTCPU_STATS share per holder, tools\burst.ps1
+  -Taps/-TapKeys.
 - XEMU REFERENCE (2026-10-15): `tools\xemu.ps1` (skill: .claude/skills/xemu)
   boots a separate, muted xemu instance with the ISO (own config + HDD copy
   in work\xemu\, QMP on 127.0.0.1:4455), presses pad buttons by posting key

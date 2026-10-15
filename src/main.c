@@ -673,6 +673,10 @@ int recomp_dispatch_init(void);
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                    LPSTR lpCmdLine, int nCmdShow)
 {
+    {   /* the thread that will run the title's main loop (thread_dump.c) */
+        extern DWORD g_ssx3_main_tid;
+        g_ssx3_main_tid = GetCurrentThreadId();
+    }
     void *xbe_data = NULL;
     size_t xbe_size = 0;
 

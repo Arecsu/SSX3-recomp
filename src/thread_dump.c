@@ -423,6 +423,57 @@ static DWORD WINAPI td_thread(LPVOID arg)
  *   symbolize.py build/ssx3_recomp.map
  * plus a tally shows where a slow frame goes -- game code, the pushbuffer
  * executor, or the rasteriser. */
+/* The thread WinMain runs on, which runs the title's entry point and with it
+ * the game's main loop (main.c sets it). */
+DWORD g_ssx3_main_tid;
+
+/* `profile main`: only the main thread, 1000 samples 3 ms apart, kept in
+ * memory and printed at the end -- far lighter than the all-thread profile
+ * (which suspends and unwinds every thread and prints as it goes, enough to
+ * stall the game for 100+ ms), so a frame-rate problem stays as it was while
+ * it is measured. Same [PROF] format, so profile_tally.py reads it. */
+static void td_profile_main(void)
+{
+    enum { N = 1000 };
+    static DWORD64 rips[N][16];
+    static int nrip[N];
+    HANDLE h;
+    int s, j, got = 0;
+    if (!g_ssx3_main_tid || !(h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, g_ssx3_main_tid))) {
+        fprintf(stderr, "[PROFILE] main thread unknown\n");
+        return;
+    }
+    fprintf(stderr, "[PROFILE] main thread %lu: %d samples every 3 ms\n", g_ssx3_main_tid, N);
+    for (s = 0; s < N; s++) {
+        CONTEXT ctx;
+        DWORD64 all[TD_MAX_FRAMES];
+        int n = 0;
+        if (SuspendThread(h) != (DWORD)-1) {
+            ZeroMemory(&ctx, sizeof(ctx));
+            ctx.ContextFlags = CONTEXT_FULL;
+            if (GetThreadContext(h, &ctx))
+                n = td_walk(&ctx, all);
+            ResumeThread(h);
+        }
+        if (n > 0) {
+            nrip[got] = n < 16 ? n : 16;
+            for (j = 0; j < nrip[got]; j++)
+                rips[got][j] = all[j];
+            got++;
+        }
+        Sleep(3);
+    }
+    CloseHandle(h);
+    for (s = 0; s < got; s++) {
+        fprintf(stderr, "[PROF] %lu", g_ssx3_main_tid);
+        for (j = 0; j < nrip[s]; j++)
+            fprintf(stderr, " 0x%llX", (unsigned long long)td_rebase(rips[s][j]));
+        fprintf(stderr, "\n");
+    }
+    fprintf(stderr, "[PROFILE] done\n");
+    fflush(stderr);
+}
+
 static void td_profile(int samples, int period_ms)
 {
     static DWORD64 rips[TD_MAX_THREADS][8];
@@ -588,6 +639,9 @@ static DWORD WINAPI td_trigger_thread(LPVOID arg)
             if (strncmp(s_mem_spec, "watch ", 6) == 0) {
                 td_watch((uint32_t)strtoul(s_mem_spec + 6, NULL, 16));
                 s_mem_spec[0] = 0;
+            } else if (strncmp(s_mem_spec, "profile main", 12) == 0) {
+                td_profile_main();
+                s_mem_spec[0] = 0;
             } else if (strncmp(s_mem_spec, "profile", 7) == 0) {
                 td_profile(300, 10);
                 s_mem_spec[0] = 0;
@@ -595,6 +649,72 @@ static DWORD WINAPI td_trigger_thread(LPVOID arg)
                 td_dump("triggered");
             }
         }
+    }
+}
+
+/* RECOMP_CPU_STATS=1: once a second, the CPU time each thread used in that
+ * second (GetThreadTimes: user + kernel), top 6, the main thread marked --
+ * no suspension, so it measures a frame-rate problem without changing it.
+ * A thread near 100% is computing; one well below it is waiting. */
+static DWORD WINAPI cpu_stats_thread(LPVOID unused)
+{
+    enum { M = 256 };
+    static DWORD tids[M];
+    static ULONGLONG prev[M];
+    int n = 0;
+    DWORD pid = GetCurrentProcessId();
+    LARGE_INTEGER f, t0, t1;
+    (void)unused;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&t0);
+    for (;;) {
+        THREADENTRY32 te = { sizeof(te) };
+        HANDLE snap;
+        DWORD ctid[M];
+        ULONGLONG cur[M], delta[M];
+        int cn = 0, i, k;
+        double wall;
+        Sleep(1000);
+        QueryPerformanceCounter(&t1);
+        wall = (double)(t1.QuadPart - t0.QuadPart) / (double)f.QuadPart;
+        t0 = t1;
+        snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap == INVALID_HANDLE_VALUE)
+            continue;
+        for (BOOL ok = Thread32First(snap, &te); ok && cn < M; ok = Thread32Next(snap, &te)) {
+            HANDLE h;
+            FILETIME c, x, kt, ut;
+            if (te.th32OwnerProcessID != pid)
+                continue;
+            if (!(h = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, te.th32ThreadID)))
+                continue;
+            if (GetThreadTimes(h, &c, &x, &kt, &ut)) {
+                ctid[cn] = te.th32ThreadID;
+                cur[cn] = ((ULONGLONG)kt.dwHighDateTime << 32 | kt.dwLowDateTime)
+                        + ((ULONGLONG)ut.dwHighDateTime << 32 | ut.dwLowDateTime);
+                delta[cn] = 0;
+                for (k = 0; k < n; k++)
+                    if (tids[k] == ctid[cn]) { delta[cn] = cur[cn] - prev[k]; break; }
+                cn++;
+            }
+            CloseHandle(h);
+        }
+        CloseHandle(snap);
+        fprintf(stderr, "[CPU]");
+        for (k = 0; k < 6; k++) {
+            int best = -1;
+            for (i = 0; i < cn; i++)
+                if (delta[i] != (ULONGLONG)-1 && (best < 0 || delta[i] > delta[best]))
+                    best = i;
+            if (best < 0 || delta[best] == 0)
+                break;
+            fprintf(stderr, " %s%lu %.0f%%", ctid[best] == g_ssx3_main_tid ? "main:" : "",
+                    ctid[best], (double)delta[best] / 1e5 / wall);
+            delta[best] = (ULONGLONG)-1;
+        }
+        fprintf(stderr, "\n");
+        for (i = 0; i < cn; i++) { tids[i] = ctid[i]; prev[i] = cur[i]; }
+        n = cn;
     }
 }
 
@@ -607,6 +727,8 @@ void ssx3_ThreadDumpStart(void)
 
     const char *trig = getenv("RECOMP_THREAD_DUMP_TRIGGER");
 
+    if (getenv("RECOMP_CPU_STATS"))
+        CloseHandle(CreateThread(NULL, 0, cpu_stats_thread, NULL, 0, NULL));
     if (!secs && !(trig && *trig))
         return;
     nt = (PIMAGE_NT_HEADERS)((BYTE *)exe + ((PIMAGE_DOS_HEADER)exe)->e_lfanew);

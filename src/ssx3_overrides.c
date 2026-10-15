@@ -1177,6 +1177,8 @@ static DWORD WINAPI block_rescue_thread(LPVOID unused)
              * sampled from here, a host thread, every millisecond. */
             static int on = -1;
             static unsigned long hmax, htid, long_holds, last_tid, sec;
+            static unsigned long share_tid[16], share_ms[16];
+            static int nshare;
             static long wmax;
             extern void xbox_GuestCpuInfo(unsigned long *, unsigned long *, long *);
             if (on < 0)
@@ -1197,15 +1199,37 @@ static DWORD WINAPI block_rescue_thread(LPVOID unused)
                         ssx3_StackOfThread(tid, why);
                     }
                 }
+                {
+                    /* Share of the guest CPU per holder: one sample = 1 ms. */
+                    int k;
+                    for (k = 0; k < nshare && share_tid[k] != tid; k++)
+                        ;
+                    if (k == nshare && nshare < 16) { share_tid[k] = tid; share_ms[k] = 0; nshare++; }
+                    if (k < nshare) share_ms[k]++;
+                }
                 if (held > hmax) { hmax = held; htid = tid; }
                 if (w > wmax) wmax = w;
                 if (held == 10 || (held > 10 && tid != last_tid)) long_holds++;
                 last_tid = tid;
                 if (now - sec >= 1000) {
                     if (sec)
+                    {
+                        extern DWORD g_ssx3_main_tid;
+                        int k, r;
                         fprintf(stderr, "[GUESTCPU-STATS] longest hold %lu ms (thread %lu), holds over 10 ms %lu,"
-                                " waiters <= %ld\n", hmax, htid, long_holds, wmax);
-                    sec = now; hmax = htid = long_holds = 0; wmax = 0;
+                                " waiters <= %ld | share:", hmax, htid, long_holds, wmax);
+                        for (r = 0; r < 4; r++) {
+                            int b = -1;
+                            for (k = 0; k < nshare; k++)
+                                if (share_ms[k] && (b < 0 || share_ms[k] > share_ms[b])) b = k;
+                            if (b < 0) break;
+                            fprintf(stderr, " %s%lu %lu ms", !share_tid[b] ? "free" : share_tid[b] == g_ssx3_main_tid ? "main:" : "",
+                                    share_tid[b] ? share_tid[b] : 0ul, share_ms[b]);
+                            share_ms[b] = 0;
+                        }
+                        fprintf(stderr, "\n");
+                    }
+                    sec = now; hmax = htid = long_holds = 0; wmax = 0; nshare = 0;
                 }
             }
         }

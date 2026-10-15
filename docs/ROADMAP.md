@@ -172,7 +172,7 @@ With rendering off the CPU, the game itself must fit in 16.7 ms.
 - [ ] Remove waits: GPU hand-off, guest-lock contention, loop-yield cost, timer/DPC latency; fence waits answered as soon as the GPU reaches them.
 - [ ] Recompiler-level wins: x87 emulation hot paths, memory access helpers, indirect-call dispatch, `RECOMP_LOOP_YIELD` granularity.
 - [ ] Frame pacing: the title's 60 Hz clock (vblank, input ring) matched to the host display; no drift at 60. **2026-10-14:** vblank and kernel timers on the performance counter (were GetTickCount, ~43 Hz effective vblank); left: sync to the host display's refresh.
-- [ ] Gate: bench p99 ≤ 16.7 ms on every peak.
+- [ ] Gate: bench p99 ≤ 16.7 ms on every peak. **2026-10-15** (tools/bench.ps1 -Peak/-Event, 60 s, A taps): Snow Jam 60.5 FPS p99 21.8, Ruthless Ridge 60.5 / 27.8, Gravitude 60.6 / 27.8 (single slow frames); Metro-City 50 FPS -- the game itself drops to 30 in the tunnel section, xemu identically (tools/xemu_fps.ps1), so that is not ours to fix.
 
 ## Phase 4 — Audio, complete
 
@@ -225,6 +225,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-15 — Frame-rate check on every peak: 60 FPS with occasional single slow frames; Metro-City's 30 FPS stretch is the game's own (xemu drops to 30 at the same point).
 - 2026-10-15 — Conquer the Mountain: free-roam, pause menu, Transport and teleport work. Race shadow wedge not reproduced on Vulkan (25 frames).
 - 2026-10-15 — Phase 7 done: Windows-only build path (setup.ps1/regen.ps1, verified from a fresh clone), game folder found next to the exe, double-click logging, keys.ini remapping.
 - 2026-10-15 — Freestyle on Peaks 1-3 (8 events) loads and runs, 0 bad calls; autonav takes any event type's briefing screen.
