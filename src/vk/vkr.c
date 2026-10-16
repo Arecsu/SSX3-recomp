@@ -8,6 +8,7 @@
 
 #include "xbox_vert_spv.h"
 #include "xbox_frag_spv.h"
+#include "xbox_frag_wdepth_spv.h"
 #include "xbox_vsh_vert_spv.h"
 #ifdef _WIN32
 #include <windows.h>
@@ -90,9 +91,9 @@ struct VkrContext {
 
     VkDescriptorSetLayout dsl;
     VkPipelineLayout layout;
-    VkShaderModule vs, fs, vs_vsh;
+    VkShaderModule vs, fs, fs_wdepth, vs_vsh;  /* fs_wdepth: W-buffered draws */
 
-    struct PipeEntry { uint32_t key[7]; VkPipeline pipe; } pipes[200];
+    struct PipeEntry { uint32_t key[8]; VkPipeline pipe; } pipes[200];
     int npipes;
     struct SamplerEntry { uint32_t key; VkSampler s; } samplers[16];
     int nsamplers;
@@ -334,8 +335,9 @@ static int make_layout(VkrContext *c)
 
     c->vs = shader(c, xbox_vert_spv, xbox_vert_spv_len);
     c->fs = shader(c, xbox_frag_spv, xbox_frag_spv_len);
+    c->fs_wdepth = shader(c, xbox_frag_wdepth_spv, xbox_frag_wdepth_spv_len);
     c->vs_vsh = shader(c, xbox_vsh_vert_spv, xbox_vsh_vert_spv_len);
-    if (!c->vs || !c->fs || !c->vs_vsh) { fprintf(stderr, "[VKR] shader module failed\n"); return 0; }
+    if (!c->vs || !c->fs || !c->fs_wdepth || !c->vs_vsh) { fprintf(stderr, "[VKR] shader module failed\n"); return 0; }
     di.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT;
     di.bindingCount = 3; di.pBindings = b;
     CK(vkCreateDescriptorSetLayout(c->dev, &di, NULL, &c->dsl));
@@ -348,7 +350,7 @@ static int make_layout(VkrContext *c)
 /* Pipeline for one blend/write-mask combination (depth state is dynamic). */
 static VkPipeline get_pipeline(VkrContext *c, const VkrDrawState *st, int gpu_vsh)
 {
-    uint32_t key[7];
+    uint32_t key[8];
     VkPipelineShaderStageCreateInfo stg[2] = {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, 0, 0, VK_SHADER_STAGE_VERTEX_BIT, 0, "main", 0},
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, 0, 0, VK_SHADER_STAGE_FRAGMENT_BIT, 0, "main", 0},
@@ -378,6 +380,7 @@ static VkPipeline get_pipeline(VkrContext *c, const VkrDrawState *st, int gpu_vs
     if (!st->blend_enable) key[1] = key[2] = key[3] = 0;
     key[5] = (uint32_t)gpu_vsh;
     key[6] = st->topology;
+    key[7] = (uint32_t)(st->w_buffer != 0);
     for (i = 0; i < c->npipes; i++)
         if (!memcmp(c->pipes[i].key, key, sizeof key))
             return c->pipes[i].pipe;
@@ -386,7 +389,7 @@ static VkPipeline get_pipeline(VkrContext *c, const VkrDrawState *st, int gpu_vs
         return VK_NULL_HANDLE;
     }
 
-    stg[0].module = gpu_vsh ? c->vs_vsh : c->vs; stg[1].module = c->fs;
+    stg[0].module = gpu_vsh ? c->vs_vsh : c->vs; stg[1].module = st->w_buffer ? c->fs_wdepth : c->fs;
     for (i = 0; i < 8; i++) {
         at[i].location = (uint32_t)i; at[i].binding = 0;
         at[i].format = VK_FORMAT_R32G32B32A32_SFLOAT;
@@ -426,9 +429,9 @@ static VkPipeline get_pipeline(VkrContext *c, const VkrDrawState *st, int gpu_vs
             fprintf(stderr, "[VKR] pipeline creation failed\n");
             return VK_NULL_HANDLE;
         }
-        fprintf(stderr, "[VKR] pipeline %d: %.1f ms (blend %u %u/%u eq %u mask %X vsh %u topo %u)\n", c->npipes,
-                vkr_now_ms() - t0,
-                key[0], key[1], key[2], key[3], key[4], key[5], key[6]);
+        fprintf(stderr, "[VKR] pipeline %d: %.1f ms (blend %u %u/%u eq %u mask %X vsh %u topo %u wdepth %u)\n",
+                c->npipes, vkr_now_ms() - t0,
+                key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7]);
     }
     memcpy(c->pipes[c->npipes].key, key, sizeof key);
     c->pipes[c->npipes++].pipe = pipe;
@@ -717,6 +720,7 @@ void vkr_destroy(VkrContext *c)
         vkDestroySampler(c->dev, c->samplers[i].s, NULL);
     vkDestroyShaderModule(c->dev, c->vs, NULL);
     vkDestroyShaderModule(c->dev, c->fs, NULL);
+    vkDestroyShaderModule(c->dev, c->fs_wdepth, NULL);
     vkDestroyShaderModule(c->dev, c->vs_vsh, NULL);
     vkDestroyPipelineLayout(c->dev, c->layout, NULL);
     vkDestroyDescriptorSetLayout(c->dev, c->dsl, NULL);
@@ -828,13 +832,24 @@ static void prof_report(VkrContext *c, int slot)
     int top[8], k;
     uint32_t i, n = fr->nq;
     double total;
-    if (c->prof_thr <= 0 || n < 2 || c->prof_said >= 60)
+    if (c->prof_thr <= 0 || n < 2)
         return;
     if (vkGetQueryPoolResults(c->dev, fr->qp, 0, n, n * sizeof ts[0], ts, sizeof ts[0],
                               VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
         return;
     total = (double)(ts[n - 1] - ts[0]) * c->ts_period / 1e6;
-    if (total < c->prof_thr)
+    {
+        /* every 120 frames: the GPU frame time's average and maximum */
+        static double sum, mx;
+        static unsigned nf;
+        sum += total; nf++;
+        if (total > mx) mx = total;
+        if (nf == 120) {
+            fprintf(stderr, "[GPUPROF] 120 frames: GPU avg %.2f ms, max %.2f ms\n", sum / nf, mx);
+            sum = mx = 0; nf = 0;
+        }
+    }
+    if (total < c->prof_thr || c->prof_said >= 60)
         return;
     c->prof_said++;
     for (k = 0; k < 8; k++) top[k] = -1;

@@ -220,9 +220,13 @@ void main()
             discard;
     }
     out_color = col;
+#ifdef W_DEPTH
     /* CONTROL0 Z_PERSPECTIVE: the depth test compares w, which is linear in
      * distance, instead of z, whose precision is spent near the camera (the
-     * race's terrain has z within 1% of the far end). */
-    gl_FragDepth = pc.w_scale > 0.0 ? clamp(pc.w_scale / gl_FragCoord.w, 0.0, 1.0)
-                                    : gl_FragCoord.z;
+     * race's terrain has z within 1% of the far end). Only this variant
+     * (xbox_frag_wdepth, W-buffered draws) writes depth: a shader that does
+     * turns off the GPU's early depth test, and every hidden pixel of every
+     * draw was shaded -- a quarter of the GPU time at 5120x1440. */
+    gl_FragDepth = clamp(pc.w_scale / gl_FragCoord.w, 0.0, 1.0);
+#endif
 }

@@ -897,6 +897,19 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   Now clamp(oPts.x, 1, 64) * scale: Peak 1 freestyle event 2 (Mode 1 Event
   1, the rider grabs one in the air) at 5120x1440 went from 102-126 ms worst
   frames to 22.5 ms, no GPU frame over 25 ms.
+- GPU COST AT HIGH RESOLUTION (2026-10-16, user: choppy in the air at
+  5120x1440 after the sparkle fix): ordinary frames needed 12 ms of GPU on
+  average and up to 21 ms (RECOMP_VKR_GPUPROF also prints "120 frames: GPU
+  avg/max"), cost spread over ~650 draws. xbox.frag wrote gl_FragDepth for
+  every draw (gl_FragCoord.z unless W-buffered), which turns off early depth
+  testing: every hidden pixel was shaded. Now only the xbox_frag_wdepth
+  variant (built with -DW_DEPTH, CMake vkr_shader_variant; pipeline key[7]
+  = w_buffer) writes depth. Freestyle event 2 at 5120x1440: avg 12.2 ->
+  9.35 ms, max 21 -> 16 ms. Neither that event nor the Snow Jam race has a
+  W-buffered draw at all. Next lever if needed: the per-pixel combiner
+  interpreter (dynamically indexed R[16], words decoded per fragment) --
+  specialization constants per combiner setup would let the compiler fold
+  it; and the ~1.4 ms per frame readback of the full image for the window.
 - XEMU REFERENCE (2026-10-15): `tools\xemu.ps1` (skill: .claude/skills/xemu)
   boots a separate, muted xemu instance with the ISO (own config + HDD copy
   in work\xemu\, QMP on 127.0.0.1:4455), presses pad buttons by posting key
