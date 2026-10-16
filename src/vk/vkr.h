@@ -47,6 +47,10 @@ typedef struct {
     float    point_size;            /* pixels, when !point_params */
     int      point_params;          /* size from the program's oPts.x */
     int      point_sprite;          /* stage 3 coordinates = gl_PointCoord */
+    /* Stencil (NV2A STENCIL_*; func GL enum 0x200..0x207, ops GL enums) */
+    int      stencil_test;
+    uint32_t stencil_func, stencil_ref, stencil_read_mask, stencil_write_mask;
+    uint32_t stencil_fail, stencil_zfail, stencil_zpass;
 } VkrDrawState;
 
 #define VKR_TOPO_TRIANGLES 0
@@ -61,7 +65,8 @@ void vkr_destroy(VkrContext *c);
 int vkr_set_target(VkrContext *c, uint32_t w, uint32_t h, float zmax);
 void vkr_set_scissor(VkrContext *c, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
 void vkr_clear(VkrContext *c, const float rgba[4], int clear_depth, float depth);
-void vkr_clear_depth(VkrContext *c, float depth);
+/* Depth and/or stencil only (colour untouched). */
+void vkr_clear_ds(VkrContext *c, int clear_depth, float depth, int clear_stencil, uint32_t stencil);
 
 /* Textures, keyed by a content hash. pixels: w*h dwords, A8R8G8B8. */
 VkrTex *vkr_tex_find(VkrContext *c, uint64_t key);

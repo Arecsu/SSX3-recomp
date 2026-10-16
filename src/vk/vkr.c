@@ -132,6 +132,8 @@ struct VkrContext {
     VkImage color, depth;
     VkDeviceMemory color_mem, depth_mem;
     VkImageView color_view, depth_view;
+    VkFormat depth_fmt;             /* D32_SFLOAT_S8_UINT (or D24S8; D32 = no stencil) */
+    int has_stencil;
     int recording, in_pass;
     int color_valid;
 
@@ -149,6 +151,11 @@ struct VkrContext {
     unsigned prof_said;
     float vsh_consts[192][4];
 };
+
+static VkImageAspectFlags ds_aspect(const VkrContext *c)
+{
+    return VK_IMAGE_ASPECT_DEPTH_BIT | (c->has_stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
+}
 
 static void use_frame(VkrContext *c, int i)
 {
@@ -367,7 +374,10 @@ static VkPipeline get_pipeline(VkrContext *c, const VkrDrawState *st, int gpu_vs
     VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
                             VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
-                            VK_DYNAMIC_STATE_DEPTH_COMPARE_OP, VK_DYNAMIC_STATE_BLEND_CONSTANTS};
+                            VK_DYNAMIC_STATE_DEPTH_COMPARE_OP, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+                            VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP,
+                            VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
+                            VK_DYNAMIC_STATE_STENCIL_REFERENCE};
     VkPipelineDynamicStateCreateInfo dy = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
     VkFormat cf = VK_FORMAT_B8G8R8A8_UNORM;
     VkPipelineRenderingCreateInfo ri = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
@@ -418,7 +428,9 @@ static VkPipeline get_pipeline(VkrContext *c, const VkrDrawState *st, int gpu_vs
     cb.attachmentCount = 1; cb.pAttachments = &cba;
     dy.dynamicStateCount = (uint32_t)(sizeof dyn / sizeof dyn[0]); dy.pDynamicStates = dyn;
     ri.colorAttachmentCount = 1; ri.pColorAttachmentFormats = &cf;
-    ri.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+    ri.depthAttachmentFormat = c->depth_fmt;
+    if (c->has_stencil)
+        ri.stencilAttachmentFormat = c->depth_fmt;
     pi.pNext = &ri; pi.stageCount = 2; pi.pStages = stg;
     pi.pVertexInputState = &vin; pi.pInputAssemblyState = &ia; pi.pViewportState = &vp;
     pi.pRasterizationState = &rs; pi.pMultisampleState = &ms; pi.pDepthStencilState = &ds;
@@ -586,6 +598,24 @@ VkrContext *vkr_create(void)
             fprintf(stderr, "[VKR] GPU profiler %s: frames over %.1f ms\n",
                     c->prof_thr > 0 ? "on" : "failed", c->prof_thr);
         }
+    }
+    {
+        /* The NV2A's Z24S8 has a stencil buffer that SSX 3 uses (the snow
+         * trail surfaces fix up depth through it); a format with stencil. */
+        static const VkFormat cand[] = {VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT};
+        int k;
+        c->depth_fmt = VK_FORMAT_D32_SFLOAT;
+        for (k = 0; k < 2; k++) {
+            VkFormatProperties fp;
+            vkGetPhysicalDeviceFormatProperties(c->phys, cand[k], &fp);
+            if (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) {
+                c->depth_fmt = cand[k];
+                c->has_stencil = 1;
+                break;
+            }
+        }
+        if (!c->has_stencil)
+            fprintf(stderr, "[VKR] no depth-stencil format: stencil ignored\n");
     }
     pthread_mutex_init(&c->lock, NULL);
     pthread_cond_init(&c->freed, NULL);
@@ -772,8 +802,8 @@ int vkr_set_target(VkrContext *c, uint32_t w, uint32_t h, float zmax)
                     VK_IMAGE_ASPECT_COLOR_BIT, &c->color, &c->color_mem, &c->color_view,
                     c->sw, c->sh))
         return 0;
-    if (!make_image(c, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                    VK_IMAGE_ASPECT_DEPTH_BIT, &c->depth, &c->depth_mem, &c->depth_view,
+    if (!make_image(c, c->depth_fmt, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                    ds_aspect(c), &c->depth, &c->depth_mem, &c->depth_view,
                     c->sw, c->sh))
         return 0;
     if ((c->scale != 1.0f || c->scale_x != 1.0f)
@@ -904,9 +934,9 @@ static int begin_cmd(VkrContext *c)
             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-    barrier(c, c->depth, VK_IMAGE_ASPECT_DEPTH_BIT,
-            c->color_valid ? VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+    barrier(c, c->depth, ds_aspect(c),
+            c->color_valid ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
             VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
             VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
@@ -924,12 +954,14 @@ static void begin_pass(VkrContext *c)
     ca.imageView = c->color_view; ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     ca.loadOp = c->color_valid ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
     ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    da.imageView = c->depth_view; da.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    da.imageView = c->depth_view; da.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     da.loadOp = c->color_valid ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
     da.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     da.clearValue.depthStencil.depth = 1.0f;
     ri.renderArea = sc; ri.layerCount = 1;
     ri.colorAttachmentCount = 1; ri.pColorAttachments = &ca; ri.pDepthAttachment = &da;
+    if (c->has_stencil)
+        ri.pStencilAttachment = &da;
     vkCmdBeginRendering(c->cmd, &ri);
     vkCmdSetViewport(c->cmd, 0, 1, &vp);
     vkCmdSetScissor(c->cmd, 0, 1, &c->sc);
@@ -995,13 +1027,19 @@ void vkr_clear(VkrContext *c, const float rgba[4], int clear_depth, float depth)
     vkCmdClearAttachments(c->cmd, n, ca, 1, &cr);
 }
 
-void vkr_clear_depth(VkrContext *c, float depth)
+void vkr_clear_ds(VkrContext *c, int clear_depth, float depth, int clear_stencil, uint32_t stencil)
 {
-    VkClearAttachment ca = {VK_IMAGE_ASPECT_DEPTH_BIT};
+    VkClearAttachment ca = {0};
     VkClearRect cr = {c->sc, 0, 1};
+    if (clear_depth)
+        ca.aspectMask |= VK_IMAGE_ASPECT_DEPTH_BIT;
+    if (clear_stencil && c->has_stencil)
+        ca.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+    if (!ca.aspectMask) return;
     if (!begin_cmd(c)) return;
     begin_pass(c);
     ca.clearValue.depthStencil.depth = depth;
+    ca.clearValue.depthStencil.stencil = stencil;
     vkCmdClearAttachments(c->cmd, 1, &ca, 1, &cr);
 }
 
@@ -1122,6 +1160,37 @@ VkrTex *vkr_tex_create(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
     return t;
 }
 
+/* NV2A stencil state -> dynamic Vulkan stencil state (both faces). */
+static VkStencilOp stencil_op(uint32_t gl)
+{
+    switch (gl) {
+    case 0x0000: return VK_STENCIL_OP_ZERO;
+    case 0x1E01: return VK_STENCIL_OP_REPLACE;
+    case 0x1E02: return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+    case 0x1E03: return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+    case 0x150A: return VK_STENCIL_OP_INVERT;
+    case 0x8507: return VK_STENCIL_OP_INCREMENT_AND_WRAP;
+    case 0x8508: return VK_STENCIL_OP_DECREMENT_AND_WRAP;
+    default:     return VK_STENCIL_OP_KEEP;
+    }
+}
+
+static void set_stencil(VkrContext *c, const VkrDrawState *st)
+{
+    VkStencilFaceFlags f = VK_STENCIL_FACE_FRONT_AND_BACK;
+    int on = c->has_stencil && st->stencil_test;
+    vkCmdSetStencilTestEnable(c->cmd, on ? VK_TRUE : VK_FALSE);
+    if (!c->has_stencil)
+        return;
+    vkCmdSetStencilOp(c->cmd, f, stencil_op(st->stencil_fail), stencil_op(st->stencil_zpass),
+                      stencil_op(st->stencil_zfail),
+                      st->stencil_func >= 0x200 && st->stencil_func <= 0x207
+                          ? (VkCompareOp)(st->stencil_func - 0x200) : VK_COMPARE_OP_ALWAYS);
+    vkCmdSetStencilCompareMask(c->cmd, f, st->stencil_read_mask);
+    vkCmdSetStencilWriteMask(c->cmd, f, on ? st->stencil_write_mask : 0);
+    vkCmdSetStencilReference(c->cmd, f, st->stencil_ref);
+}
+
 int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
              const uint32_t *idx, uint32_t nidx, const VkrDrawState *st)
 {
@@ -1198,6 +1267,7 @@ int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
     vkCmdSetDepthCompareOp(c->cmd, st->depth_func >= 0x200 && st->depth_func <= 0x207
                                        ? (VkCompareOp)(st->depth_func - 0x200)
                                        : VK_COMPARE_OP_LESS_OR_EQUAL);
+    set_stencil(c, st);
     vkCmdSetBlendConstants(c->cmd, st->blend_color);
     vkCmdBindVertexBuffers(c->cmd, 0, 1, &c->buf, &off);
     vkCmdBindIndexBuffer(c->cmd, c->buf, ib, VK_INDEX_TYPE_UINT32);
@@ -1316,6 +1386,7 @@ int vkr_draw_vsh(VkrContext *c, const float *in, uint32_t nverts, uint32_t nin,
     vkCmdSetDepthCompareOp(c->cmd, st->depth_func >= 0x200 && st->depth_func <= 0x207
                                        ? (VkCompareOp)(st->depth_func - 0x200)
                                        : VK_COMPARE_OP_LESS_OR_EQUAL);
+    set_stencil(c, st);
     vkCmdSetBlendConstants(c->cmd, st->blend_color);
     vkCmdBindIndexBuffer(c->cmd, c->buf, ib, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(c->cmd, nidx, 1, 0, 0, 0);

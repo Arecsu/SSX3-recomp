@@ -927,6 +927,23 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   RECOMP_SNAP_PRESENTED=1 makes the snapshot trigger capture the presented
   back buffer (gpu_present_capture) -- PrintWindow cannot read the swap
   chain, and grabbing the screen captures whatever is in front.
+- STENCIL (2026-10-16, user: other riders' board trails show through the
+  slope in front -- Snow Jam race, brake ~4 times after the start, trails
+  right of the rider at ~0:09). The snow trail surfaces fix up depth with
+  the stencil buffer: pass 1 (colour off, depth ALWAYS, stencil zpass
+  ZERO), pass 2 (depth LEQUAL, zpass REPLACE ref 1), pass 3 (depth ALWAYS
+  with depth WRITE, stencil EQUAL 1) -- then the visible surface. The
+  executor recorded stencil but nothing applied it, so pass 3 wrote the far
+  surface's depth over everything in its box, the near crest included, and
+  the trails behind the crest passed their depth test there. Now: Nv2aTarget
+  carries the stencil state (toolkit, Z24S8 only), the Vulkan depth buffer
+  is D32_SFLOAT_S8_UINT (or D24S8; none -> stencil ignored, logged), stencil
+  test/op/masks/ref are dynamic state (no new pipelines), clears clear the
+  stencil (vkr_clear_ds). GPU time unchanged (8.3 ms avg at 5120x1440).
+  Found with: RECOMP_VKR_PRIMLOG=2 (now with depth and stencil state),
+  RECOMP_GPU_VSH=0 + RECOMP_VKR_TRACE_BRIEF=<ms after the briefing> +
+  RECOMP_VKR_TRACE_EVERY (per-draw boxes with depth range), RECOMP_VKR_CLEARLOG=1,
+  work\probe\trails.ps1 (race start, N short brakes, shots).
 - XEMU REFERENCE (2026-10-15): `tools\xemu.ps1` (skill: .claude/skills/xemu)
   boots a separate, muted xemu instance with the ISO (own config + HDD copy
   in work\xemu\, QMP on 127.0.0.1:4455), presses pad buttons by posting key

@@ -50,6 +50,8 @@ extern volatile uint32_t g_ssx3_ui_screen_vt, g_ssx3_ui_screen_id, g_ssx3_ui_scr
 
 static int s_rider, s_peak, s_mode, s_event, s_brief;
 static DWORD s_t0;
+/* Set when autonav reaches the briefing (RECOMP_VKR_TRACE_BRIEF times from it). */
+volatile int g_ssx3_at_briefing;
 
 static int guest_ok(uint32_t va)
 {
@@ -133,6 +135,7 @@ static DWORD WINAPI autonav_thread(LPVOID unused)
                 else if (now - brief_since >= 300) {
                     fprintf(stderr, "[AUTONAV] t=%lu at the briefing\n", (unsigned long)(now - s_t0));
                     fflush(stderr);
+                    g_ssx3_at_briefing = 1;
                     if (!s_brief)
                         press("a:200", "briefing");
                     /* Re-arm: back in the frontend after this race (quit,

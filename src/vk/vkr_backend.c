@@ -240,6 +240,11 @@ static void fill_state(const Nv2aTarget *t, VkrDrawState *st)
     st->point_sprite = t->point_sprite;
     st->depth_test = t->depth_test; st->depth_write = t->depth_write;
     st->depth_func = t->depth_func;
+    st->stencil_test = t->stencil_test;
+    st->stencil_func = t->stencil_func; st->stencil_ref = t->stencil_ref;
+    st->stencil_read_mask = t->stencil_read_mask; st->stencil_write_mask = t->stencil_write_mask;
+    st->stencil_fail = t->stencil_fail; st->stencil_zfail = t->stencil_zfail;
+    st->stencil_zpass = t->stencil_zpass;
     st->w_buffer = t->w_buffer;
     st->blend_enable = t->blend_enable;
     st->blend_src = t->blend_sfactor; st->blend_dst = t->blend_dfactor;
@@ -385,15 +390,19 @@ static double s_trace_at, s_t0;
 /* RECOMP_VKR_TRACE_EVERY=<ms>: re-arm after each traced frame, so a run
  * traces one frame per period (vkr_trace_<k>.bmp, log lines tagged k). */
 static double s_trace_every;
+static double s_trace_brief = -1;
+extern volatile int g_ssx3_at_briefing;     /* autonav.c */
 static unsigned s_trace_no;
 
 static void trace_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, uint32_t n,
                        const VkrDrawState *st)
 {
-    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f, z0 = 1e30f, z1 = -1e30f;
     uint32_t i;
     int k;
     for (i = 0; i < n; i++) {
+        if (v[i].pos[2] < z0) z0 = v[i].pos[2];
+        if (v[i].pos[2] > z1) z1 = v[i].pos[2];
         if (v[i].pos[0] < x0) x0 = v[i].pos[0];
         if (v[i].pos[0] > x1) x1 = v[i].pos[0];
         if (v[i].pos[1] < y0) y0 = v[i].pos[1];
@@ -401,8 +410,9 @@ static void trace_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *
     }
     if ((x1 - x0) * (y1 - y0) < 2000.0f)
         return;
-    fprintf(stderr, "[VKRTRACE] prim %u n %u box %.0f,%.0f-%.0f,%.0f w0 %.3g d0 %.2f,%.2f,%.2f,%.2f | stages %05X",
-            prim, n, x0, y0, x1, y1, v[0].pos[3], v[0].d0[0], v[0].d0[1], v[0].d0[2], v[0].d0[3],
+    fprintf(stderr, "[VKRTRACE] prim %u n %u box %.0f,%.0f-%.0f,%.0f z %.4g..%.4g w0 %.3g d0 %.2f,%.2f,%.2f,%.2f | stages %05X",
+            prim, n, x0, y0, x1, y1, z0 / (t->zmax ? (float)t->zmax : 1.0f), z1 / (t->zmax ? (float)t->zmax : 1.0f),
+            v[0].pos[3], v[0].d0[0], v[0].d0[1], v[0].d0[2], v[0].d0[3],
             st->u.stage_program);
     for (k = 0; k < 4; k++) {
         Nv2aTexInfo ti;
@@ -581,32 +591,50 @@ static uint32_t *build_idx(uint32_t prim, uint32_t n, uint32_t *k_out, uint32_t 
 
 /* RECOMP_VKR_PRIMLOG=1: each distinct state a line or point batch is drawn
  * with, once (topology, blend, stages, combiner, point state). */
+/* RECOMP_VKR_PRIMLOG=1: each distinct state a line/point batch is drawn
+ * with; =2 also blended triangle batches (trails, effects). With the depth
+ * state (test/write/func, W-buffer). */
+static uint32_t state_hash(const VkrDrawState *st)
+{
+    return st->topology * 0x9E3779B1u ^ st->u.stage_program * 31u ^ st->u.color_icw[0] * 7u
+        ^ st->u.final0 ^ st->u.final1 * 3u ^ (st->blend_src << 8 | st->blend_dst) * 13u
+        ^ (uint32_t)st->blend_enable * 17u ^ st->u.color_ocw[0]
+        ^ ((uint32_t)st->depth_test << 1 | (uint32_t)st->depth_write << 2 | (uint32_t)st->w_buffer << 3
+           | st->depth_func << 4) * 0x85EBCA6Bu
+        ^ ((uint32_t)st->stencil_test | st->stencil_zpass << 1 | st->stencil_func << 17) * 0xC2B2AE35u;
+}
+
 static void primlog(const VkrDrawState *st, uint32_t n, int gpu_vsh)
 {
     static int on = -1;
-    static uint32_t seen[64];
+    static uint32_t seen[256];
     static int nseen;
     uint32_t h;
     int i;
-    if (on < 0) on = getenv("RECOMP_VKR_PRIMLOG") != NULL;
-    if (!on || st->topology == VKR_TOPO_TRIANGLES)
+    if (on < 0) {
+        const char *e = getenv("RECOMP_VKR_PRIMLOG");
+        on = e ? atoi(e) : 0;
+    }
+    if (!on || (st->topology == VKR_TOPO_TRIANGLES && (on < 2 || !st->blend_enable)))
         return;
-    h = st->topology * 0x9E3779B1u ^ st->u.stage_program * 31u ^ st->u.color_icw[0] * 7u
-        ^ st->u.final0 ^ st->u.final1 * 3u ^ (st->blend_src << 8 | st->blend_dst) * 13u
-        ^ (uint32_t)st->blend_enable * 17u ^ st->u.color_ocw[0];
+    h = state_hash(st);
     for (i = 0; i < nseen; i++)
         if (seen[i] == h)
             return;
-    if (nseen < 64)
+    if (nseen < 256)
         seen[nseen++] = h;
     fprintf(stderr, "[PRIMLOG] %s n %u vsh %d stage_prog %08X tex %d%d%d%d blend %d %X/%X eq %X"
-            " rc %u icw0 %08X ocw0 %08X ia0 %08X final %08X %08X fac0 %08X pt %.1f/%d/%d alpha %X/%u\n",
-            st->topology == VKR_TOPO_LINES ? "lines" : "points", n, gpu_vsh, st->u.stage_program,
+            " rc %u icw0 %08X ocw0 %08X ia0 %08X final %08X %08X fac0 %08X pt %.1f/%d/%d alpha %X/%u"
+            " depth test %d write %d func %X wbuf %d stencil %d func %X ref %X mask %X/%X op %X/%X/%X hash %08X\n",
+            st->topology == VKR_TOPO_LINES ? "lines" : st->topology == VKR_TOPO_POINTS ? "points" : "tris",
+            n, gpu_vsh, st->u.stage_program,
             st->tex[0] != NULL, st->tex[1] != NULL, st->tex[2] != NULL, st->tex[3] != NULL,
             st->blend_enable, st->blend_src, st->blend_dst, st->blend_eq, st->u.control & 0xFF,
             st->u.color_icw[0], st->u.color_ocw[0], st->u.alpha_icw[0], st->u.final0, st->u.final1,
             st->u.factor0[0], st->point_size, st->point_params, st->point_sprite,
-            st->alpha_func, st->alpha_ref);
+            st->alpha_func, st->alpha_ref, st->depth_test, st->depth_write, st->depth_func, st->w_buffer,
+            st->stencil_test, st->stencil_func, st->stencil_ref, st->stencil_read_mask, st->stencil_write_mask,
+            st->stencil_fail, st->stencil_zfail, st->stencil_zpass, h);
     fflush(stderr);
 }
 
@@ -722,23 +750,54 @@ static int be_draw_vsh(const Nv2aTarget *t, uint32_t prim, const float *in, uint
     return 1;
 }
 
+/* RECOMP_VKR_CLEARLOG=1: once a second, each distinct clear of the main
+ * target (flags, clip rectangle, depth value) with how often it ran. */
+static void clearlog(const Nv2aTarget *t, uint32_t flags, float depth)
+{
+    static int on = -1;
+    static struct { uint32_t flags, x, y, w, h; float d; unsigned n; } e[16];
+    static int ne;
+    static double t0;
+    int i;
+    if (on < 0) on = getenv("RECOMP_VKR_CLEARLOG") != NULL;
+    if (!on)
+        return;
+    for (i = 0; i < ne; i++)
+        if (e[i].flags == flags && e[i].x == t->x && e[i].y == t->y && e[i].w == t->width
+            && e[i].h == t->height && e[i].d == depth)
+            break;
+    if (i == ne && ne < 16) {
+        e[i].flags = flags; e[i].x = t->x; e[i].y = t->y; e[i].w = t->width; e[i].h = t->height;
+        e[i].d = depth; e[i].n = 0; ne++;
+    }
+    if (i < ne)
+        e[i].n++;
+    if (now_ms() - t0 >= 1000.0) {
+        for (i = 0; i < ne; i++)
+            fprintf(stderr, "[CLEARLOG] flags %X clip %u,%u %ux%u depth %g x%u\n", e[i].flags, e[i].x,
+                    e[i].y, e[i].w, e[i].h, e[i].d, e[i].n);
+        ne = 0;
+        t0 = now_ms();
+    }
+}
+
 static int be_clear(const Nv2aTarget *t, uint32_t flags, uint32_t argb, float depth)
 {
     float c[4];
     if (!is_main(t))
         return 0;
+    clearlog(t, flags, depth);
     c[0] = (float)((argb >> 16) & 0xFF) / 255.0f;
     c[1] = (float)((argb >> 8) & 0xFF) / 255.0f;
     c[2] = (float)(argb & 0xFF) / 255.0f;
     c[3] = (float)(argb >> 24) / 255.0f;
-    if (!(flags & NV2A_CLEAR_COLOR) && !(flags & NV2A_CLEAR_Z))
+    if (!(flags & (NV2A_CLEAR_COLOR | NV2A_CLEAR_Z | NV2A_CLEAR_STENCIL)))
         return 1;
     if (flags & NV2A_CLEAR_COLOR)
-        vkr_clear(s_vk, c, (flags & NV2A_CLEAR_Z) != 0, depth);
-    else {
-        /* depth-only clear: colour untouched */
-        vkr_clear_depth(s_vk, depth);
-    }
+        vkr_clear(s_vk, c, 0, 0.0f);
+    /* depth / stencil: colour untouched */
+    vkr_clear_ds(s_vk, (flags & NV2A_CLEAR_Z) != 0, depth,
+                 (flags & NV2A_CLEAR_STENCIL) != 0, t->stencil_clear);
     s_dirty = 1;
     return 1;
 }
@@ -809,6 +868,19 @@ static void be_flip(const Nv2aTarget *t)
         e = getenv("RECOMP_VKR_TRACE_EVERY");
         s_trace_every = e ? atof(e) : 0;
         s_t0 = now_ms();
+        /* RECOMP_VKR_TRACE_BRIEF=<ms>: the first traced frame that long
+         * after autonav reached the briefing (what the probe scripts time
+         * their shots from) instead of after start. */
+        e = getenv("RECOMP_VKR_TRACE_BRIEF");
+        if (e) {
+            s_trace = 1;
+            s_trace_brief = atof(e);
+            s_trace_at = 1e18;
+        }
+    }
+    if (s_trace_brief >= 0 && g_ssx3_at_briefing) {
+        s_trace_at = now_ms() - s_t0 + s_trace_brief;
+        s_trace_brief = -1;
     }
     if (s_trace == 2) {
         s_trace = s_trace_every > 0 ? 1 : 0;
@@ -820,7 +892,8 @@ static void be_flip(const Nv2aTarget *t)
         s_trace = 2;
         s_draw_no = 0;
         s_trace_no++;
-        fprintf(stderr, "[VKRTRACE] frame %u at %.0f ms\n", s_trace_no, now_ms() - s_t0);
+        fprintf(stderr, "[VKRTRACE] frame %u at %.0f ms (%u)\n", s_trace_no, now_ms() - s_t0,
+                (unsigned)xbox_TickCountMs());
     }
     {
         int i;
