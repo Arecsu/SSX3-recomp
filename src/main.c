@@ -744,8 +744,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     {
         /* RECOMP_WIDESCREEN -> RECOMP_ASPECT (width / height), which the
          * camera wrapper, the renderer and the window read: "auto" = the
-         * primary monitor's shape (32:9 on a 5120x1440 screen), "1" =
-         * 16:9, "W:H" = that, "0" = none (4:3). Narrower than 4:3: none. */
+         * primary monitor's shape to start with (32:9 on a 5120x1440
+         * screen), then the window's whenever it is resized (vkr_backend.c
+         * follow_window); "1" = 16:9, "W:H" = that, "0" = none (4:3).
+         * Narrower than 4:3: none. */
         const char *ws = getenv("RECOMP_WIDESCREEN");
         double a = 0;
         if (ws && !strcmp(ws, "auto")) {

@@ -481,13 +481,7 @@ VkrContext *vkr_create(void)
          * wide (16:9, 32:9, ...); the game renders that view squeezed into
          * 640x480 (ssx3_overrides.c sub_0024EA13). */
         r = getenv("RECOMP_ASPECT");
-        c->scale_x = c->scale;
-        c->squeeze2d = 1.0f;
-        if (r && atof(r) > 4.0 / 3.0 + 0.01) {
-            float f = (float)(atof(r) * 3.0 / 4.0);
-            c->scale_x = c->scale * f;
-            c->squeeze2d = 1.0f / f;
-        }
+        vkr_set_aspect(c, r ? (float)atof(r) : 0.0f);
     }
     {
         VkPhysicalDeviceFeatures pf;
@@ -1181,6 +1175,20 @@ void vkr_set_pillarbox(VkrContext *c, int on)
     if (v != c->squeeze_all) {
         c->squeeze_all = v;
         apply_scissor(c);
+    }
+}
+
+/* The target's shape (width / height): wider than 4:3 widens the target
+ * and narrows 2D back to 4:3; anything else is the plain 4:3 target. Takes
+ * effect at the next vkr_set_target. */
+void vkr_set_aspect(VkrContext *c, float aspect)
+{
+    c->scale_x = c->scale;
+    c->squeeze2d = 1.0f;
+    if (aspect > 4.0f / 3.0f + 0.01f) {
+        float f = aspect * 0.75f;
+        c->scale_x = c->scale * f;
+        c->squeeze2d = 1.0f / f;
     }
 }
 

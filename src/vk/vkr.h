@@ -84,6 +84,9 @@ int vkr_draw_vsh(VkrContext *c, const float *in, uint32_t nverts, uint32_t nin,
 
 /* RECOMP_WIDESCREEN target: 1 = show the 4:3 picture pillarboxed (menus). */
 void vkr_set_pillarbox(VkrContext *c, int on);
+/* Target shape, width / height (> 4:3 = widescreen); applies at the next
+ * vkr_set_target. */
+void vkr_set_aspect(VkrContext *c, float aspect);
 uint32_t vkr_width(const VkrContext *c);
 uint32_t vkr_height(const VkrContext *c);
 

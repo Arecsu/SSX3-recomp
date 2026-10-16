@@ -129,33 +129,44 @@ void sub_0025BD81(void)
  * Args: (char *pending, index, total, char wait), stdcall.
  */
 /*
- * Widescreen (RECOMP_WIDESCREEN=1): the main camera's projection is D3DX
+ * Widescreen (RECOMP_WIDESCREEN): the main camera's projection is D3DX
  * PerspectiveFovLH (0x0024EA13, called only by the renderer's camera setup
- * sub_001EAB40 with aspect = viewport width / height = 640/480). Times 4/3
- * it is 16:9: the game renders a wider view (its frustum, so its culling,
- * follows the matrix) squeezed into 640x480, which the Vulkan renderer then
- * stretches to a 16:9 target. Args (stdcall): out, fovy, aspect, zn, zf.
+ * sub_001EAB40 with aspect = viewport width / height = 640/480). Times
+ * the target's shape / (4/3) it is that wide (16:9, 32:9, ...): the game
+ * renders a wider view (its frustum, so its culling, follows the matrix)
+ * squeezed into 640x480, which the Vulkan renderer then stretches to a
+ * target of that shape. Args (stdcall): out, fovy, aspect, zn, zf.
  */
 extern void sub_0024EA13_gen(void);
-int ssx3_widescreen = -1;
+
+/* The target's shape (width / height; 4/3 = no widescreen). Starts as
+ * RECOMP_ASPECT (main.c resolves RECOMP_WIDESCREEN into it); with
+ * RECOMP_WIDESCREEN=auto the Vulkan backend changes it at a flip when the
+ * window is resized (ssx3_SetAspect), so camera and target change together. */
+static volatile float s_aspect = -1.0f;
+
+float ssx3_Aspect(void)
+{
+    if (s_aspect < 0.0f) {
+        const char *e = getenv("RECOMP_ASPECT");
+        double a = e ? atof(e) : 0;
+        s_aspect = a > 4.0 / 3.0 + 0.01 ? (float)a : 4.0f / 3.0f;
+    }
+    return s_aspect;
+}
+
+void ssx3_SetAspect(float a)
+{
+    s_aspect = a > 4.0f / 3.0f + 0.01f ? a : 4.0f / 3.0f;
+}
 
 /* Widescreen applies in game only (races, free-roam: app state vtable
  * 00299D7C). The frontend's art, loading screens and movies are designed
  * for 4:3: they keep the 4:3 camera and are shown pillarboxed. */
-static float s_ws_factor = 1.0f;     /* target aspect / (4/3) */
-
 int ssx3_WidescreenNow(void)
 {
     uint32_t app, cur;
-    if (ssx3_widescreen < 0) {
-        /* RECOMP_ASPECT (main.c resolves RECOMP_WIDESCREEN into it). */
-        const char *e = getenv("RECOMP_ASPECT");
-        double a = e ? atof(e) : 0;
-        ssx3_widescreen = a > 4.0 / 3.0 + 0.01;
-        if (ssx3_widescreen)
-            s_ws_factor = (float)(a * 3.0 / 4.0);
-    }
-    if (!ssx3_widescreen)
+    if (ssx3_Aspect() <= 4.0f / 3.0f + 0.01f)
         return 0;
     app = MEM32(0x003A930Cu);
     if (app < 0x10000u)
@@ -170,7 +181,7 @@ void sub_0024EA13(void)
         uint32_t bits = MEM32(g_esp + 12);
         float aspect;
         memcpy(&aspect, &bits, 4);
-        aspect *= s_ws_factor;
+        aspect *= ssx3_Aspect() * 0.75f;
         memcpy(&bits, &aspect, 4);
         MEM32(g_esp + 12) = bits;
     }

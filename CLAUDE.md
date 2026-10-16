@@ -819,7 +819,13 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   4/3 wider (scale_x), 2D vertices (w == 1) narrowed back to 4:3 except on
   the screen edges (full-screen passes); outside ingame everything is
   pillarboxed (vkr_set_pillarbox: all vertices narrowed, scissor mapped to
-  the middle, bars cleared black at the flip). Finding it: RECOMP_DUMP_CONSTS=1
+  the middle, bars cleared black at the flip). With auto the frame follows
+  the window (2026-10-16): the toolkit window reports its client size
+  (xbox_FramebufferClientSize), vkr_backend.c follow_window checks it at
+  flips and, once a new shape has held for 250 ms, sets ssx3_SetAspect +
+  vkr_set_aspect and rebuilds the target between frames ([VKR] window WxH:
+  frame aspect A). Narrower than 4:3 stays 4:3. Probe:
+  work\probe\resize.ps1. Finding it: RECOMP_DUMP_CONSTS=1
   (each program's constants), RECOMP_VSH_DUMP=N (disassemble N programs).
 - DEBUG QUICK START MENU (2026-10-16): RECOMP_DEBUG_MENU=1 -- the retail
   "quick start" menu (Xbox PAL code 0009C7C2 = 01: the title handler

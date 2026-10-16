@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <time.h>
 #ifdef _WIN32
 #include <windows.h>
@@ -60,6 +61,9 @@ static void stats_tick(void)
 extern ptrdiff_t xbox_GetMemoryOffset(void);
 extern void xbox_FramebufferPublishImage(const uint32_t *px, uint32_t w, uint32_t h);
 extern int ssx3_WidescreenNow(void);
+extern float ssx3_Aspect(void);
+extern void ssx3_SetAspect(float a);
+extern int xbox_FramebufferClientSize(int *w, int *h);
 
 _Static_assert(sizeof(VkrVertex) == sizeof(Nv2aVshOutput),
                "VkrVertex must mirror Nv2aVshOutput");
@@ -730,6 +734,56 @@ static int be_clear(const Nv2aTarget *t, uint32_t flags, uint32_t argb, float de
     return 1;
 }
 
+/* RECOMP_WIDESCREEN=auto: the frame takes the window's shape. Checked at
+ * flips (10/s); a new shape is applied once the window has kept it for
+ * 250 ms (not on every step of a drag), by rebuilding the target between
+ * frames, and the camera (ssx3_Aspect) follows from the next frame on.
+ * Narrower than 4:3 stays 4:3; wider than 8:1 stays 8:1. */
+static void follow_window(void)
+{
+    static int on = -1;
+    static double t_check, t_seen;
+    static float seen;
+    double now;
+    float a, cur;
+    int cw, ch;
+    if (on < 0) {
+        const char *e = getenv("RECOMP_WIDESCREEN");
+        on = e && !strcmp(e, "auto");
+    }
+    if (!on || !s_w)
+        return;
+    now = now_ms();
+    if (now - t_check < 100.0)
+        return;
+    t_check = now;
+    if (!xbox_FramebufferClientSize(&cw, &ch))
+        return;
+    a = (float)cw / (float)ch;
+    if (a < 4.0f / 3.0f) a = 4.0f / 3.0f;
+    if (a > 8.0f) a = 8.0f;
+    cur = ssx3_Aspect();
+    if (fabsf(a - cur) < cur * 0.01f) {
+        seen = 0.0f;
+        return;
+    }
+    if (fabsf(a - seen) >= seen * 0.01f) {
+        seen = a;
+        t_seen = now;
+        return;
+    }
+    if (now - t_seen < 250.0)
+        return;
+    ssx3_SetAspect(a);
+    vkr_set_aspect(s_vk, ssx3_Aspect());
+    seen = 0.0f;
+    if (!vkr_set_target(s_vk, s_w, s_h, (float)s_zmax)) {
+        s_w = s_h = 0;      /* rebuilt at the next draw */
+        return;
+    }
+    fprintf(stderr, "[VKR] window %dx%d: frame aspect %.3f\n", cw, ch, ssx3_Aspect());
+}
+
 static void be_flip(const Nv2aTarget *t)
 {
     FlipJob j;
@@ -779,6 +833,7 @@ static void be_flip(const Nv2aTarget *t)
     pthread_cond_signal(&s_job_cond);
     pthread_mutex_unlock(&s_job_lock);
     s_dirty = 0;
+    follow_window();
 }
 
 static const Nv2aBackend s_backend = {be_draw, be_clear, be_flip, be_draw_vsh};

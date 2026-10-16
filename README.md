@@ -75,7 +75,7 @@ settings are environment variables:
 
 | Setting | Default | |
 |---|---|---|
-| `RECOMP_WIDESCREEN` | `auto` | `auto` = your monitor's shape; `16:9`, `21:9`, any `W:H`; `0` = original 4:3 |
+| `RECOMP_WIDESCREEN` | `auto` | `auto` = the window's shape (your monitor's at start, then follows resizes); `16:9`, `21:9`, any `W:H`; `0` = original 4:3 |
 | `RECOMP_RES` | monitor height | internal resolution as a height (`1080`, `1440`, `2160`) or `480` for the original |
 | `RECOMP_SKIP_INTRO` | `1` | `0` plays the EA/THX/intro movies |
 | `RECOMP_GPU` | Vulkan | `sw` = the software rasteriser (reference/fallback) |
