@@ -227,7 +227,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
-- 2026-10-16 — Debug quick start menu usable (pad 1 now on controller port 1); lodge verified by the user in normal play; build ~1.5 min.
+- 2026-10-16 — Debug quick start menu usable (pad 1 now on controller port 1); lodge verified by the user in normal play, and reachable from a debug quick start (Green Base Station -> Yes -> lodge, ~35 s); build ~1.5 min.
 - 2026-10-16 — Widescreen merged to main (monitor aspect, 32:9 tested); README rewritten with the new screenshots; obsolete scripts (soak.ps1, shots.ps1, ring_watch.gdb) and superseded screenshots removed.
 - 2026-10-15 — Full-HD rendering: 1440x1080 internal resolution by default when playing (RECOMP_RES), 60 FPS, menus and races checked.
 - 2026-10-15 — Reliability: race_par 8x6 48/48 in 4.6 min (autonav, per-run saves and partition images). Conquer the Mountain teleport to Green Station (lodge/transport station) works; entering the lodge shop needs steering, left for a manual check.

@@ -843,10 +843,16 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   sub_000B4350). Verified in normal play by the user: Equip/Buy Gear, Buy
   Attributes, Rider Details, Music, Save all work. From a debug-menu start
   (Track = Green Base Station; the rider usually bounces off a rail into the
-  gate, sometimes grinds it and overshoots) the prompt appears, but Yes
-  returns to the debug menu: app+0x60 is 0, and even with it set the frontend
-  opens on its title -- the lodge request comes from the career flow the
-  debug start skips. RECOMP_STATION_TRACE=1 logs station objects
+  gate, sometimes grinds it and overshoots) the prompt appears; its Yes
+  handler sub_000B58C0 sets the frontend start screen [0x36843C] = 0x27 (read
+  by the frontend's first-screen setup sub_00080A70: 0 = title, 0x27 =
+  lodge) and ends the event. app+0x60 is 0 after a debug start, so the
+  DebugMenu came back instead; a _gen wrapper on sub_000E1B90 now sets
+  app+0x60 when the debug menu is on and a lodge is pending. Debug start ->
+  lodge in ~35 s (Start on the title, Right x3 = Green Base Station, Start,
+  A at the prompt); Equip Gear, the sub-screens, Save game (slot list, name
+  keyboard) and Return to Game (Save progress? No -> back at the gate, the
+  prompt again) checked with work\probe\dbgmenu.ps1. RECOMP_STATION_TRACE=1 logs station objects
   ([STATION]) and every in-game screen opened with its callers
   ([INGAMESCREEN]). Debug menu World Circuit tracks: Happiness, Ruthless,
   The Throne, Green/Blue Base, Yellow/Red Mid, Black Top Station; Game Path

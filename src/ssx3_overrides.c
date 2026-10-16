@@ -273,6 +273,32 @@ void sub_000D5A60(void)
 }
 
 /*
+ * "Go to the frontend" (sub_000E1B90, this = app): builds the real frontend
+ * only if app+0x60 is set, else EA's DebugMenu. A debug quick start leaves it
+ * 0, so the lodge prompt's Yes (sub_000B58C0: frontend start screen
+ * [0x36843C] = 0x27, end the event) came back to the DebugMenu. With the
+ * debug menu on and a lodge pending, take the real frontend: it opens on the
+ * lodge (sub_00080A70) and stays the frontend from then on.
+ */
+extern void sub_000E1B90_gen(void);
+
+void sub_000E1B90(void)
+{
+    static int on = -1;
+    uint32_t app = g_ecx;
+    if (on < 0) {
+        const char *e = getenv("RECOMP_DEBUG_MENU");
+        on = e && *e && *e != '0';
+    }
+    if (on && app >= 0x10000u && !MEM8(app + 0x60) && MEM32(0x0036843Cu) == 0x27) {
+        MEM8(app + 0x60) = 1;
+        fprintf(stderr, "[DEBUGMENU] lodge requested: real frontend from now on\n");
+        fflush(stderr);
+    }
+    sub_000E1B90_gen();
+}
+
+/*
  * RECOMP_ACTION_TRACE=1: EA's action-map queries -- sub_001B1460 (bool:
  * is action N active) and sub_001B1410 (float: action N's value), both
  * thiscall (this = map definition) with (input state, action id). Once a
