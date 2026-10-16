@@ -136,7 +136,7 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
 
 - Status (2026-10-13): PLAYABLE to gameplay, reliably (3/3 boot→race) —
   boot → intro → menus → race load → live race on Snow Jam with full HUD
-  (docs/screenshots/12-15), 6-8 FPS (was ~4-5) with the toolkit's software rasteriser (multithreaded; the D3D11
+  (docs/screenshots/12; 13-15 in git history), 6-8 FPS (was ~4-5) with the toolkit's software rasteriser (multithreaded; the D3D11
   pgraph translator is not used for vertex-program titles). The fix that got
   the race to load was seeding script native 0x69 (below). Next: speed
   (hardware rendering), audio output check, real-pad/keyboard play.
@@ -468,7 +468,7 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   event), `RECOMP_SWM_STATS=1` also prints `[SWM-TICK]` deliveries per second,
   `RECOMP_RASTER_SKIP=1` (no pixel work: CPU-floor measurement),
   `RECOMP_FRAME_STATS=1` ([FRAMES] p50/p99 per second), tools/bench.ps1,
-  tools/shots.ps1, tools/soak.ps1 (race back to back; restart dialog
+  tools/shots.ps1, tools/soak.ps1 (both removed 2026-10-16; race back to back; restart dialog
   handling still uses draw counts -> move to the state hook).
 - WORLD STREAMER CORRUPTION (Phase 1, top priority): the 43% load stall and an
   intermittent crash are one bug. Crash: sub_0020CAB0(i) = "slot i of the

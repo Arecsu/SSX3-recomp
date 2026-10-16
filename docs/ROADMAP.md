@@ -36,15 +36,15 @@ optional direct present / higher resolution. See README and CLAUDE.md.
 
 - [x] `tools/bench.ps1`: boot → race → `-Seconds` of riding (periodic A taps); parses `[FRAMES]`, writes `logs/bench_<ts>.json` with fps avg, median p50, worst p99/max, crashes and the 60 FPS gate. (Executor/guest split: add `-Env @{RECOMP_EXEC_STATS='1'}`.)
 - [x] Frame-time counter in the host: `RECOMP_FRAME_STATS=1` prints `[FRAMES] n fps p50 p99 max` once a second from per-flip QPC timestamps (toolkit `fb_present.c`).
-- [x] Scripted play: periodic A taps ride a whole race (it finishes by itself); `tools/soak.ps1` races back to back via the restart dialog.
+- [x] Scripted play: periodic A taps ride a whole race (it finishes by itself); `tools/soak.ps1` raced back to back via the restart dialog (removed 2026-10-16: `tools/cycle_test.ps1` replaces it).
 - [x] Navigation from game state only (2026-10-14): `tools/to_race.ps1` reads `game_state.txt` (state, sub-state, GPU draw count) and nothing else -- frontend: Start, then A every 2 s; event_enter/loading: wait; ingame after a load: the briefing. Works on every renderer and with the window covered. Freeze = draw count still for 15 s. Intro movies skipped by default (`RECOMP_SKIP_INTRO`, mask 0x3083B8, found by Corné): boot -> title 3.4 s, boot -> race briefing ~25 s.
 - [x] Game state hook (`src/game_state.c`): the game's own state machine published as `[STATE]` lines and `game_state.txt` (`tools/game_state.ps1`); top-level states named. Next: map the in-race sub-states and switch the scripts from draw counts to it.
 - [x] `tools/race_test.ps1` extended: all peaks/events (2026-10-15: `-Peak/-Mode/-Event/-Rider`, every Race and Freestyle event on Peaks 1-3 runs) (2026-10-14: `-Rider N -Mode N -Event N` pick the rider, mode and Peak 1 event by the frontend screen id in game_state.txt; Peaks 2/3 are locked on a fresh save -- 2026-10-15: the default save fixture `work\saves\unlocked` has everything unlocked; left: a peak choice in RECOMP_AUTONAV / to_race.ps1), configurable run count (done), summary table; failures auto-dump with a 20 s write window (done) and are classified from the last screen -- `[title: no input]`, `[menu hang]`, `[load stall]`, `[other]`, `CRASH` (done).
 - [x] Parallel test runs (2026-10-14): `tools/race_par.ps1 -Instances N -Runs M [-Env @{...}]` runs N game instances at once, each in its own directory `work\i<k>` (junction `game` -> the shared rip; own pad file, pid, logs, triggers, `game_state.txt`; `live.ps1` / `to_race.ps1` / `race_test.ps1` take `-Dir`), with `RECOMP_RASTER_THREADS` = cores / N each. Summary printed and saved to `logs/race_par_<ts>.txt`. 2 instances = 2 runs in the time of one; use 6-10 for the ~1-in-10 bugs (63 GB RAM / 32 cores here). Default for reliability work from now on.
 - [x] Watchdog in `to_race.ps1` (2026-10-14, default on, `-NoWatchdog` off): a run ends early with `stuck: [<class>]` when Start presses go unread for 45 s (`[no pad]`), FPS is 0 for 15 s in the menus/loading/race (`[freeze]`), or a game state outlives its budget (boot 60 s, intro 120 s, frontend 180 s, event_enter 30 s, loading 90 s: `[<state> stall]`); `race_test.ps1` reports that class and still dumps threads first. A stuck run costs 20-50 s instead of the 5-8 min timeout: race_par 8x2 went from 22 to 4.6 min.
 - [x] Watchdog: also keep a screenshot of every stuck run (2026-10-15: race_test saves `logs\fail_<time>.png` before the dump).
-- [ ] Use parallel runs everywhere: `bench.ps1` / `shots.ps1` / `soak.ps1` take `-Dir` too, so measurements can run beside a reliability batch (note: concurrent instances share the CPU, so benchmarks must run alone).
-- [x] Screenshot suite: `tools/shots.ps1` saves every distinct menu screen (by draw count), the briefing and 4 race shots into `logs/shots_<ts>[_label]/`; first software-path reference set: `logs/shots_20261013-235549_software` (16 shots). Per-peak race spots come with the all-peaks navigator.
+- [ ] Use parallel runs everywhere: `bench.ps1` takes `-Dir` too, so measurements can run beside a reliability batch (note: concurrent instances share the CPU, so benchmarks must run alone).
+- [x] Screenshot suite (removed 2026-10-16; `tools/menu_test.ps1` and `tools/burst.ps1` replace it): `tools/shots.ps1` saved every distinct menu screen (by draw count), the briefing and 4 race shots into `logs/shots_<ts>[_label]/`; first software-path reference set: `logs/shots_20261013-235549_software` (16 shots). Per-peak race spots come with the all-peaks navigator.
 - [x] Baseline numbers recorded here (2026-10-13, default build, Snow Jam race, `tools/bench.ps1 -Seconds 90`):
   - **Software rasteriser, async executor:** 9.9 FPS avg, p50 101 ms, p99 267 ms, 0 crashes (`logs/bench_20261013-232858.json`).
   - **CPU floor** (`RECOMP_RASTER_SKIP=1`: everything but the pixels): 10–35 FPS in the race. Profile: the main thread waits on the GPU most of the time -- D3D fence waits (`KeWaitForSingleObject`, 54% of samples) and polling a GPU visibility-test result (`sub_0022DE70` = D3D query GetData returning D3DERR_TESTINCOMPLETE, 24%); real game logic is ~19% of samples, **≈ 10 ms per frame** -- under the 16.7 ms budget. The executor's time is mostly CPU vertex-program interpretation (`nv2a_vsh_run`), then software-method round trips and the pushbuffer survey's `note()` (pure overhead).
@@ -81,19 +81,19 @@ Windows, first numbers (RTX 4080 SUPER, one instance): title 43 FPS, race
 briefing 13, race 22-28 (software: 5-8 menus, ~3 briefing, 9-12 race).
 Per second in a race: renderer draws ~80 ms, flip readback ~240 ms; the rest
 is guest code and CPU vertex programs. The black polygons in the sky
-(docs/screenshots/25) are fixed (2.0b, docs/screenshots/28).
+(an earlier screenshot, now in git history) are fixed (2.0b).
 
 - [x] 2.0 Vulkan by default (2026-10-14; `RECOMP_GPU=sw` = software, also the
   fallback without a Vulkan device): race_par 6x2 with Vulkan 12/12 OK in
   1.9 min; title, menus, briefing and races checked by screenshot.
-- [x] 2.0b Black shapes in races (docs/screenshots/25), FIXED 2026-10-14:
+- [x] 2.0b Black shapes in races, FIXED 2026-10-14:
   not Vulkan-specific (software showed them too). The executor had no case
   for ARRAY_ELEMENT32 (0x1808), which D3D uses for the last index of an
   odd-length index list, so every such batch lost its last vertex. The
   mountain backdrop is a ring of 15- and 33-index strips; each lost its last
   triangle and the black clear colour showed through. Check:
   `tools\race_test.ps1 -Runs 1 -TimeoutSec 150 -RaceSec 22 -NoTaps -Snap x.png`
-  (airborne over the first jump, docs/screenshots/28). Diagnostics from the
+  (airborne over the first jump). Diagnostics from the
   hunt: RECOMP_VKR_TRACE_EVERY, RECOMP_VKR_TRACE_BLACK=<n> (vkr_black.txt),
   RECOMP_VKR_TRACE_VSH=a-b.
 - [ ] 2.0c Flip without the readback: present the Vulkan image directly
@@ -227,6 +227,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 
 ## Progress log
 
+- 2026-10-16 — Widescreen merged to main (monitor aspect, 32:9 tested); README rewritten with the new screenshots; obsolete scripts (soak.ps1, shots.ps1, ring_watch.gdb) and superseded screenshots removed.
 - 2026-10-15 — Full-HD rendering: 1440x1080 internal resolution by default when playing (RECOMP_RES), 60 FPS, menus and races checked.
 - 2026-10-15 — Reliability: race_par 8x6 48/48 in 4.6 min (autonav, per-run saves and partition images). Conquer the Mountain teleport to Green Station (lodge/transport station) works; entering the lodge shop needs steering, left for a manual check.
 - 2026-10-15 — Parallel boots no longer collide on the shared partition images (RECOMP_SYSTEM_DIR per run directory): race_par 8x3 24/24 in 2.7 min (was 20/24, the 4 quit to the dashboard at boot).
