@@ -217,6 +217,61 @@ void sub_0009C7A0(void)
     }
 }
 
+/* In-game screen opener sub_000C4C20(type), cdecl: RECOMP_STATION_TRACE=1
+ * logs each call with the type and the guest return addresses on the stack
+ * (who opened it: 0x1F = "enter the lodge?"). */
+extern void sub_000C4C20_gen(void);
+
+void sub_000C4C20(void)
+{
+    static int on = -1;
+    if (on < 0) on = getenv("RECOMP_STATION_TRACE") != NULL;
+    if (on) {
+        int k;
+        fprintf(stderr, "[INGAMESCREEN] open 0x%X from", MEM32(g_esp + 4));
+        for (k = 0; k < 24; k++) {
+            uint32_t w = MEM32(g_esp + k * 4);
+            if (w >= 0x00011000u && w < 0x00280000u)
+                fprintf(stderr, " %08X", w);
+        }
+        fprintf(stderr, "\n");
+        fflush(stderr);
+    }
+    sub_000C4C20_gen();
+}
+
+/*
+ * Station gate objects (lodge / transport): sub_000D5A60 is their per-frame
+ * method; +0x10 state (0 = rider at the gate -> prompt), +0x14 kind (0 =
+ * lodge -> in-game screen 0x1F "enter the lodge?", 2 = screen 0x21),
+ * +0x0C/+0x1C flags, +0x18 a station id. RECOMP_STATION_TRACE=1 logs each
+ * object's fields whenever they change.
+ */
+extern void sub_000D5A60_gen(void);
+
+void sub_000D5A60(void)
+{
+    static int on = -1;
+    static uint32_t objs[16], last[16][4];
+    static int n;
+    uint32_t o = g_ecx;
+    if (on < 0) on = getenv("RECOMP_STATION_TRACE") != NULL;
+    sub_000D5A60_gen();
+    if (on && o >= 0x10000u) {
+        int i;
+        uint32_t v[4] = {MEM32(o + 0x0C), MEM32(o + 0x10), MEM32(o + 0x14), MEM32(o + 0x18)};
+        for (i = 0; i < n && objs[i] != o; i++)
+            ;
+        if (i == n && n < 16) { objs[n] = o; memset(last[n], 0xFF, sizeof last[n]); n++; }
+        if (i < n && memcmp(last[i], v, sizeof v)) {
+            memcpy(last[i], v, sizeof v);
+            fprintf(stderr, "[STATION] obj %08X +0C %08X state %u kind %u id %08X +1C %02X\n",
+                    o, v[0], v[1], v[2], v[3], MEM8(o + 0x1C));
+            fflush(stderr);
+        }
+    }
+}
+
 /*
  * RECOMP_ACTION_TRACE=1: EA's action-map queries -- sub_001B1460 (bool:
  * is action N active) and sub_001B1410 (float: action N's value), both

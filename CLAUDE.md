@@ -832,6 +832,25 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   the toolkit OHCI now has 4 root ports and plugs pad 1 on root port 3 =
   controller port 1 (then 4, 1, 2), like the console. RECOMP_ACTION_TRACE=1
   logs each action id queried per second with its hits ([ACTION]).
+- LODGE FLOW (2026-10-16): a station gate wakes a station object (vtable
+  method sub_000D5A60: +0x10 state, +0x14 kind 0 = lodge / 1 = transport,
+  +0x18 station id, e.g. 0x17 = Green Station lodge). State 0 opens in-game
+  screen 0x1F "Would you like to enter the lodge?" through the in-game
+  screen opener sub_000C4C20(type). On Yes: state 2 -> app state 0029B0F8 ->
+  "go to frontend" sub_000E1B90 (real frontend sub_0007E4D0 only if
+  app+0x60 is set, else the DebugMenu) -> the frontend's screen switch
+  sub_0007FB60 opens the lodge, screen 39 (vtable 002938C0, built by
+  sub_000B4350). Verified in normal play by the user: Equip/Buy Gear, Buy
+  Attributes, Rider Details, Music, Save all work. From a debug-menu start
+  (Track = Green Base Station; the rider usually bounces off a rail into the
+  gate, sometimes grinds it and overshoots) the prompt appears, but Yes
+  returns to the debug menu: app+0x60 is 0, and even with it set the frontend
+  opens on its title -- the lodge request comes from the career flow the
+  debug start skips. RECOMP_STATION_TRACE=1 logs station objects
+  ([STATION]) and every in-game screen opened with its callers
+  ([INGAMESCREEN]). Debug menu World Circuit tracks: Happiness, Ruthless,
+  The Throne, Green/Blue Base, Yellow/Red Mid, Black Top Station; Game Path
+  World Circuit / Quick Play / Multiplayer.
 - XEMU REFERENCE (2026-10-15): `tools\xemu.ps1` (skill: .claude/skills/xemu)
   boots a separate, muted xemu instance with the ISO (own config + HDD copy
   in work\xemu\, QMP on 127.0.0.1:4455), presses pad buttons by posting key

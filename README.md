@@ -151,8 +151,7 @@ the repo root on Windows:
   drops at the same point.
 - **Peaks 2 and 3** are locked on a fresh save, as in the original game.
   Unlock them in game or with the cheat.
-- **Untested.** Audio hasn't been checked by ear in every mode, and the
-  Conquer the Mountain lodge shop hasn't been tried.
+- **Untested.** Audio hasn't been checked by ear in every mode.
 
 ## Screenshots of the journey
 
