@@ -128,9 +128,11 @@ The toolkit is pinned at v0.13.1 (`193e299`), with this project's fixes in
 ## Testing
 
 Scripted runs are silent, ignore a real controller, render at 640x480 in
-4:3, and use their own copy of a save with everything unlocked. Your saves
-are never touched, and the PC stays usable while they run. Run these from
-the repo root on Windows:
+4:3, and each gets its own copy of a save fixture, so your saves are never
+touched and the PC stays usable while they run. The fixture is
+`work\saves\unlocked\` (not in git): copy your `game\UDATA` there,
+ideally from a save with every peak unlocked; without it runs start with
+no save. Run these from the repo root on Windows:
 
 | Command | What it does |
 |---|---|
@@ -163,6 +165,14 @@ the repo root on Windows:
 | asynchronous GPU executor, 11 FPS | Vulkan renderer, 57 FPS | Metro-City at 60 FPS |
 | ![](docs/screenshots/17-title-screen.png) | ![](docs/screenshots/30-equip-gear.png) | ![](docs/screenshots/31-load-game.png) |
 | title screen | Equip Gear | loading a hard-disk save |
+
+## Legal
+
+This is an unofficial fan project, not affiliated with or endorsed by
+Electronic Arts or Microsoft. SSX and SSX 3 are trademarks of Electronic
+Arts. The repository holds only original code, tooling and notes: no game
+code, data or assets. The build is generated from a copy of the game you
+own, and the screenshots show this project running.
 
 ## More
 
