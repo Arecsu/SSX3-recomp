@@ -821,6 +821,17 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   pillarboxed (vkr_set_pillarbox: all vertices narrowed, scissor mapped to
   the middle, bars cleared black at the flip). Finding it: RECOMP_DUMP_CONSTS=1
   (each program's constants), RECOMP_VSH_DUMP=N (disassemble N programs).
+- DEBUG QUICK START MENU (2026-10-16): RECOMP_DEBUG_MENU=1 -- the retail
+  "quick start" menu (Xbox PAL code 0009C7C2 = 01: the title handler
+  sub_0009C7A0 stores 1 instead of 0 at obj+0x18, done by a _gen wrapper).
+  Press Start on the title. App state vtable 0028825C ("DebugMenu"), menu
+  object vtable 0028810C, input in sub_0006FED0: EA action map at
+  [0x369534]+0xA8 (4 controller slots of {state, map}), action 0x65 =
+  confirm, 0x3D = up/down (-1 none, 0 up, 1 down). It reads controller
+  slot 0 only -- our pad used to sit on root port 1 = controller port 3;
+  the toolkit OHCI now has 4 root ports and plugs pad 1 on root port 3 =
+  controller port 1 (then 4, 1, 2), like the console. RECOMP_ACTION_TRACE=1
+  logs each action id queried per second with its hits ([ACTION]).
 - XEMU REFERENCE (2026-10-15): `tools\xemu.ps1` (skill: .claude/skills/xemu)
   boots a separate, muted xemu instance with the ISO (own config + HDD copy
   in work\xemu\, QMP on 127.0.0.1:4455), presses pad buttons by posting key

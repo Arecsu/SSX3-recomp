@@ -177,6 +177,106 @@ void sub_0024EA13(void)
     sub_0024EA13_gen();
 }
 
+/*
+ * Debug quick start menu (RECOMP_DEBUG_MENU=1). Every retail build keeps
+ * EA's developer "quick start" menu (game path, mode, event, track,
+ * character, AI riders, playlist, "Real Front End"). The known Xbox PAL code
+ * 0009C7C2 = 01 patches the immediate of `mov dword ptr [esi+0x18], 0` in
+ * this title-screen handler (taken when the message id [obj+0x38] matches
+ * the "tReal" hash) to 1. Recompiled, that byte is C code, so the wrapper
+ * does the same: a sentinel in obj+0x18, the original handler, and if it
+ * stored its 0, a 1 instead. Nothing in the handler reads +0x18.
+ */
+extern void sub_0009C7A0_gen(void);
+
+void sub_0009C7A0(void)
+{
+    static int on = -1;
+    uint32_t obj = MEM32(g_esp + 4), old = 0;
+    if (on < 0) {
+        const char *e = getenv("RECOMP_DEBUG_MENU");
+        on = e && *e && *e != '0';
+        if (on) {
+            fprintf(stderr, "[DEBUGMENU] quick start menu enabled (0009C7C2 = 01)\n");
+            fflush(stderr);
+        }
+    }
+    if (on && obj >= 0x10000u) {
+        old = MEM32(obj + 0x18);
+        MEM32(obj + 0x18) = 0x5EADBEEFu;
+    }
+    sub_0009C7A0_gen();
+    if (on && obj >= 0x10000u) {
+        if (MEM32(obj + 0x18) == 0) {
+            MEM32(obj + 0x18) = 1;
+            fprintf(stderr, "[DEBUGMENU] title handler: quick start selected (obj %08X)\n", obj);
+            fflush(stderr);
+        } else if (MEM32(obj + 0x18) == 0x5EADBEEFu) {
+            MEM32(obj + 0x18) = old;
+        }
+    }
+}
+
+/*
+ * RECOMP_ACTION_TRACE=1: EA's action-map queries -- sub_001B1460 (bool:
+ * is action N active) and sub_001B1410 (float: action N's value), both
+ * thiscall (this = map definition) with (input state, action id). Once a
+ * second each distinct action id queried, with how often and its last
+ * non-zero result -- which inputs a screen reads and whether a press
+ * reaches them.
+ */
+extern void sub_001B1460_gen(void);
+extern void sub_001B1410_gen(void);
+static int s_act_on = -1;
+static struct { uint32_t act, state; unsigned n, hits; float last; int isf; } s_act[64];
+static int s_nact;
+static DWORD s_act_t;
+
+static void act_note(uint32_t state, uint32_t act, float v, int isf)
+{
+    int i;
+    DWORD now = GetTickCount();
+    for (i = 0; i < s_nact && !(s_act[i].act == act && s_act[i].isf == isf && s_act[i].state == state); i++)
+        ;
+    if (i == s_nact && s_nact < 64) {
+        s_act[i].act = act; s_act[i].isf = isf; s_act[i].state = state;
+        s_act[i].n = s_act[i].hits = 0; s_act[i].last = 0; s_nact++;
+    }
+    if (i < s_nact) {
+        s_act[i].n++;
+        if (v != 0.0f) { s_act[i].hits++; s_act[i].last = v; }
+    }
+    if (now - s_act_t >= 1000) {
+        s_act_t = now;
+        fprintf(stderr, "[ACTION]");
+        for (i = 0; i < s_nact; i++)
+            fprintf(stderr, " %s%X@%08X x%u hit%u(%g)", s_act[i].isf ? "f" : "b", s_act[i].act,
+                    s_act[i].state, s_act[i].n, s_act[i].hits, s_act[i].last);
+        fprintf(stderr, "\n");
+        fflush(stderr);
+        s_nact = 0;
+    }
+}
+
+void sub_001B1460(void)
+{
+    uint32_t state = MEM32(g_esp + 4), act = MEM32(g_esp + 8);
+    if (s_act_on < 0) s_act_on = getenv("RECOMP_ACTION_TRACE") != NULL;
+    sub_001B1460_gen();
+    if (s_act_on) act_note(state, act, (float)g_eax, 0);
+}
+
+void sub_001B1410(void)
+{
+    uint32_t state = MEM32(g_esp + 4), act = MEM32(g_esp + 8);
+    if (s_act_on < 0) s_act_on = getenv("RECOMP_ACTION_TRACE") != NULL;
+    sub_001B1410_gen();
+    if (s_act_on) {
+        /* the float result is st(0) on the x87 stack (not popped) */
+        act_note(state, act, (float)g_fp_stack[g_fp_top & 7], 1);
+    }
+}
+
 extern void sub_001F8760_gen(void);
 int ssx3_lensfx_nowait;
 
