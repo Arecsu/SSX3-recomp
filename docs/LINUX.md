@@ -32,6 +32,6 @@ What makes it work on POSIX:
 ## Not ported
 
 - `RECOMP_WATCH` (hardware watchpoints), Toolhelp-based dumps.
-- Audio output, gamepad/keyboard: untested.
+- Audio: SDL2 audio queue behind the `xa2_*` interface (apu_xaudio2.c), not checked by ear. Gamepad/keyboard: untested.
 - SEH (`RtlUnwind`, `RaiseException`) is a shim in `win32_compat.c`.
 - x86-64 hosts: `mmio_posix_step` only decodes aarch64.
