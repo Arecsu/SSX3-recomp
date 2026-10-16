@@ -16,5 +16,15 @@ rem earlier runs are kept in logs\ (tools\archive_logs.ps1).
 setlocal
 cd /d "%~dp0.."
 if not defined RECOMP_KEYBOARD set RECOMP_KEYBOARD=1
+rem tools\play.bat diag: also log frame times, renderer and guest-CPU stats
+rem and the threads' stacks whenever a frame takes over 50 ms in game
+rem (python tools\slowstacks.py play_stderr.txt names them).
+if /i "%1"=="diag" (
+    set RECOMP_FRAME_STATS=1
+    set RECOMP_SLOW_STACKS=50
+    set RECOMP_VKR_STATS=1
+    set RECOMP_GUESTCPU_STATS=1
+    set RECOMP_APU_LEVEL=1
+)
 powershell -NoProfile -ExecutionPolicy Bypass -Command ". '%~dp0archive_logs.ps1'; Save-PreviousLogs '%CD%' 'play_'"
 start "SSX 3" /b build\ssx3_recomp.exe > play_stdout.txt 2> play_stderr.txt

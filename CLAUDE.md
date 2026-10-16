@@ -863,6 +863,26 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   ([INGAMESCREEN]). Debug menu World Circuit tracks: Happiness, Ruthless,
   The Throne, Green/Blue Base, Yellow/Red Mid, Black Top Station; Game Path
   World Circuit / Quick Play / Multiplayer.
+- LOG WRITES STALLED FRAMES (2026-10-16, user: "extreme FPS drops when
+  grabbing items"): stderr was an unbuffered file, so every fprintf was a
+  WriteFile on the printing thread, and such writes now and then block for
+  100-300 ms. In a 40 s freestyle bench every run had one 250-300 ms freeze
+  in game with the GPU executor inside fprintf (its progress line "[GPU]
+  clear #N", a pipeline line, ...). Fix (main.c log_async_start, default on,
+  RECOMP_LOG_ASYNC=0 off): when stderr is a file it writes into a 4 MB pipe
+  and a pump thread moves it to the file; log_drain (crash handler, and the
+  toolkit's exits through xbox_before_exit / xbox_BeforeExit before
+  ExitProcess/TerminateProcess) waits for the pump. Not PeekNamedPipe on the
+  read end: it waits behind the pump's pending ReadFile forever. After: no
+  in-game frame over 57 ms, none in fprintf (2+2 runs A/B). The pickup drop
+  itself was not reproduced by a script (the rider must be steered into
+  items); `tools\play.bat diag` turns on RECOMP_FRAME_STATS, RECOMP_VKR_STATS,
+  RECOMP_GUESTCPU_STATS, RECOMP_APU_LEVEL and RECOMP_SLOW_STACKS=50: in game,
+  a frame still open after 50 ms logs the native stacks of the main thread,
+  the GPU executor and the flip thread ([HOLDSTACK] slowNNNms-main/-exec/
+  -flip), named by `python tools\slowstacks.py play_stderr.txt`. Vulkan
+  pipelines are logged with their creation time ([VKR] pipeline N: x ms):
+  all under 4 ms, so not a stutter source here.
 - XEMU REFERENCE (2026-10-15): `tools\xemu.ps1` (skill: .claude/skills/xemu)
   boots a separate, muted xemu instance with the ISO (own config + HDD copy
   in work\xemu\, QMP on 127.0.0.1:4455), presses pad buttons by posting key

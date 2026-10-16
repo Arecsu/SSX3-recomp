@@ -9,6 +9,27 @@
 #include "xbox_vert_spv.h"
 #include "xbox_frag_spv.h"
 #include "xbox_vsh_vert_spv.h"
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <time.h>
+#endif
+
+static double vkr_now_ms(void)
+{
+#ifdef _WIN32
+    static LARGE_INTEGER f;
+    LARGE_INTEGER t;
+    if (!f.QuadPart)
+        QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&t);
+    return (double)t.QuadPart * 1e3 / (double)f.QuadPart;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
+#endif
+}
 
 #define VKR_BUF_BYTES (32u << 20)       /* vertex+index staging per frame */
 #define VKR_FRAMES 2                    /* frames in flight */
@@ -383,9 +404,15 @@ static VkPipeline get_pipeline(VkrContext *c, const VkrDrawState *st, int gpu_vs
     pi.pVertexInputState = &vin; pi.pInputAssemblyState = &ia; pi.pViewportState = &vp;
     pi.pRasterizationState = &rs; pi.pMultisampleState = &ms; pi.pDepthStencilState = &ds;
     pi.pColorBlendState = &cb; pi.pDynamicState = &dy; pi.layout = c->layout;
-    if (vkCreateGraphicsPipelines(c->dev, VK_NULL_HANDLE, 1, &pi, NULL, &pipe) != VK_SUCCESS) {
-        fprintf(stderr, "[VKR] pipeline creation failed\n");
-        return VK_NULL_HANDLE;
+    {
+        double t0 = vkr_now_ms();
+        if (vkCreateGraphicsPipelines(c->dev, VK_NULL_HANDLE, 1, &pi, NULL, &pipe) != VK_SUCCESS) {
+            fprintf(stderr, "[VKR] pipeline creation failed\n");
+            return VK_NULL_HANDLE;
+        }
+        fprintf(stderr, "[VKR] pipeline %d: %.1f ms (blend %u %u/%u eq %u mask %X vsh %u topo %u)\n", c->npipes,
+                vkr_now_ms() - t0,
+                key[0], key[1], key[2], key[3], key[4], key[5], key[6]);
     }
     memcpy(c->pipes[c->npipes].key, key, sizeof key);
     c->pipes[c->npipes++].pipe = pipe;

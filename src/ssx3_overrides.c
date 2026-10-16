@@ -163,16 +163,21 @@ void ssx3_SetAspect(float a)
 /* Widescreen applies in game only (races, free-roam: app state vtable
  * 00299D7C). The frontend's art, loading screens and movies are designed
  * for 4:3: they keep the 4:3 camera and are shown pillarboxed. */
-int ssx3_WidescreenNow(void)
+/* The app state is ingame (races, free-roam: vtable 00299D7C). */
+int ssx3_InGame(void)
 {
-    uint32_t app, cur;
-    if (ssx3_Aspect() <= 4.0f / 3.0f + 0.01f)
-        return 0;
-    app = MEM32(0x003A930Cu);
+    uint32_t app = MEM32(0x003A930Cu), cur;
     if (app < 0x10000u)
         return 0;
     cur = MEM32(app + 4);
     return cur >= 0x10000u && MEM32(cur) == 0x00299D7Cu;
+}
+
+int ssx3_WidescreenNow(void)
+{
+    if (ssx3_Aspect() <= 4.0f / 3.0f + 0.01f)
+        return 0;
+    return ssx3_InGame();
 }
 
 void sub_0024EA13(void)
@@ -1472,6 +1477,41 @@ static DWORD WINAPI block_rescue_thread(LPVOID unused)
                         fprintf(stderr, "\n");
                     }
                     sec = now; hmax = htid = long_holds = 0; wmax = 0; nshare = 0;
+                }
+            }
+        }
+        {
+            /* RECOMP_SLOW_STACKS=<ms>: in game, a frame still open after
+             * <ms> (no flip yet): the native stacks of the main thread, the
+             * GPU executor and the flip thread, right then ([HOLDSTACK]
+             * slowNNNms-main / -exec / -flip; tools/slowstacks.py names
+             * them), and again every
+             * further <ms> while it lasts. At most 60 in a run. */
+            static int thr = -1;
+            static uint32_t sampled_flip, next_at;
+            static unsigned caught;
+            extern volatile uint32_t ssx3_last_flip_ms, ssx3_exec_tid, ssx3_flip_tid;
+            extern DWORD g_ssx3_main_tid;
+            extern void ssx3_StackOfThread(unsigned long tid, const char *why);
+            if (thr < 0) {
+                const char *e = getenv("RECOMP_SLOW_STACKS");
+                thr = e ? atoi(e) : 0;
+                if (thr && thr < 20) thr = 50;
+            }
+            if (thr && caught < 60) {
+                uint32_t lf = ssx3_last_flip_ms;
+                if (lf != sampled_flip) { sampled_flip = lf; next_at = (uint32_t)thr; }
+                /* (a flip right after `now` was read makes now - lf negative) */
+                if (lf && (int32_t)(now - lf) >= (int32_t)next_at && ssx3_InGame()) {
+                    char why[48];
+                    snprintf(why, sizeof why, "slow%lums-main", (unsigned long)(now - lf));
+                    if (g_ssx3_main_tid) ssx3_StackOfThread(g_ssx3_main_tid, why);
+                    snprintf(why, sizeof why, "slow%lums-exec", (unsigned long)(now - lf));
+                    if (ssx3_exec_tid) ssx3_StackOfThread(ssx3_exec_tid, why);
+                    snprintf(why, sizeof why, "slow%lums-flip", (unsigned long)(now - lf));
+                    if (ssx3_flip_tid) ssx3_StackOfThread(ssx3_flip_tid, why);
+                    next_at += (uint32_t)thr;
+                    caught++;
                 }
             }
         }

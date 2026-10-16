@@ -94,9 +94,18 @@ static int s_job_head, s_job_n;
 static pthread_mutex_t s_job_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t s_job_cond = PTHREAD_COND_INITIALIZER;
 
+/* For the slow-frame catcher (ssx3_overrides.c, RECOMP_SLOW_STACKS): when
+ * the last flip came and on which threads (the GPU executor, the
+ * flip thread that reads frames back). */
+volatile uint32_t ssx3_last_flip_ms, ssx3_exec_tid, ssx3_flip_tid;
+extern uint32_t xbox_TickCountMs(void);
+
 static void *flip_thread(void *unused)
 {
     (void)unused;
+#ifdef _WIN32
+    ssx3_flip_tid = (uint32_t)GetCurrentThreadId();
+#endif
     for (;;) {
         FlipJob j;
         const uint8_t *px;
@@ -784,10 +793,15 @@ static void follow_window(void)
     fprintf(stderr, "[VKR] window %dx%d: frame aspect %.3f\n", cw, ch, ssx3_Aspect());
 }
 
+
 static void be_flip(const Nv2aTarget *t)
 {
     FlipJob j;
     double tf;
+    ssx3_last_flip_ms = xbox_TickCountMs();
+#ifdef _WIN32
+    ssx3_exec_tid = (uint32_t)GetCurrentThreadId();
+#endif
     if (s_trace < 0) {
         const char *e = getenv("RECOMP_VKR_TRACE_AT");
         s_trace = e ? 1 : 0;
