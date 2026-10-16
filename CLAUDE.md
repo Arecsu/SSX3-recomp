@@ -910,6 +910,23 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   interpreter (dynamically indexed R[16], words decoded per fragment) --
   specialization constants per combiner setup would let the compiler fold
   it; and the ~1.4 ms per frame readback of the full image for the window.
+- CHOPPY AT A STEADY 60 (2026-10-16): with the GPU cost down the game ran
+  55-60 FPS, yet still felt choppy at 5120x1440. The window loop
+  (fb_present.c) copied the 29 MB image, gamma-corrected all 7.4 M pixels on
+  the CPU and uploaded it on every pass -- 8.4 ms of work, ~90 passes/s,
+  unsynchronised with the 60 Hz frames (and redoing repeats), so each frame
+  reached the screen 0-11 ms late, unevenly. Now: a triple buffer
+  (xbox_FramebufferPublishImage: back/middle/front, flag 4 = new; no copy on
+  the window side), the window thread waits (MsgWaitForMultipleObjects on
+  s_hi_event) and presents each new frame once, at once; the gamma ramp is
+  applied by the presenter's pixel shader (gpu_present.c psg + 256x1 LUT,
+  xbox_FramebufferGammaTexels; the 640x480 path keeps CPU gamma). Result:
+  60 passes, 60 new frames, 0.1 ms work per pass. FPS overlay (F3,
+  RECOMP_FPS_OVERLAY=1): "FPS n SHOWN n MAX n MS", drawn into the image;
+  RECOMP_FRAME_STATS adds "[PRESENT] loops/new/work/present" per second.
+  RECOMP_SNAP_PRESENTED=1 makes the snapshot trigger capture the presented
+  back buffer (gpu_present_capture) -- PrintWindow cannot read the swap
+  chain, and grabbing the screen captures whatever is in front.
 - XEMU REFERENCE (2026-10-15): `tools\xemu.ps1` (skill: .claude/skills/xemu)
   boots a separate, muted xemu instance with the ISO (own config + HDD copy
   in work\xemu\, QMP on 127.0.0.1:4455), presses pad buttons by posting key

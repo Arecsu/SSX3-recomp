@@ -80,6 +80,7 @@ settings are environment variables:
 | `RECOMP_SKIP_INTRO` | `1` | `0` plays the EA/THX/intro movies |
 | `RECOMP_GPU` | Vulkan | `sw` = the software rasteriser (reference/fallback) |
 | `RECOMP_PRESENT_FILTER` | linear | `point` for sharp pixels |
+| `RECOMP_FPS_OVERLAY` | `0` | `1` = start with the FPS counter on (F3 toggles it): game FPS, frames shown, slowest frame |
 
 **Keyboard.** The game window must have focus. Remap the keys by copying
 `keys.example.ini` to `keys.ini` and editing it.
@@ -90,7 +91,7 @@ settings are environment variables:
 | Z X A S | A B X Y | Q E | White / Black |
 | 1 3 | Left / right trigger | Arrows | D-pad |
 | Numpad 8/4/2/6 | Left stick | I J K L | Right stick |
-| F11 / Alt+Enter | Fullscreen | | |
+| F11 / Alt+Enter | Fullscreen | F3 | FPS counter |
 
 **Controller.** An Xbox/XInput controller works without setup, rumble
 included; two controllers enable Multi Play. Each run's log is kept in

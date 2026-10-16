@@ -5641,10 +5641,10 @@ index 2189a3b..1f564dd 100644
  endif()
 diff --git a/src/video/fb_gamma.c b/src/video/fb_gamma.c
 new file mode 100644
-index 0000000..d975b79
+index 0000000..165eab0
 --- /dev/null
 +++ b/src/video/fb_gamma.c
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,76 @@
 +/* The display's gamma ramp.
 + *
 + * Xbox D3D (SetGammaRamp; SSX 3's sub_00239B76) loads 256 R, G and B entries
@@ -5662,6 +5662,7 @@ index 0000000..d975b79
 +
 +static uint8_t s_lut[3][256];
 +static volatile int s_lut_on;
++static volatile unsigned s_lut_serial;     /* +1 per change, for the GPU presenter */
 +
 +void xbox_FramebufferSetGammaRamp(const uint8_t *r, const uint8_t *g, const uint8_t *b)
 +{
@@ -5676,12 +5677,14 @@ index 0000000..d975b79
 +            identity = 0;
 +    if (!allowed || identity) {
 +        s_lut_on = 0;
++        s_lut_serial++;
 +        return;
 +    }
 +    memcpy(s_lut[0], r, 256);
 +    memcpy(s_lut[1], g, 256);
 +    memcpy(s_lut[2], b, 256);
 +    s_lut_on = 1;
++    s_lut_serial++;
 +    if (said < 4) {
 +        said++;
 +        fprintf(stderr, "[GAMMA] ramp loaded: r 0->%u 64->%u 128->%u 192->%u 255->%u"
@@ -5701,8 +5704,25 @@ index 0000000..d975b79
 +              | ((uint32_t)s_lut[1][(c >> 8) & 0xFF] << 8) | s_lut[2][c & 0xFF];
 +    }
 +}
++
++/* The ramp as 256 B8G8R8A8 texels (identity without one), for a presenter
++ * that applies it on the GPU; returns its change serial. */
++unsigned xbox_FramebufferGammaTexels(uint32_t *out256)
++{
++    int i;
++    for (i = 0; i < 256; i++)
++        out256[i] = s_lut_on ? 0xFF000000u | (uint32_t)s_lut[0][i] << 16
++                               | (uint32_t)s_lut[1][i] << 8 | s_lut[2][i]
++                             : 0xFF000000u | (uint32_t)i * 0x010101u;
++    return s_lut_serial;
++}
++
++unsigned xbox_FramebufferGammaSerial(void)
++{
++    return s_lut_serial;
++}
 diff --git a/src/video/fb_present.c b/src/video/fb_present.c
-index 08bae4b..5c84475 100644
+index 08bae4b..dc7c22c 100644
 --- a/src/video/fb_present.c
 +++ b/src/video/fb_present.c
 @@ -15,12 +15,15 @@
@@ -5742,7 +5762,7 @@ index 08bae4b..5c84475 100644
  void xbox_FramebufferWindowSet(uint32_t fb_va, uint32_t pitch)
  {
      /* RECOMP_FB_VA pins the window to one guest address instead of following
-@@ -98,6 +115,35 @@ void xbox_FramebufferWindowPresent(uint32_t fb_va, uint32_t pitch)
+@@ -98,6 +115,62 @@ void xbox_FramebufferWindowPresent(uint32_t fb_va, uint32_t pitch)
      InterlockedExchange(&s_present_idx, next);
  }
  
@@ -5750,35 +5770,62 @@ index 08bae4b..5c84475 100644
 + * resolution: shown instead of the guest surface while they keep coming
 + * (the guest copy still feeds screenshots and the GDI fallback). Same
 + * two-buffer publication as above. */
-+static uint32_t     *s_hi[2];
-+static uint32_t      s_hi_w[2], s_hi_h[2];
-+static size_t        s_hi_cap[2];
-+static volatile LONG s_hi_idx = -1;
++/* Three buffers, so neither side ever waits or copies for the other: the
++ * flip thread writes into its back buffer and swaps it with the middle
++ * ("latest", flag 4 = not shown yet); the window thread swaps its front
++ * buffer with the middle when it holds a new frame, then uploads straight
++ * from the front buffer. (It was two buffers and a 29 MB copy per window
++ * pass at 5120x1440, plus a CPU gamma pass -- 8 ms of work, ~90 passes a
++ * second, presenting each frame up to a pass late: uneven, choppy motion
++ * at a steady 60 FPS.) */
++static uint32_t     *s_hi[3];
++static uint32_t      s_hi_w[3], s_hi_h[3];
++static size_t        s_hi_cap[3];
++static LONG          s_hi_back = 0;        /* flip thread's */
++static LONG          s_hi_front = 2;       /* window thread's */
++static int           s_hi_have;            /* the front buffer holds a frame */
++static volatile LONG s_hi_mid = 1;         /* index | 4 when new */
 +static volatile LONG s_hi_tick;           /* tick of the last one */
++static volatile LONG s_hi_serial;         /* +1 per published frame */
++static HANDLE        s_hi_event;          /* set per published frame */
 +
 +void xbox_FramebufferPublishImage(const uint32_t *px, uint32_t w, uint32_t h)
 +{
-+    LONG next = (s_hi_idx == 0) ? 1 : 0;
++    LONG b = s_hi_back;
 +    size_t n = (size_t)w * h;
 +    if (!s_fb_running || !px || !n)
 +        return;
-+    if (s_hi_cap[next] < n) {
-+        free(s_hi[next]);
-+        s_hi[next] = (uint32_t *)malloc(n * 4);
-+        s_hi_cap[next] = s_hi[next] ? n : 0;
-+        if (!s_hi[next])
++    if (s_hi_cap[b] < n) {
++        free(s_hi[b]);
++        s_hi[b] = (uint32_t *)malloc(n * 4);
++        s_hi_cap[b] = s_hi[b] ? n : 0;
++        if (!s_hi[b])
 +            return;
 +    }
-+    memcpy(s_hi[next], px, n * 4);
-+    s_hi_w[next] = w; s_hi_h[next] = h;
-+    InterlockedExchange(&s_hi_idx, next);
++    memcpy(s_hi[b], px, n * 4);
++    s_hi_w[b] = w; s_hi_h[b] = h;
++    s_hi_back = InterlockedExchange(&s_hi_mid, b | 4) & 3;
 +    InterlockedExchange(&s_hi_tick, (LONG)GetTickCount());
++    InterlockedIncrement(&s_hi_serial);
++    if (s_hi_event)
++        SetEvent(s_hi_event);
++}
++
++/* Window thread: take the newest frame if there is one (1), else keep the
++ * front buffer (0). */
++static int hi_acquire(void)
++{
++    if (!(s_hi_mid & 4))
++        return 0;
++    s_hi_front = InterlockedExchange(&s_hi_mid, s_hi_front) & 3;
++    s_hi_have = 1;
++    return 1;
 +}
 +
  /* Which keys are down, for the pad stand-in in src/input.
   *
   * GetAsyncKeyState looked like the cheaper way to ask and does not work
-@@ -127,10 +173,75 @@ void xbox_FramebufferWindowSetTitle(const uint16_t *name, int max_chars)
+@@ -127,10 +200,91 @@ void xbox_FramebufferWindowSetTitle(const uint16_t *name, int max_chars)
          s_title[i] = 0;
  }
  
@@ -5846,15 +5893,31 @@ index 08bae4b..5c84475 100644
 +    }
 +}
 +
++/* For the FPS overlay: the longest gap between flips, this second. */
++static volatile LONG s_flip_gap_max_us;
++
  void xbox_FramebufferWindowFrameStats(uint32_t draws)
  {
++    {
++        static LARGE_INTEGER freq, last;
++        LARGE_INTEGER now;
++        if (!freq.QuadPart)
++            QueryPerformanceFrequency(&freq);
++        QueryPerformanceCounter(&now);
++        if (last.QuadPart) {
++            LONG us = (LONG)((now.QuadPart - last.QuadPart) * 1000000 / freq.QuadPart);
++            if (us > s_flip_gap_max_us)
++                InterlockedExchange(&s_flip_gap_max_us, us);
++        }
++        last = now;
++    }
      InterlockedIncrement(&s_flips);
      InterlockedExchange(&s_frame_draws, (LONG)draws);
 +    frame_stats_note(draws);
  }
  
  int xbox_FramebufferKeyDown(int vk)
-@@ -140,12 +251,60 @@ int xbox_FramebufferKeyDown(int vk)
+@@ -140,12 +294,178 @@ int xbox_FramebufferKeyDown(int vk)
      return s_key_down[vk] != 0;
  }
  
@@ -5886,12 +5949,130 @@ index 08bae4b..5c84475 100644
 +    }
 +}
 +
++/* FPS overlay (F3, or RECOMP_FPS_OVERLAY=1 to start with it on): drawn
++ * into the presented image's top-left corner, once a second refreshed:
++ *   FPS 60  SHOWN 60  MAX 18MS
++ * FPS = frames the game flipped, SHOWN = new frames that reached the window
++ * (fewer: the window loop missed some), MAX = the longest gap between two
++ * flips. A 5x7 pixel font, scaled with the image. */
++static volatile LONG s_overlay = -1;
++static LONG s_pres_shown, s_pres_loops;  /* window thread only */
++static double s_pres_work, s_pres_work_max, s_pres_present;
++
++static double pres_now_ms(void)
++{
++    static LARGE_INTEGER f;
++    LARGE_INTEGER t;
++    if (!f.QuadPart)
++        QueryPerformanceFrequency(&f);
++    QueryPerformanceCounter(&t);
++    return (double)t.QuadPart * 1000.0 / (double)f.QuadPart;
++}
++static char s_overlay_text[48];
++
++static void fps_overlay_toggle(void)
++{
++    if (s_overlay < 0) {
++        const char *e = getenv("RECOMP_FPS_OVERLAY");
++        s_overlay = e && *e && *e != '0';
++    }
++    InterlockedExchange(&s_overlay, !s_overlay);
++}
++
++static int fps_overlay_on(void)
++{
++    if (s_overlay < 0) {
++        const char *e = getenv("RECOMP_FPS_OVERLAY");
++        s_overlay = e && *e && *e != '0';
++    }
++    return s_overlay > 0;
++}
++
++/* 5x7 glyphs, one byte per row, bit 4 = leftmost column. */
++static const unsigned char *glyph(char ch)
++{
++    static const unsigned char g_digits[10][7] = {
++        {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E}, {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E},
++        {0x0E,0x11,0x01,0x02,0x04,0x08,0x1F}, {0x1F,0x02,0x04,0x02,0x01,0x11,0x0E},
++        {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02}, {0x1F,0x10,0x1E,0x01,0x01,0x11,0x0E},
++        {0x06,0x08,0x10,0x1E,0x11,0x11,0x0E}, {0x1F,0x01,0x02,0x04,0x08,0x08,0x08},
++        {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E}, {0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C}};
++    static const struct { char c; unsigned char rows[7]; } g_letters[] = {
++        {'F', {0x1F,0x10,0x10,0x1E,0x10,0x10,0x10}}, {'P', {0x1E,0x11,0x11,0x1E,0x10,0x10,0x10}},
++        {'S', {0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E}}, {'H', {0x11,0x11,0x11,0x1F,0x11,0x11,0x11}},
++        {'O', {0x0E,0x11,0x11,0x11,0x11,0x11,0x0E}}, {'W', {0x11,0x11,0x11,0x15,0x15,0x15,0x0A}},
++        {'N', {0x11,0x19,0x15,0x13,0x11,0x11,0x11}}, {'M', {0x11,0x1B,0x15,0x15,0x11,0x11,0x11}},
++        {'A', {0x0E,0x11,0x11,0x1F,0x11,0x11,0x11}}, {'X', {0x11,0x11,0x0A,0x04,0x0A,0x11,0x11}},
++        {'.', {0x00,0x00,0x00,0x00,0x00,0x0C,0x0C}}};
++    size_t i;
++    if (ch >= '0' && ch <= '9')
++        return g_digits[ch - '0'];
++    for (i = 0; i < sizeof g_letters / sizeof g_letters[0]; i++)
++        if (g_letters[i].c == ch)
++            return g_letters[i].rows;
++    return NULL;                        /* space */
++}
++
++static void fps_overlay_draw(uint32_t *px, uint32_t w, uint32_t h)
++{
++    char text[48];
++    int sc = (int)(h / 240u), len, i, x0, y0, bw, bh, x, y;
++    if (!fps_overlay_on() || !px || w < 64 || h < 32)
++        return;
++    memcpy(text, s_overlay_text, sizeof text);
++    text[sizeof text - 1] = 0;
++    len = (int)strlen(text);
++    if (!len)
++        return;
++    if (sc < 2) sc = 2;
++    x0 = sc * 3; y0 = sc * 3;
++    bw = (len * 6 + 2) * sc; bh = 10 * sc;
++    if (x0 + bw > (int)w) bw = (int)w - x0;
++    for (y = y0; y < y0 + bh && y < (int)h; y++)      /* darkened box */
++        for (x = x0; x < x0 + bw; x++) {
++            uint32_t p = px[(size_t)y * w + x];
++            px[(size_t)y * w + x] = (p >> 2) & 0x3F3F3F;
++        }
++    for (i = 0; i < len; i++) {
++        const unsigned char *g = glyph(text[i]);
++        int r, cx, gx = x0 + (i * 6 + 1) * sc, gy = y0 + sc + sc / 2;
++        if (!g)
++            continue;
++        for (r = 0; r < 7; r++)
++            for (cx = 0; cx < 5; cx++)
++                if (g[r] & (0x10 >> cx))
++                    for (y = gy + r * sc; y < gy + (r + 1) * sc && y < (int)h; y++)
++                        for (x = gx + cx * sc; x < gx + (cx + 1) * sc && x < (int)w; x++)
++                            px[(size_t)y * w + x] = 0xFFFFFF;
++    }
++}
++
++/* Once a second from the window thread: the overlay's numbers, and with
++ * RECOMP_FRAME_STATS the window loop's own (loops, new frames, time spent
++ * copying + gamma + upload before Present, and in Present). */
++static void present_second(LONG flips_delta, LONG shown, LONG loops, double work_ms,
++                           double work_max, double present_ms)
++{
++    LONG gap = InterlockedExchange(&s_flip_gap_max_us, 0);
++    snprintf(s_overlay_text, sizeof s_overlay_text, "FPS %ld  SHOWN %ld  MAX %ldMS",
++             (long)flips_delta, (long)shown, (long)((gap + 500) / 1000));
++    if (getenv("RECOMP_FRAME_STATS")) {
++        fprintf(stderr, "[PRESENT] loops %ld new %ld | work avg %.1f max %.1f ms, present avg %.1f ms\n",
++                (long)loops, (long)shown, loops ? work_ms / loops : 0.0, work_max,
++                loops ? present_ms / loops : 0.0);
++    }
++}
++
  static LRESULT CALLBACK fb_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
  {
 +    if ((m == WM_SYSKEYDOWN && w == VK_RETURN && (l & (1 << 29)) && !(l & (1 << 30)))
 +        || (m == WM_KEYDOWN && w == VK_F11 && !(l & (1 << 30)))) {
 +        fb_toggle_fullscreen(h);
 +        return 0;                       /* not an Enter for the game */
++    }
++    if (m == WM_KEYDOWN && w == VK_F3 && !(l & (1 << 30))) {
++        fps_overlay_toggle();
++        return 0;
 +    }
 +    if (m == WM_SYSKEYDOWN && w == VK_RETURN)
 +        return 0;                       /* auto-repeat of Alt+Enter */
@@ -5915,7 +6096,7 @@ index 08bae4b..5c84475 100644
          return 0;
  
      case WM_KEYDOWN:
-@@ -217,32 +376,54 @@ static void fb_convert(const uint8_t *src, uint32_t bpp)
+@@ -217,32 +537,55 @@ static void fb_convert(const uint8_t *src, uint32_t bpp)
   * A black window is ambiguous: it means either that the read path is wrong or
   * that the title really did render black. Dumping the same converted pixels
   * the window draws settles which, and does it without a screenshot. */
@@ -5937,8 +6118,9 @@ index 08bae4b..5c84475 100644
 +    {
 +        /* A backend publishing its own full-resolution frames: dump that,
 +         * gamma applied as on screen. */
-+        LONG k = s_hi_idx;
-+        if (k >= 0 && (LONG)GetTickCount() - s_hi_tick < 500) {
++        /* (called on the window thread, which owns the front buffer) */
++        LONG k = s_hi_front;
++        if (s_hi_have && (LONG)GetTickCount() - s_hi_tick < 500) {
 +            size_t n = (size_t)s_hi_w[k] * s_hi_h[k];
 +            hi = (uint32_t *)malloc(n * 4);
 +            if (hi) {
@@ -5978,7 +6160,7 @@ index 08bae4b..5c84475 100644
              line[x * 3 + 0] = (uint8_t)(src[x] & 0xFF);
              line[x * 3 + 1] = (uint8_t)((src[x] >> 8) & 0xFF);
              line[x * 3 + 2] = (uint8_t)((src[x] >> 16) & 0xFF);
-@@ -250,12 +431,74 @@ int xbox_FramebufferDumpBmp(const char *path)
+@@ -250,12 +593,78 @@ int xbox_FramebufferDumpBmp(const char *path)
          fwrite(line, 1, row, f);
      }
      free(line);
@@ -6020,6 +6202,10 @@ index 08bae4b..5c84475 100644
 +    path[n] = 0;
 +    DeleteFileA(trig);
 +    if (n) {
++        if (getenv("RECOMP_SNAP_PRESENTED") && gpu_present_active()) {
++            gpu_present_capture(path);    /* what the window shows */
++            return;
++        }
 +        s_dump_quiet = 1;
 +        xbox_FramebufferDumpBmp(path);
 +        s_dump_quiet = 0;
@@ -6055,7 +6241,7 @@ index 08bae4b..5c84475 100644
  static DWORD WINAPI fb_thread(LPVOID unused)
  {
      HWND hwnd;
-@@ -274,13 +517,44 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -274,13 +683,44 @@ static DWORD WINAPI fb_thread(LPVOID unused)
          wc.lpszClassName = "XboxRecompFramebuffer";
          RegisterClassA(&wc);
      }
@@ -6107,19 +6293,22 @@ index 08bae4b..5c84475 100644
      if (!hwnd) {
          InterlockedExchange(&s_fb_running, 0);
          return 0;
-@@ -299,6 +573,8 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -299,6 +739,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
  
      fprintf(stderr, "  [FBWIN] framebuffer window open (%ux%u)\n",
              s_fb_width, s_fb_height);
 +    if (gpu_present_enabled())
 +        gpu_present_init(hwnd, s_fb_width, s_fb_height);
++    if (!s_hi_event)
++        s_hi_event = CreateEventA(NULL, FALSE, FALSE, NULL);
  
      while (InterlockedCompareExchange(&s_fb_running, 1, 1)) {
          MSG msg;
-@@ -306,6 +582,13 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -306,7 +750,40 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              TranslateMessage(&msg);
              DispatchMessageA(&msg);
          }
+-        if (s_present_idx >= 0 && s_rgb) {
 +        {
 +            RECT cr;
 +            if (!IsIconic(hwnd) && GetClientRect(hwnd, &cr)) {
@@ -6127,10 +6316,37 @@ index 08bae4b..5c84475 100644
 +                InterlockedExchange(&s_client_h, cr.bottom - cr.top);
 +            }
 +        }
-         if (s_present_idx >= 0 && s_rgb) {
++        if (gpu_present_active() && (s_hi_mid & 4 || s_hi_have)
++            && (LONG)GetTickCount() - s_hi_tick < 500) {
++            /* The backend's own image (full resolution), each new frame
++             * presented once, as soon as it is published: wait for the next
++             * (or for window messages) instead of re-presenting the same
++             * one. Gamma is applied by the presenter's shader. */
++            if (!hi_acquire()) {
++                MsgWaitForMultipleObjects(1, &s_hi_event, FALSE, 20, QS_ALLINPUT);
++                if (!hi_acquire())
++                    goto window_tail;
++            }
++            {
++                LONG k = s_hi_front;
++                double tw0 = pres_now_ms(), tw1;
++                fps_overlay_draw(s_hi[k], s_hi_w[k], s_hi_h[k]);
++                tw1 = pres_now_ms();
++                s_pres_shown++;
++                if (!gpu_present_frame_gamma(s_hi[k], s_hi_w[k], s_hi_h[k], 1))
++                    Sleep(16);
++                s_pres_loops++;
++                s_pres_work += tw1 - tw0;
++                if (tw1 - tw0 > s_pres_work_max) s_pres_work_max = tw1 - tw0;
++                s_pres_present += pres_now_ms() - tw1;
++            }
++            if (s_present_idx >= 0 && s_rgb && s_present[s_present_idx])
++                memcpy(s_rgb, s_present[s_present_idx], (size_t)s_fb_width * s_fb_height * 4);
++        } else if (s_present_idx >= 0 && s_rgb) {
              /* A finished frame, published by the flip. Copied into s_rgb so
               * the dump path and GDI see one consistent image even if the
-@@ -314,18 +597,39 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+              * next flip lands mid-blit. */
+@@ -314,19 +791,28 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              if (s_present[idx])
                  memcpy(s_rgb, s_present[idx],
                         (size_t)s_fb_width * s_fb_height * 4);
@@ -6139,21 +6355,8 @@ index 08bae4b..5c84475 100644
 -                          s_rgb, &bi, DIB_RGB_COLORS, SRCCOPY);
 +            xbox_FramebufferApplyGamma(s_rgb, (size_t)s_fb_width * s_fb_height);
 +            if (gpu_present_active()) {
-+                LONG hi = s_hi_idx;
-+                if (hi >= 0 && (LONG)GetTickCount() - s_hi_tick < 500) {
-+                    /* The backend's own image (full resolution). */
-+                    static uint32_t *buf;
-+                    static size_t cap;
-+                    uint32_t w = s_hi_w[hi], h = s_hi_h[hi];
-+                    size_t n = (size_t)w * h;
-+                    if (cap < n) { free(buf); buf = (uint32_t *)malloc(n * 4); cap = buf ? n : 0; }
-+                    if (buf) {
-+                        memcpy(buf, s_hi[hi], n * 4);
-+                        xbox_FramebufferApplyGamma(buf, n);
-+                        if (!gpu_present_frame_size(buf, w, h))
-+                            Sleep(16);
-+                    }
-+                } else if (!gpu_present_frame_size(s_rgb, s_fb_width, s_fb_height))  /* vsync-paced, unless occluded */
++                fps_overlay_draw(s_rgb, s_fb_width, s_fb_height);
++                if (!gpu_present_frame_size(s_rgb, s_fb_width, s_fb_height))  /* vsync-paced, unless occluded */
 +                    Sleep(16);
 +            }
 +            else
@@ -6174,9 +6377,22 @@ index 08bae4b..5c84475 100644
 +            } else
 +                gdi_blit(hwnd, hdc, &bi);
          }
++    window_tail:
          {
              /* One dump a few seconds in, so the title has had time to render
-@@ -365,9 +669,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+              * something rather than catching the first blank frame.
+@@ -357,6 +843,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+             if (now - t0 >= 1000) {
+                 LONG f = s_flips;
+                 wchar_t tb[128];
++                present_second(t0 ? f - f0 : 0, s_pres_shown, s_pres_loops, s_pres_work,
++                               s_pres_work_max, s_pres_present);
++                s_pres_shown = s_pres_loops = 0;
++                s_pres_work = s_pres_work_max = s_pres_present = 0;
+                 _snwprintf(tb, 127, L"%ls | FPS: %.1f | draws: %ld", s_title,
+                            t0 ? (f - f0) * 1000.0 / (now - t0) : 0.0,
+                            (long)s_frame_draws);
+@@ -365,9 +855,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
                  t0 = now; f0 = f;
              }
          }
@@ -6190,7 +6406,7 @@ index 08bae4b..5c84475 100644
      ReleaseDC(hwnd, hdc);
      DestroyWindow(hwnd);
      free(s_rgb);
-@@ -390,11 +697,4 @@ void xbox_FramebufferWindowStart(void)
+@@ -390,11 +883,4 @@ void xbox_FramebufferWindowStart(void)
          InterlockedExchange(&s_fb_running, 0);
  }
  
@@ -6585,10 +6801,10 @@ index 0000000..db3043e
 +#endif /* !_WIN32 */
 diff --git a/src/video/gpu_present.c b/src/video/gpu_present.c
 new file mode 100644
-index 0000000..d8c575f
+index 0000000..7b3408b
 --- /dev/null
 +++ b/src/video/gpu_present.c
-@@ -0,0 +1,257 @@
+@@ -0,0 +1,381 @@
 +/*
 + * D3D11 presentation for the framebuffer window (ROADMAP Phase 2.1).
 + *
@@ -6627,6 +6843,62 @@ index 0000000..d8c575f
 +static ID3D11SamplerState       *s_samp;
 +static ID3D11VertexShader       *s_vs;
 +static ID3D11PixelShader        *s_ps;
++static ID3D11PixelShader        *s_ps_gamma;   /* + the title's gamma ramp */
++static ID3D11Texture2D          *s_lut;        /* 256 x 1, the ramp (fb_gamma.c) */
++static ID3D11ShaderResourceView *s_lut_srv;
++static unsigned                  s_lut_serial = ~0u;
++static char                      s_capture[MAX_PATH];  /* gpu_present_capture: pending */
++static volatile LONG             s_capture_pending;
++
++/* The next presented image (back buffer: letterbox, overlay and gamma
++ * included -- what the window shows) as a 24-bit BMP. RECOMP_SNAP_PRESENTED=1
++ * routes the snapshot trigger here (fb_present.c). */
++void gpu_present_capture(const char *path)
++{
++    strncpy(s_capture, path, sizeof s_capture - 1);
++    s_capture[sizeof s_capture - 1] = 0;
++    InterlockedExchange(&s_capture_pending, 1);
++}
++
++static void capture_back_buffer(void)
++{
++    ID3D11Texture2D *back = NULL, *stg = NULL;
++    D3D11_TEXTURE2D_DESC td;
++    D3D11_MAPPED_SUBRESOURCE m;
++    FILE *f;
++    if (FAILED(IDXGISwapChain_GetBuffer(s_chain, 0, &IID_ID3D11Texture2D, (void **)&back)))
++        return;
++    ID3D11Texture2D_GetDesc(back, &td);
++    td.Usage = D3D11_USAGE_STAGING; td.BindFlags = 0; td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
++    td.MiscFlags = 0;
++    if (SUCCEEDED(ID3D11Device_CreateTexture2D(s_dev, &td, NULL, &stg))) {
++        ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)stg, (ID3D11Resource *)back);
++        if (SUCCEEDED(ID3D11DeviceContext_Map(s_ctx, (ID3D11Resource *)stg, 0, D3D11_MAP_READ, 0, &m))) {
++            if ((f = fopen(s_capture, "wb")) != NULL) {
++                uint32_t row = (td.Width * 3u + 3u) & ~3u, img = row * td.Height, y, x;
++                uint8_t hdr[54] = {'B', 'M'}, *line = (uint8_t *)calloc(1, row);
++                uint32_t total = 54u + img;
++                memcpy(hdr + 2, &total, 4); hdr[10] = 54; hdr[14] = 40;
++                memcpy(hdr + 18, &td.Width, 4); memcpy(hdr + 22, &td.Height, 4);
++                hdr[26] = 1; hdr[28] = 24; memcpy(hdr + 34, &img, 4);
++                fwrite(hdr, 1, 54, f);
++                for (y = td.Height; line && y-- > 0;) {
++                    const uint8_t *src = (const uint8_t *)m.pData + (size_t)y * m.RowPitch;
++                    for (x = 0; x < td.Width; x++) {
++                        line[x * 3] = src[x * 4]; line[x * 3 + 1] = src[x * 4 + 1];
++                        line[x * 3 + 2] = src[x * 4 + 2];
++                    }
++                    fwrite(line, 1, row, f);
++                }
++                free(line);
++                fclose(f);
++            }
++            ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)stg, 0);
++        }
++        ID3D11Texture2D_Release(stg);
++    }
++    ID3D11Texture2D_Release(back);
++}
 +static HWND                      s_hwnd;
 +static uint32_t                  s_w, s_h;      /* frame size */
 +static uint32_t                  s_bw, s_bh;    /* back buffer (client) size */
@@ -6638,7 +6910,11 @@ index 0000000..d8c575f
 +    "struct V { float4 p : SV_Position; float2 uv : TEXCOORD0; };\n"
 +    "V vs(uint i : SV_VertexID) { V o; float2 q = float2((i << 1) & 2, i & 2);\n"
 +    "  o.uv = q; o.p = float4(q * float2(2, -2) + float2(-1, 1), 0, 1); return o; }\n"
-+    "float4 ps(V i) : SV_Target { return float4(t.Sample(s, i.uv).rgb, 1); }\n";
++    "float4 ps(V i) : SV_Target { return float4(t.Sample(s, i.uv).rgb, 1); }\n"
++    "Texture2D lut : register(t1);\n"
++    "float4 psg(V i) : SV_Target { int3 c = int3(saturate(t.Sample(s, i.uv).rgb) * 255.0 + 0.5);\n"
++    "  return float4(lut.Load(int3(c.r, 0, 0)).r, lut.Load(int3(c.g, 0, 0)).g,\n"
++    "                lut.Load(int3(c.b, 0, 0)).b, 1); }\n";
 +
 +int gpu_present_enabled(void)
 +{
@@ -6737,6 +7013,25 @@ index 0000000..d8c575f
 +    smp.MaxLOD = D3D11_FLOAT32_MAX;
 +    vsb = compile("vs", "vs_4_0");
 +    psb = compile("ps", "ps_4_0");
++    {
++        ID3DBlob *pgb = compile("psg", "ps_4_0");
++        D3D11_TEXTURE2D_DESC ld;
++        ZeroMemory(&ld, sizeof ld);
++        ld.Width = 256; ld.Height = 1; ld.MipLevels = 1; ld.ArraySize = 1;
++        ld.Format = DXGI_FORMAT_B8G8R8A8_UNORM; ld.SampleDesc.Count = 1;
++        ld.Usage = D3D11_USAGE_DEFAULT; ld.BindFlags = D3D11_BIND_SHADER_RESOURCE;
++        if (!pgb
++            || FAILED(ID3D11Device_CreatePixelShader(s_dev, ID3D10Blob_GetBufferPointer(pgb),
++                                                     ID3D10Blob_GetBufferSize(pgb), NULL, &s_ps_gamma))
++            || FAILED(ID3D11Device_CreateTexture2D(s_dev, &ld, NULL, &s_lut))
++            || FAILED(ID3D11Device_CreateShaderResourceView(s_dev, (ID3D11Resource *)s_lut, NULL, &s_lut_srv))) {
++            /* no GPU gamma: gpu_present_frame_gamma falls back to the CPU */
++            if (s_ps_gamma) { ID3D11PixelShader_Release(s_ps_gamma); s_ps_gamma = NULL; }
++            if (s_lut_srv) { ID3D11ShaderResourceView_Release(s_lut_srv); s_lut_srv = NULL; }
++            if (s_lut) { ID3D11Texture2D_Release(s_lut); s_lut = NULL; }
++        }
++        if (pgb) ID3D10Blob_Release(pgb);
++    }
 +    if (!vsb || !psb || !make_rtv()
 +        || FAILED(ID3D11Device_CreateTexture2D(s_dev, &td, NULL, &s_frame))
 +        || FAILED(ID3D11Device_CreateShaderResourceView(s_dev, (ID3D11Resource *)s_frame, NULL, &s_srv))
@@ -6761,7 +7056,17 @@ index 0000000..d8c575f
 +
 +/* A frame of another size (the renderer's own, higher-resolution image):
 + * the texture is recreated at that size first. */
++static int present_draw(const uint32_t *pixels, int gamma);
++
 +int gpu_present_frame_size(const uint32_t *pixels, uint32_t width, uint32_t height)
++{
++    return gpu_present_frame_gamma(pixels, width, height, 0);
++}
++
++/* gamma: apply the title's ramp (fb_gamma.c) in the shader -- for frames
++ * the caller has not already put through xbox_FramebufferApplyGamma. The
++ * pixels are read before this returns. */
++int gpu_present_frame_gamma(const uint32_t *pixels, uint32_t width, uint32_t height, int gamma)
 +{
 +    if (!s_dev || !width || !height)
 +        return 0;
@@ -6779,13 +7084,40 @@ index 0000000..d8c575f
 +        s_w = width; s_h = height;
 +        fprintf(stderr, "  [D3D] frame size now %ux%u\n", width, height);
 +    }
-+    return gpu_present_frame(pixels);
++    if (gamma && !s_ps_gamma) {
++        /* no GPU gamma: the CPU pass on a copy (the pixels are the caller's) */
++        extern void xbox_FramebufferApplyGamma(uint32_t *px, size_t n);
++        static uint32_t *tmp;
++        static size_t cap;
++        size_t n = (size_t)width * height;
++        if (cap < n) { free(tmp); tmp = (uint32_t *)malloc(n * 4); cap = tmp ? n : 0; }
++        if (!tmp)
++            return 0;
++        memcpy(tmp, pixels, n * 4);
++        xbox_FramebufferApplyGamma(tmp, n);
++        return present_draw(tmp, 0);
++    }
++    if (gamma) {
++        extern unsigned xbox_FramebufferGammaSerial(void);
++        extern unsigned xbox_FramebufferGammaTexels(uint32_t *out256);
++        if (xbox_FramebufferGammaSerial() != s_lut_serial) {
++            uint32_t t[256];
++            s_lut_serial = xbox_FramebufferGammaTexels(t);
++            ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource *)s_lut, 0, NULL, t, 1024, 0);
++        }
++    }
++    return present_draw(pixels, gamma);
++}
++
++int gpu_present_frame(const uint32_t *pixels)
++{
++    return present_draw(pixels, 0);
 +}
 +
 +/* Returns 0 when nothing was shown: the window is occluded or the display
 + * is off, and Present does not wait for vsync then -- the caller must pace
 + * itself instead of spinning. */
-+int gpu_present_frame(const uint32_t *pixels)
++static int present_draw(const uint32_t *pixels, int gamma)
 +{
 +    static const float black[4] = {0, 0, 0, 1};
 +    D3D11_VIEWPORT vp;
@@ -6821,16 +7153,24 @@ index 0000000..d8c575f
 +    ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 +    ID3D11DeviceContext_IASetInputLayout(s_ctx, NULL);
 +    ID3D11DeviceContext_VSSetShader(s_ctx, s_vs, NULL, 0);
-+    ID3D11DeviceContext_PSSetShader(s_ctx, s_ps, NULL, 0);
-+    ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 1, &s_srv);
++    ID3D11DeviceContext_PSSetShader(s_ctx, gamma ? s_ps_gamma : s_ps, NULL, 0);
++    {
++        ID3D11ShaderResourceView *v[2] = {s_srv, s_lut_srv};
++        ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, gamma ? 2 : 1, v);
++    }
 +    ID3D11DeviceContext_PSSetSamplers(s_ctx, 0, 1, &s_samp);
 +    ID3D11DeviceContext_Draw(s_ctx, 3, 0);
++    if (s_capture_pending && InterlockedExchange(&s_capture_pending, 0))
++        capture_back_buffer();
 +    return IDXGISwapChain_Present(s_chain, (UINT)s_vsync, 0) == S_OK;
 +}
 +
 +void gpu_present_shutdown(void)
 +{
 +    if (s_ps)    { ID3D11PixelShader_Release(s_ps);           s_ps = NULL; }
++    if (s_ps_gamma) { ID3D11PixelShader_Release(s_ps_gamma);  s_ps_gamma = NULL; }
++    if (s_lut_srv) { ID3D11ShaderResourceView_Release(s_lut_srv); s_lut_srv = NULL; }
++    if (s_lut)   { ID3D11Texture2D_Release(s_lut);            s_lut = NULL; }
 +    if (s_vs)    { ID3D11VertexShader_Release(s_vs);          s_vs = NULL; }
 +    if (s_samp)  { ID3D11SamplerState_Release(s_samp);        s_samp = NULL; }
 +    if (s_srv)   { ID3D11ShaderResourceView_Release(s_srv);   s_srv = NULL; }
@@ -6848,10 +7188,10 @@ index 0000000..d8c575f
 +#endif
 diff --git a/src/video/gpu_present.h b/src/video/gpu_present.h
 new file mode 100644
-index 0000000..9516860
+index 0000000..8891786
 --- /dev/null
 +++ b/src/video/gpu_present.h
-@@ -0,0 +1,15 @@
+@@ -0,0 +1,17 @@
 +/* D3D11 presentation for the framebuffer window (see gpu_present.c). */
 +#ifndef XBOX_GPU_PRESENT_H
 +#define XBOX_GPU_PRESENT_H
@@ -6861,9 +7201,11 @@ index 0000000..9516860
 +
 +int  gpu_present_enabled(void);                 /* RECOMP_D3D_PRESENT=1 */
 +int  gpu_present_init(HWND hwnd, uint32_t width, uint32_t height);
++int  gpu_present_frame_gamma(const uint32_t *pixels, uint32_t width, uint32_t height, int gamma); /* gamma: apply the title's ramp on the GPU */
 +int  gpu_present_frame(const uint32_t *pixels); /* width*height B8G8R8A8; 0 = not shown (occluded) */
 +int  gpu_present_frame_size(const uint32_t *pixels, uint32_t width, uint32_t height);
 +int  gpu_present_active(void);
++void gpu_present_capture(const char *path);   /* next presented image -> BMP */
 +void gpu_present_shutdown(void);
 +#endif
 +#endif
