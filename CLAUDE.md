@@ -77,7 +77,7 @@ game's code. Nor the rip, `build/`, logs.
 scripts/setup.sh                 # toolkit + venv (needs git, curl, python3)
 scripts/regen.sh                 # ~2 min; needs ../SSX3/default.xbe
 scripts/sync-windows.sh --game   # first time; later without --game
-cmd.exe /c 'C:\Code\Xbox\ssx3-recomp\tools\build.bat'     # full build ~18 min
+cmd.exe /c 'C:\Code\Xbox\ssx3-recomp\tools\build.bat'     # full build ~2 min (32 threads)
 cd /mnt/c/Code/Xbox/ssx3-recomp && powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\Code\Xbox\ssx3-recomp\tools\shot.ps1' -After 35
 ```
 
@@ -91,7 +91,7 @@ fine from a `/mnt/c` cwd. Run from the project root — the exe opens
 1. Edit in WSL (`src/`, or the toolkit — then refresh the patch:
    `git -C ../xboxrecomp diff > patches/xboxrecomp-local.patch`).
 2. Added/removed an override in `src/ssx3_overrides.c`? `scripts/regen.sh lift`
-   (changes `recomp_funcs.h` → full ~18 min rebuild). Otherwise no regen.
+   (recomp_funcs.h stays the same since 2026-10-16, so only the file holding the function recompiles). Otherwise no regen.
 3. `scripts/sync-windows.sh` then `tools\build.bat` (seconds when only
    hand-written files or one toolkit lib changed).
 4. `tools\run.ps1` / `tools\shot.ps1`, read `C:\Code\Xbox\ssx3-recomp\stderr.txt`.

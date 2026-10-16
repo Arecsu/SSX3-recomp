@@ -124,6 +124,12 @@ if(MSVC)
     )
     # The generated code files can be very large. Increase object file section limit.
     target_compile_options(${PROJECT_NAME} PRIVATE /bigobj)
+    # A few generated functions are thousands of lines of gotos (CRT/XAPI and
+    # game code); MSVC's full /O2 on them is superlinear -- recomp_0064.c
+    # alone took ~1000 s and was the whole build. This internal switch limits
+    # optimization inside such huge functions only: that file now compiles in
+    # ~70 s, everything else is optimized as before.
+    target_compile_options(${PROJECT_NAME} PRIVATE /d2ReducedOptimizeHugeFunctions)
 endif()
 
 # ── Game-specific additions ─────────────────────────────────────

@@ -108,7 +108,7 @@ git clone <this repo> ssx3-recomp; cd ssx3-recomp
 # put your rip in game\ : game\default.xbe and game\data\
 powershell -ExecutionPolicy Bypass -File scripts\setup.ps1   # toolkit (pinned + patched) in ..\xboxrecomp, Python venv
 powershell -ExecutionPolicy Bypass -File scripts\regen.ps1   # analysis, decomp\ split, src\recomp\gen\ C lift (~7 min)
-tools\build.bat                                              # MSVC + Ninja, ~18 min the first time
+tools\build.bat                                              # MSVC + Ninja, ~2 min on 32 threads
 tools\play.bat
 ```
 

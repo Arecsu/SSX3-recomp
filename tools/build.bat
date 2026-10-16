@@ -2,12 +2,12 @@
 rem Release build with MSVC + the Ninja that ships with Visual Studio.
 rem Ninja compiles the generated chunks in parallel; the VS generator would
 rem compile them one at a time (the template sets no /MP).
-rem   tools\build.bat [jobs] [abi]   (default 16) -> build\ssx3_recomp.exe
+rem   tools\build.bat [jobs] [abi]   (default: all logical cores) -> build\ssx3_recomp.exe
 rem   "abi" builds build-abi\ with -DRECOMP_ABI_CHECK: every call checks that
 rem   the callee preserved ebx/esi/edi and logs "[ABI] sub_XXXXXXXX" when not.
 setlocal
 set JOBS=%1
-if "%JOBS%"=="" set JOBS=16
+if "%JOBS%"=="" set JOBS=%NUMBER_OF_PROCESSORS%
 set DIR=build
 set FLAGS=
 if /i "%2"=="abi" (
