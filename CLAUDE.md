@@ -883,6 +883,20 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   -flip), named by `python tools\slowstacks.py play_stderr.txt`. Vulkan
   pipelines are logged with their creation time ([VKR] pipeline N: x ms):
   all under 4 ms, so not a stutter source here.
+- PICKUP SPARKLE FPS DROPS (fixed 2026-10-16): grabbing a trick
+  multiplier dropped to ~10-20 FPS at 5120x1440 (user's play with `play.bat
+  diag`: main thread in BlockOnTime, executor waiting for a frame slot, flip
+  thread on the GPU fence -- GPU bound). RECOMP_VKR_GPUPROF=<ms> (vkr.c: a
+  timestamp after every draw, per frame slot; a frame over <ms> of GPU time
+  logs its 8 costliest draws as [GPUPROF] with topology, count, blend,
+  stages, textures, clip) showed four point-sprite draws of 56 points
+  (program point size oPts, additive SRC_ALPHA/ONE, stage 3 point sprite) at
+  13-25 ms each. xbox_vsh.vert used max(oPts.x, 1) * scale with no upper
+  bound; the NV2A tops out at 64 px (SET_POINT_SIZE 6.3 fixed point, Xbox
+  D3D MaxPointSize 64), so sparkles near the camera became screen-sized.
+  Now clamp(oPts.x, 1, 64) * scale: Peak 1 freestyle event 2 (Mode 1 Event
+  1, the rider grabs one in the air) at 5120x1440 went from 102-126 ms worst
+  frames to 22.5 ms, no GPU frame over 25 ms.
 - XEMU REFERENCE (2026-10-15): `tools\xemu.ps1` (skill: .claude/skills/xemu)
   boots a separate, muted xemu instance with the ISO (own config + HDD copy
   in work\xemu\, QMP on 127.0.0.1:4455), presses pad buttons by posting key

@@ -56,7 +56,20 @@ typedef struct {
     uint8_t *rbh_map;
     int rbh_noncoherent;
     int busy;                       /* submitted, read-back not released yet */
+    /* RECOMP_VKR_GPUPROF: a timestamp after every draw of the frame */
+    VkQueryPool qp;
+    uint32_t nq;
+    int qreset;
+    struct VkrProfDraw *meta;
 } VkrFrame;
+
+/* What a profiled draw was (RECOMP_VKR_GPUPROF). */
+typedef struct VkrProfDraw {
+    uint32_t nidx, topo, vsh, blend, src, dst, eq, mask, stages, final0, alpha;
+    uint32_t tw[2], th[2], scw, sch;
+    float psize;
+} VkrProfDraw;
+#define VKR_PROF_MAX 8192
 
 struct VkrContext {
     VkInstance inst;
@@ -130,6 +143,9 @@ struct VkrContext {
     /* vkr_draw_vsh: the constants and program last uploaded in this
      * recording, reused while unchanged. */
     uint32_t vsh_serial, vsh_const_off, vsh_prog_off, vsh_prog_hash, vsh_prog_n;
+    /* RECOMP_VKR_GPUPROF=<ms> */
+    double prof_thr, ts_period;
+    unsigned prof_said;
     float vsh_consts[192][4];
 };
 
@@ -545,6 +561,29 @@ VkrContext *vkr_create(void)
             goto fail;
         fr->buf_map = (uint8_t *)map;
     }
+    {
+        /* RECOMP_VKR_GPUPROF=<ms>: GPU time per draw from timestamps; a
+         * frame whose GPU work took longer than <ms> is logged with its most
+         * expensive draws ([GPUPROF], vkr_frame_pixels). */
+        const char *e = getenv("RECOMP_VKR_GPUPROF");
+        VkPhysicalDeviceProperties pp;
+        vkGetPhysicalDeviceProperties(c->phys, &pp);
+        if (e && atof(e) > 0 && qp[c->qfam].timestampValidBits && pp.limits.timestampPeriod > 0) {
+            VkQueryPoolCreateInfo qpi = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+            qpi.queryType = VK_QUERY_TYPE_TIMESTAMP; qpi.queryCount = VKR_PROF_MAX;
+            c->prof_thr = atof(e);
+            c->ts_period = pp.limits.timestampPeriod;
+            for (f = 0; f < VKR_FRAMES; f++) {
+                if (vkCreateQueryPool(c->dev, &qpi, NULL, &c->fr[f].qp) != VK_SUCCESS
+                    || !(c->fr[f].meta = (VkrProfDraw *)calloc(VKR_PROF_MAX, sizeof(VkrProfDraw)))) {
+                    c->prof_thr = 0;
+                    break;
+                }
+            }
+            fprintf(stderr, "[VKR] GPU profiler %s: frames over %.1f ms\n",
+                    c->prof_thr > 0 ? "on" : "failed", c->prof_thr);
+        }
+    }
     pthread_mutex_init(&c->lock, NULL);
     pthread_cond_init(&c->freed, NULL);
     use_frame(c, 0);
@@ -757,6 +796,73 @@ int vkr_set_target(VkrContext *c, uint32_t w, uint32_t h, float zmax)
     return 1;
 }
 
+/* RECOMP_VKR_GPUPROF: a timestamp once everything recorded so far has run;
+ * the difference to the previous one is (about) that draw's GPU time. */
+static void prof_mark(VkrContext *c, const VkrDrawState *st, uint32_t nidx, int vsh)
+{
+    VkrFrame *fr = &c->fr[c->cur];
+    VkrProfDraw *m;
+    if (c->prof_thr <= 0 || !fr->qreset || fr->nq >= VKR_PROF_MAX)
+        return;
+    m = &fr->meta[fr->nq];
+    memset(m, 0, sizeof *m);
+    if (st) {
+        int k;
+        m->nidx = nidx; m->topo = st->topology; m->vsh = (uint32_t)vsh;
+        m->blend = (uint32_t)st->blend_enable; m->src = st->blend_src; m->dst = st->blend_dst;
+        m->eq = st->blend_eq; m->mask = st->write_mask; m->stages = st->u.stage_program;
+        m->final0 = st->u.final0; m->alpha = st->alpha_func;
+        m->psize = st->point_params ? -1.0f : st->point_size;
+        for (k = 0; k < 2; k++)
+            if (st->tex[k]) { m->tw[k] = st->tex[k]->w; m->th[k] = st->tex[k]->h; }
+        m->scw = c->sc.extent.width; m->sch = c->sc.extent.height;
+    }
+    vkCmdWriteTimestamp2(c->cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, fr->qp, fr->nq);
+    fr->nq++;
+}
+
+static void prof_report(VkrContext *c, int slot)
+{
+    VkrFrame *fr = &c->fr[slot];
+    static uint64_t ts[VKR_PROF_MAX];
+    int top[8], k;
+    uint32_t i, n = fr->nq;
+    double total;
+    if (c->prof_thr <= 0 || n < 2 || c->prof_said >= 60)
+        return;
+    if (vkGetQueryPoolResults(c->dev, fr->qp, 0, n, n * sizeof ts[0], ts, sizeof ts[0],
+                              VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+        return;
+    total = (double)(ts[n - 1] - ts[0]) * c->ts_period / 1e6;
+    if (total < c->prof_thr)
+        return;
+    c->prof_said++;
+    for (k = 0; k < 8; k++) top[k] = -1;
+    for (i = 1; i < n; i++) {
+        uint64_t d = ts[i] - ts[i - 1];
+        for (k = 0; k < 8; k++) {
+            if (top[k] < 0 || d > ts[top[k]] - ts[top[k] - 1]) {
+                int j;
+                for (j = 7; j > k; j--) top[j] = top[j - 1];
+                top[k] = (int)i;
+                break;
+            }
+        }
+    }
+    fprintf(stderr, "[GPUPROF] frame GPU %.1f ms, %u draws, target %ux%u; top draws:\n",
+            total, n - 2, c->sw, c->sh);
+    for (k = 0; k < 8 && top[k] > 0; k++) {
+        const VkrProfDraw *m = &fr->meta[top[k]];
+        fprintf(stderr, "[GPUPROF]   #%d %.2f ms %s n %u %s blend %u %X/%X eq %X mask %X"
+                " stages %05X final0 %08X alpha %X tex %ux%u %ux%u clip %ux%u psize %.1f\n",
+                top[k], (double)(ts[top[k]] - ts[top[k] - 1]) * c->ts_period / 1e6,
+                m->topo == 2 ? "points" : m->topo == 1 ? "lines" : "tris", m->nidx,
+                !m->nidx ? "-" : m->vsh ? "vsh" : "cpu", m->blend, m->src, m->dst, m->eq, m->mask,
+                m->stages, m->final0, m->alpha, m->tw[0], m->th[0], m->tw[1], m->th[1],
+                m->scw, m->sch, m->psize);
+    }
+}
+
 static int begin_cmd(VkrContext *c)
 {
     VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -771,6 +877,12 @@ static int begin_cmd(VkrContext *c)
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     CK(vkBeginCommandBuffer(c->cmd, &bi));
     c->recording = 1;
+    if (c->prof_thr > 0 && !c->fr[c->cur].qreset) {
+        vkCmdResetQueryPool(c->cmd, c->fr[c->cur].qp, 0, VKR_PROF_MAX);
+        c->fr[c->cur].qreset = 1;
+        c->fr[c->cur].nq = 0;
+        prof_mark(c, NULL, 0, -1);
+    }
     barrier(c, c->color, VK_IMAGE_ASPECT_COLOR_BIT,
             c->color_valid ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -1075,6 +1187,7 @@ int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
     vkCmdBindVertexBuffers(c->cmd, 0, 1, &c->buf, &off);
     vkCmdBindIndexBuffer(c->cmd, c->buf, ib, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(c->cmd, nidx, 1, 0, 0, 0);
+    prof_mark(c, st, nidx, 0);
     return 1;
 }
 
@@ -1191,6 +1304,7 @@ int vkr_draw_vsh(VkrContext *c, const float *in, uint32_t nverts, uint32_t nin,
     vkCmdSetBlendConstants(c->cmd, st->blend_color);
     vkCmdBindIndexBuffer(c->cmd, c->buf, ib, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(c->cmd, nidx, 1, 0, 0, 0);
+    prof_mark(c, st, nidx, 1);
     return 1;
 }
 
@@ -1281,6 +1395,7 @@ int vkr_flip_submit(VkrContext *c)
             VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    prof_mark(c, NULL, 0, -1);
     if (vkEndCommandBuffer(c->cmd) != VK_SUCCESS) return -1;
     c->recording = 0;
     si.commandBufferCount = 1; si.pCommandBuffers = &c->cmd;
@@ -1289,6 +1404,7 @@ int vkr_flip_submit(VkrContext *c)
     c->fr[slot].busy = 1;
     pthread_mutex_unlock(&c->lock);
     use_frame(c, (slot + 1) % VKR_FRAMES);
+    c->fr[c->cur].qreset = 0;   /* its queries are reset when it is next begun */
     c->buf_used = 0;
     c->upload_serial++;
     if (++c->flip_serial % 120 == 0)     /* every ~2 s: textures unused for 5 s */
@@ -1304,6 +1420,7 @@ const uint8_t *vkr_frame_pixels(VkrContext *c, int slot)
 {
     if (vkWaitForFences(c->dev, 1, &c->fr[slot].fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
         return NULL;
+    prof_report(c, slot);
     if (c->fr[slot].rb_noncoherent) {
         VkMappedMemoryRange mr = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
         mr.memory = c->fr[slot].rb_mem; mr.offset = 0; mr.size = VK_WHOLE_SIZE;

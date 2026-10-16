@@ -197,5 +197,10 @@ void main()
     v_d0 = clamp(O[3], 0.0, 1.0); v_d1 = clamp(O[4], 0.0, 1.0);
     v_fog = vec4(fog_factor(O[5].x), 0.0, 0.0, 0.0);
     v_tex0 = O[9]; v_tex1 = O[10]; v_tex2 = O[11]; v_tex3 = O[12];
-    gl_PointSize = pc.point_params > 0.0 ? max(O[6].x, 1.0) * pc.point_params : pc.point_size;
+    /* The NV2A's point size tops out at 64 pixels (SET_POINT_SIZE is 6.3
+     * fixed point; Xbox D3D's MaxPointSize is 64): a particle program whose
+     * oPts grows near the camera -- the trick-multiplier pickup sparkle --
+     * otherwise drew screen-sized sprites, 224 of them a frame, 50-100 ms of
+     * GPU time at 5120x1440. */
+    gl_PointSize = pc.point_params > 0.0 ? clamp(O[6].x, 1.0, 64.0) * pc.point_params : pc.point_size;
 }
