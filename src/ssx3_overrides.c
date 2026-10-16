@@ -315,6 +315,48 @@ void sub_000E1B90(void)
 }
 
 /*
+ * 30 Hz mode. The app loop (sub_001AD880) renders after every 60 Hz update
+ * unless app+0x38 is set; then it renders only once two updates have run --
+ * exactly 30 FPS, the game logic still at 60. The in-game update
+ * (sub_000CC8F0, this = the in-game state) sets it on every update: always
+ * with more than one player (split screen), else when slot 6 of the table at
+ * 0x3992D0 (sub_00148CB0(6)) reads above 0.9 -- which happens in stretches of
+ * a course, e.g. Metro-City's glowing tunnel. A choice made for the console's
+ * GPU (xemu shows the same drop). Cleared after the update, so the game
+ * renders every update; RECOMP_FPS30=1 keeps the game's own choice. Each
+ * change of the game's choice is logged as [FPS30].
+ */
+extern void sub_000CC8F0_gen(void);
+
+void sub_000CC8F0(void)
+{
+    static int keep = -1, last = -1;
+    uint32_t self = g_ecx, app;
+    int want;
+    if (keep < 0) {
+        const char *e = getenv("RECOMP_FPS30");
+        keep = e && *e && *e != '0';
+    }
+    sub_000CC8F0_gen();
+    app = MEM32(0x003A930Cu);
+    if (app < 0x10000u)
+        return;
+    want = MEM8(app + 0x38) != 0;
+    if (want != last) {
+        uint32_t players = 0;
+        if (self >= 0x10000u && MEM32(self + 0x84) >= 0x10000u)
+            players = MEM32(MEM32(self + 0x84) + 0x10);
+        fprintf(stderr, "[FPS30] t=%lu game wants %s (players %u)%s\n",
+                GetTickCount(), want ? "30 Hz" : "60 Hz", players,
+                want && !keep ? " -- overridden, rendering at 60" : "");
+        fflush(stderr);
+        last = want;
+    }
+    if (!keep)
+        MEM8(app + 0x38) = 0;
+}
+
+/*
  * RECOMP_ACTION_TRACE=1: EA's action-map queries -- sub_001B1460 (bool:
  * is action N active) and sub_001B1410 (float: action N's value), both
  * thiscall (this = map definition) with (input state, action id). Once a

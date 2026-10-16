@@ -234,6 +234,7 @@ Each item is "reached, works, no crash" on the GPU path at speed.
 - 2026-10-15 — Parallel boots no longer collide on the shared partition images (RECOMP_SYSTEM_DIR per run directory): race_par 8x3 24/24 in 2.7 min (was 20/24, the 4 quit to the dashboard at boot).
 - 2026-10-15 — Audio: waveOut fallback fixed like XAudio2; intro movies and races produce sound by the meter (muted runs measure too).
 - 2026-10-15 — 2-player split-screen (Multi Play) works; a second XInput controller now enables it. Reliability batch race_par 4x3: 12/12.
+- 2026-10-16 — The game's 30 FPS mode (app+0x38, set by the in-game update for split screen and for stretches like Metro-City's tunnel) is overridden: Metro-City now 59.8-60 FPS throughout (RECOMP_FPS30=1 = the game's own behaviour). tools\fps30_scan.ps1 for the other courses (Snow Jam: never asks; rest not scanned yet).
 - 2026-10-15 — Frame-rate check on every peak: 60 FPS with occasional single slow frames; Metro-City's 30 FPS stretch is the game's own (xemu drops to 30 at the same point).
 - 2026-10-15 — Conquer the Mountain: free-roam, pause menu, Transport and teleport work. Race shadow wedge not reproduced on Vulkan (25 frames).
 - 2026-10-15 — Phase 7 done: Windows-only build path (setup.ps1/regen.ps1, verified from a fresh clone), game folder found next to the exe, double-click logging, keys.ini remapping.

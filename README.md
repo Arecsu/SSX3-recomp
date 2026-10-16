@@ -92,6 +92,7 @@ variables:
 | `RECOMP_CRT` | `0` | `1` = CRT TV shader (needs a resolution above 480); tune with `RECOMP_CRT_PARAMS` |
 | `RECOMP_DEBUG_MENU` | `0` | `1` = EA's quick-start menu (Start on the title screen) |
 | `RECOMP_GAME_DIR` | `game` | the folder with `default.xbe` and `data\` |
+| `RECOMP_FPS30` | `0` | `1` = keep the game's own 30 FPS stretches (split screen, Metro-City's tunnel); by default they render at 60 |
 | `RECOMP_FPS_OVERLAY` | `0` | `1` = start with the FPS counter on (F3 toggles it): game FPS, frames shown, slowest frame |
 
 **Keyboard.** The game window must have focus. Remap the keys by copying
@@ -162,8 +163,6 @@ no save. Run these from the repo root on Windows:
 - **Effects DSP.** The game's audio effects processor (reverb etc.) is a
   stub, so there is no reverb. The level meter shows sound in races, menus
   and the intro movies.
-- **Metro-City's tunnel** drops to 30 FPS. The game does that itself: xemu
-  drops at the same point.
 - **Peaks 2 and 3** are locked on a fresh save, as in the original game.
   Unlock them in game or with the cheat.
 - **Untested.** Audio hasn't been checked by ear in every mode.

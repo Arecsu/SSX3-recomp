@@ -791,6 +791,20 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   thread, no suspension), `live.ps1 dump -Mem "profile main"` (main thread
   only, 16 frames), RECOMP_GUESTCPU_STATS share per holder, tools\burst.ps1
   -Taps/-TapKeys.
+- 30 FPS MODE REMOVED (2026-10-16): the frame-every-other-tick above is the
+  app object's 30 Hz flag, app+0x38 (0x00369588): sub_001AD880 renders only
+  after >= 2 updates while it is set. The in-game update sub_000CC8F0 sets it
+  every update -- always with more than one player (split screen), else when
+  sub_00148CB0(6) (slot 6 of the 0xF0-byte records at 0x3992D0, an object's
+  vtbl+0x64 float; meaning not identified) is above 0.9 (0x282274). A _gen
+  wrapper (ssx3_overrides.c) clears it after each update; RECOMP_FPS30=1
+  keeps the game's choice; [FPS30] logs each change of what the game wants.
+  Metro-City: the game asks for 30 Hz twice (~20 s and ~37 s stretches), the
+  race stays at 59.8-60 FPS; tunnel shots at 60 vs 30 look alike (shots\
+  metro_fps60/30 on the Windows copy). tools\fps30_scan.ps1 runs every
+  Race/Freestyle event on Peaks 1-3 and logs where it asks; interrupted after
+  2 events (Snow Jam: never; Metro-City: twice) -- rerun for the rest. Split
+  screen at 60 not tested yet.
 - PARALLEL BOOT COLLISION (fixed 2026-10-15): with 8 instances, ~1 boot in 6
   opened \Device\Harddisk0\Partition5 with 0xC0000001 and the title quit to
   the dashboard ("exit requested", state ? and 0 draws -> reported as
