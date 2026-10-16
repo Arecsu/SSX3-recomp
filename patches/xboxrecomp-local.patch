@@ -5614,7 +5614,7 @@ index 0000000..d975b79
 +    }
 +}
 diff --git a/src/video/fb_present.c b/src/video/fb_present.c
-index 08bae4b..1fd4dc9 100644
+index 08bae4b..4477bc8 100644
 --- a/src/video/fb_present.c
 +++ b/src/video/fb_present.c
 @@ -15,12 +15,15 @@
@@ -5975,9 +5975,9 @@ index 08bae4b..1fd4dc9 100644
 +        }
 +        for (;; scale -= 0.25) {
 +            r.left = 0; r.top = 0;
-+            {   /* RECOMP_WIDESCREEN: the window is 16:9 (the renderer's frame is) */
-+                const char *ws = getenv("RECOMP_WIDESCREEN");
-+                double aspect_x = (ws && *ws && *ws != '0') ? 4.0 / 3.0 : 1.0;
++            {   /* RECOMP_ASPECT: the window has the renderer's frame shape */
++                const char *ws = getenv("RECOMP_ASPECT");
++                double aspect_x = (ws && atof(ws) > 4.0 / 3.0 + 0.01) ? atof(ws) * 3.0 / 4.0 : 1.0;
 +                r.right = (LONG)((double)s_fb_width * aspect_x * (scale > 1.0 ? scale : 1.0) + 0.5);
 +            }
 +            r.bottom = (LONG)((double)s_fb_height * (scale > 1.0 ? scale : 1.0) + 0.5);

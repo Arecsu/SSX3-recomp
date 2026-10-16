@@ -65,9 +65,11 @@ available. Keys and controller buttons can be remapped: copy `keys.example.ini` 
 1440x1080 (full-HD height; the game itself is 4:3) -- `RECOMP_RES=480` for
 the original 640x480, `RECOMP_RES=1440` / `2160` for more; the window opens
 as large as fits, F11 for fullscreen. **Widescreen** (this branch, on by default): races
-and free-roam are true 16:9 (1920x1080 -- the game's camera is widened, so
-you see more, nothing is stretched; the HUD keeps its shape), menus and
-loading screens stay 4:3 with black bars. `RECOMP_WIDESCREEN=0` for 4:3. The window
+and free-roam fill your monitor's shape -- 16:9, 21:9 or 32:9 (the game's
+camera is widened, so you see more, nothing is stretched; the HUD keeps its
+shape), rendered at your monitor's height; menus and loading screens stay 4:3
+with black bars. `RECOMP_WIDESCREEN=16:9` (or any `W:H`) forces a shape,
+`=0` gives 4:3; `RECOMP_RES` overrides the height. The window
 opens at 2x (`RECOMP_WINDOW_SCALE`), can be resized, and **Alt+Enter** or
 **F11** toggles borderless fullscreen; the picture keeps its 4:3 shape
 (`RECOMP_PRESENT_FILTER=point` for sharp pixels). Each run's log is kept in

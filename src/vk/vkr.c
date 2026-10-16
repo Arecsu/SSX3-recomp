@@ -477,14 +477,16 @@ VkrContext *vkr_create(void)
         const char *r = getenv("RECOMP_RES");
         double v = r ? atof(r) : 0;
         c->scale = v >= 240 ? (float)(v / 480.0) : (v >= 1.0 && v <= 8.0) ? (float)v : 1.0f;
-        /* RECOMP_WIDESCREEN=1: a 16:9 target (the game renders a 16:9 view
-         * squeezed into 640x480, ssx3_overrides.c sub_0024EA13). */
-        r = getenv("RECOMP_WIDESCREEN");
+        /* RECOMP_ASPECT (main.c, from RECOMP_WIDESCREEN): a target that
+         * wide (16:9, 32:9, ...); the game renders that view squeezed into
+         * 640x480 (ssx3_overrides.c sub_0024EA13). */
+        r = getenv("RECOMP_ASPECT");
         c->scale_x = c->scale;
         c->squeeze2d = 1.0f;
-        if (r && *r && *r != '0') {
-            c->scale_x = c->scale * 4.0f / 3.0f;
-            c->squeeze2d = 0.75f;
+        if (r && atof(r) > 4.0 / 3.0 + 0.01) {
+            float f = (float)(atof(r) * 3.0 / 4.0);
+            c->scale_x = c->scale * f;
+            c->squeeze2d = 1.0f / f;
         }
     }
     {

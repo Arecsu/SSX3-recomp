@@ -807,8 +807,11 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   a linear-blit 640x480 copy for guest memory. Software-drawn surfaces
   (shadow maps, offscreen) stay native. SSX 3 is 4:3 only (no widescreen
   option; the 4/3 float at 0x284E80 is not the camera aspect).
-- WIDESCREEN (2026-10-16, branch `widescreen`): RECOMP_WIDESCREEN=1 (main.c
-  default there; live.ps1 sets 0). The main camera's projection is D3DX
+- WIDESCREEN (2026-10-16, branch `widescreen`): RECOMP_WIDESCREEN=auto (main.c
+  default there; live.ps1 sets 0) -- main.c turns it into RECOMP_ASPECT
+  (auto = primary monitor, e.g. 32:9 on 5120x1440; 1 = 16:9; W:H) and
+  RECOMP_RES defaults to the monitor's height. Everything below scales by
+  factor = aspect / (4/3) (16:9 = 4/3, 32:9 = 8/3). The main camera's projection is D3DX
   PerspectiveFovLH 0x0024EA13, called only by the renderer's camera setup
   sub_001EAB40 with aspect 640/480; a _gen wrapper (ssx3_overrides.c)
   multiplies it by 4/3 while the app state is ingame (ssx3_WidescreenNow), so

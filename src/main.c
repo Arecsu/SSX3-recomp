@@ -727,10 +727,47 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     /*   RECOMP_RES: the Vulkan renderer's internal resolution, 1080 =
      *   1440x1080 (4:3 at full-HD height), shown directly in the window;
      *   the guest still gets 640x480. Scripted runs set 1 (live.ps1). */
-    if (!getenv("RECOMP_RES"))           _putenv_s("RECOMP_RES", "1080");
+    if (!getenv("RECOMP_RES")) {
+        /* The primary monitor's height (1080, 1440, 2160...), so fullscreen
+         * is sharp; 1080 if unknown. */
+        int cy = 0;
+        char buf[16];
+#ifdef _WIN32
+        cy = GetSystemMetrics(SM_CYSCREEN);
+#endif
+        snprintf(buf, sizeof buf, "%d", cy >= 480 ? cy : 1080);
+        _putenv_s("RECOMP_RES", buf);
+    }
     /*   RECOMP_WIDESCREEN: 16:9 in game (wider camera, 1920x1080 at
      *   RECOMP_RES=1080), menus pillarboxed 4:3. =0 for the original 4:3. */
-    if (!getenv("RECOMP_WIDESCREEN"))    _putenv_s("RECOMP_WIDESCREEN", "1");
+    if (!getenv("RECOMP_WIDESCREEN"))    _putenv_s("RECOMP_WIDESCREEN", "auto");
+    {
+        /* RECOMP_WIDESCREEN -> RECOMP_ASPECT (width / height), which the
+         * camera wrapper, the renderer and the window read: "auto" = the
+         * primary monitor's shape (32:9 on a 5120x1440 screen), "1" =
+         * 16:9, "W:H" = that, "0" = none (4:3). Narrower than 4:3: none. */
+        const char *ws = getenv("RECOMP_WIDESCREEN");
+        double a = 0;
+        if (ws && !strcmp(ws, "auto")) {
+#ifdef _WIN32
+            int cx = GetSystemMetrics(SM_CXSCREEN), cy = GetSystemMetrics(SM_CYSCREEN);
+            a = cy > 0 ? (double)cx / cy : 0;
+#endif
+        } else if (ws && strchr(ws, ':')) {
+            double w = atof(ws), h = atof(strchr(ws, ':') + 1);
+            a = h > 0 ? w / h : 0;
+        } else if (ws && *ws && *ws != '0') {
+            a = 16.0 / 9.0;
+        }
+        if (a > 4.0 / 3.0 + 0.01 && a < 8.0) {
+            char buf[32];
+            snprintf(buf, sizeof buf, "%.4f", a);
+            _putenv_s("RECOMP_ASPECT", buf);
+            fprintf(stderr, "[BOOT] widescreen: aspect %.4f (%s)\n", a, ws);
+        } else {
+            _putenv_s("RECOMP_ASPECT", "");
+        }
+    }
 #ifdef _WIN32
     /* RECOMP_USB_PADS: as many emulated pads as XInput controllers are
      * plugged in at start (1..4), so a second controller makes Multi Play

@@ -142,12 +142,18 @@ int ssx3_widescreen = -1;
 /* Widescreen applies in game only (races, free-roam: app state vtable
  * 00299D7C). The frontend's art, loading screens and movies are designed
  * for 4:3: they keep the 4:3 camera and are shown pillarboxed. */
+static float s_ws_factor = 1.0f;     /* target aspect / (4/3) */
+
 int ssx3_WidescreenNow(void)
 {
     uint32_t app, cur;
     if (ssx3_widescreen < 0) {
-        const char *e = getenv("RECOMP_WIDESCREEN");
-        ssx3_widescreen = e && *e && *e != '0';
+        /* RECOMP_ASPECT (main.c resolves RECOMP_WIDESCREEN into it). */
+        const char *e = getenv("RECOMP_ASPECT");
+        double a = e ? atof(e) : 0;
+        ssx3_widescreen = a > 4.0 / 3.0 + 0.01;
+        if (ssx3_widescreen)
+            s_ws_factor = (float)(a * 3.0 / 4.0);
     }
     if (!ssx3_widescreen)
         return 0;
@@ -160,15 +166,11 @@ int ssx3_WidescreenNow(void)
 
 void sub_0024EA13(void)
 {
-    if (ssx3_widescreen < 0) {
-        const char *e = getenv("RECOMP_WIDESCREEN");
-        ssx3_widescreen = e && *e && *e != '0';
-    }
     if (ssx3_WidescreenNow()) {
         uint32_t bits = MEM32(g_esp + 12);
         float aspect;
         memcpy(&aspect, &bits, 4);
-        aspect *= 4.0f / 3.0f;
+        aspect *= s_ws_factor;
         memcpy(&bits, &aspect, 4);
         MEM32(g_esp + 12) = bits;
     }
