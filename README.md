@@ -174,6 +174,14 @@ Arts. The repository holds only original code, tooling and notes: no game
 code, data or assets. The build is generated from a copy of the game you
 own, and the screenshots show this project running.
 
+## License
+
+GPL-2.0-or-later (see [LICENSE](LICENSE)), copyright Koen Hendriks and
+Corné Dorrestijn. One exception: `patches/xboxrecomp-local.patch` changes
+the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit and is
+offered under the toolkit's own licenses (MIT, and LGPL-2.1 for its APU
+files), so the fixes can go upstream.
+
 ## More
 
 - [docs/ROADMAP.md](docs/ROADMAP.md): the plan and tracker (phases, gates,
