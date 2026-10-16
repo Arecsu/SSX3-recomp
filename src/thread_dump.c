@@ -137,6 +137,14 @@ void ssx3_PeekEveryStart(void)
     if (ms && pthread_create(&t, NULL, peek_thread, (void *)(uintptr_t)ms) == 0)
         pthread_detach(t);
 }
+
+uint32_t g_ssx3_main_tid;   /* DWORD */
+
+/* Another thread's native stack needs the Windows debug APIs. */
+void ssx3_StackOfThread(unsigned long tid, const char *why)
+{
+    (void)tid; (void)why;
+}
 #else
 #include <windows.h>
 #include <tlhelp32.h>
