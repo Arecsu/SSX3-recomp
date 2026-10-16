@@ -12,6 +12,10 @@ cmake_minimum_required(VERSION 3.20)
 
 project(ssx3_recomp C)
 
+# Static C runtime: the release runs without the Visual C++ Redistributable
+# (a missing VCRUNTIME140.dll would stop launcher.exe before it opens).
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
@@ -130,6 +134,15 @@ if(MSVC)
     # optimization inside such huge functions only: that file now compiles in
     # ~70 s, everything else is optimized as before.
     target_compile_options(${PROJECT_NAME} PRIVATE /d2ReducedOptimizeHugeFunctions)
+endif()
+
+# ── launcher.exe ─────────────────────────────────────────────────
+# Settings GUI that starts the game (src/launcher/launcher.c): game folder
+# picker with a check of default.xbe, display options, controllers.
+if(WIN32)
+    add_executable(ssx3_launcher WIN32 src/launcher/launcher.c)
+    set_target_properties(ssx3_launcher PROPERTIES OUTPUT_NAME launcher)
+    target_link_libraries(ssx3_launcher PRIVATE comctl32 ole32 shell32 xinput)
 endif()
 
 # ── Game-specific additions ─────────────────────────────────────

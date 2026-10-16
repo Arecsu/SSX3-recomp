@@ -5886,7 +5886,7 @@ index 0000000..165eab0
 +    return s_lut_serial;
 +}
 diff --git a/src/video/fb_present.c b/src/video/fb_present.c
-index 08bae4b..dc7c22c 100644
+index 08bae4b..1b0e0d8 100644
 --- a/src/video/fb_present.c
 +++ b/src/video/fb_present.c
 @@ -15,12 +15,15 @@
@@ -6405,7 +6405,7 @@ index 08bae4b..dc7c22c 100644
  static DWORD WINAPI fb_thread(LPVOID unused)
  {
      HWND hwnd;
-@@ -274,13 +683,44 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -274,18 +683,56 @@ static DWORD WINAPI fb_thread(LPVOID unused)
          wc.lpszClassName = "XboxRecompFramebuffer";
          RegisterClassA(&wc);
      }
@@ -6457,7 +6457,19 @@ index 08bae4b..dc7c22c 100644
      if (!hwnd) {
          InterlockedExchange(&s_fb_running, 0);
          return 0;
-@@ -299,6 +739,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+     }
+     hdc = GetDC(hwnd);
++    {
++        /* RECOMP_FULLSCREEN=1: start in borderless fullscreen (F11 /
++         * Alt+Enter still toggle) -- the launcher's "Fullscreen" box. */
++        const char *fs = getenv("RECOMP_FULLSCREEN");
++        if (fs && *fs && *fs != '0')
++            fb_toggle_fullscreen(hwnd);
++    }
+ 
+     memset(&bi, 0, sizeof(bi));
+     bi.bmiHeader.biSize        = sizeof(bi.bmiHeader);
+@@ -299,6 +746,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
  
      fprintf(stderr, "  [FBWIN] framebuffer window open (%ux%u)\n",
              s_fb_width, s_fb_height);
@@ -6468,7 +6480,7 @@ index 08bae4b..dc7c22c 100644
  
      while (InterlockedCompareExchange(&s_fb_running, 1, 1)) {
          MSG msg;
-@@ -306,7 +750,40 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -306,7 +757,40 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              TranslateMessage(&msg);
              DispatchMessageA(&msg);
          }
@@ -6510,7 +6522,7 @@ index 08bae4b..dc7c22c 100644
              /* A finished frame, published by the flip. Copied into s_rgb so
               * the dump path and GDI see one consistent image even if the
               * next flip lands mid-blit. */
-@@ -314,19 +791,28 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -314,19 +798,28 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              if (s_present[idx])
                  memcpy(s_rgb, s_present[idx],
                         (size_t)s_fb_width * s_fb_height * 4);
@@ -6545,7 +6557,7 @@ index 08bae4b..dc7c22c 100644
          {
              /* One dump a few seconds in, so the title has had time to render
               * something rather than catching the first blank frame.
-@@ -357,6 +843,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -357,6 +850,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              if (now - t0 >= 1000) {
                  LONG f = s_flips;
                  wchar_t tb[128];
@@ -6556,7 +6568,7 @@ index 08bae4b..dc7c22c 100644
                  _snwprintf(tb, 127, L"%ls | FPS: %.1f | draws: %ld", s_title,
                             t0 ? (f - f0) * 1000.0 / (now - t0) : 0.0,
                             (long)s_frame_draws);
-@@ -365,9 +855,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -365,9 +862,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
                  t0 = now; f0 = f;
              }
          }
@@ -6570,7 +6582,7 @@ index 08bae4b..dc7c22c 100644
      ReleaseDC(hwnd, hdc);
      DestroyWindow(hwnd);
      free(s_rgb);
-@@ -390,11 +883,4 @@ void xbox_FramebufferWindowStart(void)
+@@ -390,11 +890,4 @@ void xbox_FramebufferWindowStart(void)
          InterlockedExchange(&s_fb_running, 0);
  }
  

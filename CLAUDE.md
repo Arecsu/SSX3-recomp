@@ -944,6 +944,17 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   RECOMP_GPU_VSH=0 + RECOMP_VKR_TRACE_BRIEF=<ms after the briefing> +
   RECOMP_VKR_TRACE_EVERY (per-draw boxes with depth range), RECOMP_VKR_CLEARLOG=1,
   work\probe\trails.ps1 (race start, N short brakes, shots).
+- LAUNCHER (2026-10-16): build\launcher.exe (src/launcher/launcher.c,
+  plain Win32, CMake target ssx3_launcher) -- game folder picker that reads
+  default.xbe's certificate (title id 4541003C = SSX 3 PAL, title name) and
+  checks data\, resolution / aspect / fullscreen (toolkit RECOMP_FULLSCREEN,
+  new) / CRT / FPS counter / skip intro / debug menu, XInput controllers
+  (type, battery; refreshed 1/s), Play = launcher.ini + RECOMP_* env +
+  CreateProcess(ssx3_recomp.exe, cwd = its folder) and exit. Static CRT
+  (CMAKE_MSVC_RUNTIME_LIBRARY MultiThreaded): no VC++ redistributable needed.
+  tools\package.ps1 -> dist\SSX3-recomp(.zip): both exes, LICENSE, keys
+  example, docs/PLAYER-README.txt. Probes: work\probe\launcher_shot.ps1
+  (PrintWindow capture, -Play posts the Play button), launcher_play.ps1.
 - XEMU REFERENCE (2026-10-15): `tools\xemu.ps1` (skill: .claude/skills/xemu)
   boots a separate, muted xemu instance with the ISO (own config + HDD copy
   in work\xemu\, QMP on 127.0.0.1:4455), presses pad buttons by posting key

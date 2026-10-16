@@ -64,14 +64,18 @@ Other new things:
 
 ## Play
 
-On Windows, after building:
+On Windows, after building, start **`build\launcher.exe`**: browse to the
+folder of your SSX 3 rip (it checks that `default.xbe` is SSX 3 PAL), pick
+resolution, aspect ratio, fullscreen, CRT shader, FPS counter, intro
+movies and the debug quick-start menu, see which controllers are
+connected, and press Play. The choices are kept in `launcher.ini`.
+`tools\package.ps1` builds a release folder and zip (`launcher.exe`,
+`ssx3_recomp.exe`, a player README; no game files) for running it without
+a build environment: unzip, run `launcher.exe`, play.
 
-```
-tools\play.bat
-```
-
-No settings are needed. The defaults follow your monitor. The optional
-settings are environment variables:
+From a console, `tools\play.bat` does the same with the defaults, which
+follow your monitor. The launcher's choices are these environment
+variables:
 
 | Setting | Default | |
 |---|---|---|
@@ -80,6 +84,10 @@ settings are environment variables:
 | `RECOMP_SKIP_INTRO` | `1` | `0` plays the EA/THX/intro movies |
 | `RECOMP_GPU` | Vulkan | `sw` = the software rasteriser (reference/fallback) |
 | `RECOMP_PRESENT_FILTER` | linear | `point` for sharp pixels |
+| `RECOMP_FULLSCREEN` | `0` | `1` = start in fullscreen (F11 toggles) |
+| `RECOMP_CRT` | `0` | `1` = CRT TV shader (needs a resolution above 480); tune with `RECOMP_CRT_PARAMS` |
+| `RECOMP_DEBUG_MENU` | `0` | `1` = EA's quick-start menu (Start on the title screen) |
+| `RECOMP_GAME_DIR` | `game` | the folder with `default.xbe` and `data\` |
 | `RECOMP_FPS_OVERLAY` | `0` | `1` = start with the FPS counter on (F3 toggles it): game FPS, frames shown, slowest frame |
 
 **Keyboard.** The game window must have focus. Remap the keys by copying
