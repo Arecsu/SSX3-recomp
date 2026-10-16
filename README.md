@@ -104,7 +104,7 @@ the Vulkan SDK (`winget install KhronosGroup.VulkanSDK`), git and
 Python 3.9+.
 
 ```powershell
-git clone <this repo> ssx3-recomp; cd ssx3-recomp
+git clone https://github.com/koenhendriks/SSX3-recomp.git ssx3-recomp; cd ssx3-recomp
 # put your rip in game\ : game\default.xbe and game\data\
 powershell -ExecutionPolicy Bypass -File scripts\setup.ps1   # toolkit (pinned + patched) in ..\xboxrecomp, Python venv
 powershell -ExecutionPolicy Bypass -File scripts\regen.ps1   # analysis, decomp\ split, src\recomp\gen\ C lift (~7 min)
