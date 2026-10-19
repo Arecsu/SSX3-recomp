@@ -73,6 +73,9 @@ void vkr_clear_ds(VkrContext *c, int clear_depth, float depth, int clear_stencil
 VkrTex *vkr_tex_find(VkrContext *c, uint64_t key);
 VkrTex *vkr_tex_create(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
                        const uint32_t *pixels);
+/* mips: build the mip chain too (not for textures later vkr_tex_update'd). */
+VkrTex *vkr_tex_create_ex(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
+                          const uint32_t *pixels, int mips);
 int vkr_tex_update(VkrContext *c, VkrTex *t, uint64_t key, const uint32_t *pixels);
 int vkr_has_bc7(VkrContext *c);
 /* BC7 with mips (levels back to back, as in a DDS); NULL if not possible now. */

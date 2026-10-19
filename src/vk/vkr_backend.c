@@ -375,7 +375,9 @@ static void bind_textures(VkrDrawState *st)
                 else if (old && vkr_tex_update(s_vk, old, ti.hash, px))
                     tex = old;
                 else {
-                    tex = vkr_tex_create(s_vk, key, ti.width, rows, px);
+                    /* Mips for ordinary textures; a render target is
+                     * rewritten in place, a cube's faces are stacked. */
+                    tex = vkr_tex_create_ex(s_vk, key, ti.width, rows, px, !rt && !ti.cube);
                     if (tex && rt && s_nrt_tex < 16) {
                         s_rt_tex[s_nrt_tex].off = ti.offset; s_rt_tex[s_nrt_tex].w = ti.width;
                         s_rt_tex[s_nrt_tex].h = ti.height; s_rt_tex[s_nrt_tex].tex = tex;

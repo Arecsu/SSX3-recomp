@@ -19,7 +19,10 @@ step in progress; the next session starts at the first unticked box.
 3. Do it. Functional checks: one single-instance scripted run first
    (`tools\live.ps1`, `tools\burst.ps1`, `tools\bench.ps1`; muted, ignores the
    real controllers). Screenshots via `RECOMP_SNAP_PRESENTED=1`, never of the
-   desktop. Parallel batches only to measure failure rates.
+   desktop. Parallel batches only to measure failure rates. Keep testing
+   lean (user, 2026-10-19): at most ~5 runs to verify a step, at least one
+   on each peak when the change can differ per course; don't burn time on
+   more.
 4. If the user's game is running, `build\ssx3_recomp.exe` is locked: rename it
    aside (`build\ssx3_recomp.running-old*.exe`), never end their process.
 5. Commit (author Koen Hendriks <info@koenhendriks.nl>, no Claude trailers),
@@ -42,14 +45,14 @@ trilinear filtering the snow (and the HD textures) blurs a few metres ahead.
       device features), `RECOMP_ANISO` (default 16, `0`/`1` = off, capped at
       `maxSamplerAnisotropy`) on every linear-filtered sampler in
       `get_sampler`; log the value once.
-- [ ] 1.1b Mip chains for the game's own textures: the backend decodes only
+- [x] 1.1b Mip chains for the game's own textures: the backend decodes only
       the base level, so distant snow has nothing to filter down to (it
       shimmers, and anisotropic filtering has less to work with). Build the
       chain on the GPU at upload (vkCmdBlitImage level by level, linear) for
       textures that are sampled with a linear filter; not for render
       targets updated in place (or regenerate on update). `RECOMP_TEX_MIPS`
       (default on).
-- [ ] 1.2 A/B: Snow Jam race at 5120x1440 (32:9), `RECOMP_ANISO=0` vs 16:
+- [x] 1.2 A/B: Snow Jam race at 5120x1440 (32:9), `RECOMP_ANISO=0` vs 16:
       screenshots (slope ahead of the rider, crop at full resolution) and
       `RECOMP_VKR_GPUPROF` GPU averages; FPS must hold 60.
 - [ ] 1.3 Launcher: "Texture filtering" dropdown (Trilinear, 4x, 8x, 16x
@@ -59,6 +62,13 @@ trilinear filtering the snow (and the HD textures) blurs a few metres ahead.
 Notes:
 - 1.1: `c->aniso` in vkr.c (device feature + `get_sampler`), logs
   `[VKR] anisotropic filtering on (16x)`; RTX 4080 SUPER max is 16.
+- 1.1b: `vkr_tex_create_ex(..., mips)` blits the chain at upload; the
+  backend asks for it except for render targets (updated in place) and
+  cubes (stacked faces). `RECOMP_TEX_MIPS=0` off. Texture memory +1/3.
+- 1.2 (5120x1440, Snow Jam): GPU 14.2 ms avg with both off, 12.1 ms with
+  both on (small mips are cheaper to sample); 60 FPS on Peaks 1-3, no
+  crashes. Distant snow ripples stay smooth instead of breaking into noise
+  (shots\af_off vs af_on on the Windows copy).
 
 ## 2. Draw distance and pop-in
 
@@ -197,3 +207,4 @@ Notes:
 
 - 2026-10-19 — Plan written (items 1-7, steps, execution order).
 - 2026-10-19 — 1.1 anisotropic filtering: RECOMP_ANISO (default 16x) on all linear samplers; Snow Jam boots to the race. Added step 1.1b (mip chains for the game's own textures: only the base level is uploaded today).
+- 2026-10-19 — 1.1b mip chains for the game's textures (RECOMP_TEX_MIPS); 1.2 A/B: smoother distant snow, GPU 14.2 -> 12.1 ms, 60 FPS on all peaks (4 runs).

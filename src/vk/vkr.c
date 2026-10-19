@@ -109,6 +109,7 @@ struct VkrContext {
     uint64_t tex_bytes;
     int bc7;                        /* BC7 sampling: -1 not asked yet */
     float aniso;                    /* RECOMP_ANISO: max anisotropy, 0 = off */
+    int tex_mips;                   /* RECOMP_TEX_MIPS: -1 not read yet */
     /* Lookup by key: open addressing over indices into texs (-1 empty),
      * a power of two at least twice ntexs. The linear search it replaces
      * scanned every texture ever made, for every stage of every draw --
@@ -660,6 +661,7 @@ VkrContext *vkr_create(void)
 
     if (!c) return NULL;
     c->bc7 = -1;
+    c->tex_mips = -1;
     app.pApplicationName = "ssx3"; app.apiVersion = VK_API_VERSION_1_4;
     ii.pApplicationInfo = &app;
     if (vkCreateInstance(&ii, NULL, &c->inst) != VK_SUCCESS) goto fail;
@@ -1357,7 +1359,19 @@ int vkr_tex_update(VkrContext *c, VkrTex *t, uint64_t key, const uint32_t *pixel
 VkrTex *vkr_tex_create(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
                        const uint32_t *pixels)
 {
+    return vkr_tex_create_ex(c, key, w, h, pixels, 0);
+}
+
+/* mips: also build the mip chain on the GPU (linear blits, level by level).
+ * The backend decodes only a texture's base level, and without smaller
+ * levels distant surfaces shimmer and anisotropic filtering has nothing to
+ * blend. Not for textures later rewritten with vkr_tex_update. Off with
+ * RECOMP_TEX_MIPS=0. */
+VkrTex *vkr_tex_create_ex(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
+                          const uint32_t *pixels, int mips)
+{
     VkrTex *t = (VkrTex *)calloc(1, sizeof *t);
+    uint32_t levels = 1, l;
     VkImageCreateInfo ii = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     VkMemoryRequirements mr;
     VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
@@ -1367,11 +1381,19 @@ VkrTex *vkr_tex_create(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
     int m;
 
     if (!t || !w || !h || off + bytes > VKR_BUF_BYTES) { free(t); return NULL; }
+    if (c->tex_mips < 0) {
+        const char *e = getenv("RECOMP_TEX_MIPS");
+        c->tex_mips = !(e && *e == '0');
+    }
+    if (mips && c->tex_mips)
+        for (l = w > h ? w : h; l > 1; l >>= 1)
+            levels++;
     ii.imageType = VK_IMAGE_TYPE_2D; ii.format = VK_FORMAT_B8G8R8A8_UNORM;
     ii.extent.width = w; ii.extent.height = h; ii.extent.depth = 1;
-    ii.mipLevels = 1; ii.arrayLayers = 1; ii.samples = VK_SAMPLE_COUNT_1_BIT;
+    ii.mipLevels = levels; ii.arrayLayers = 1; ii.samples = VK_SAMPLE_COUNT_1_BIT;
     ii.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ii.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ii.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+             | (levels > 1 ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0);
     ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (vkCreateImage(c->dev, &ii, NULL, &t->img) != VK_SUCCESS) { free(t); return NULL; }
     vkGetImageMemoryRequirements(c->dev, t->img, &mr);
@@ -1383,7 +1405,7 @@ VkrTex *vkr_tex_create(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
     vkBindImageMemory(c->dev, t->img, t->mem, 0);
     vi.image = t->img; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = ii.format;
     vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    vi.subresourceRange.levelCount = 1; vi.subresourceRange.layerCount = 1;
+    vi.subresourceRange.levelCount = levels; vi.subresourceRange.layerCount = 1;
     vkCreateImageView(c->dev, &vi, NULL, &t->view);
     t->key = key; t->w = w; t->h = h;
 
@@ -1391,21 +1413,46 @@ VkrTex *vkr_tex_create(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
     end_pass(c);                         /* copies are not allowed inside a pass */
     memcpy(c->buf_map + off, pixels, bytes);
     c->buf_used = off + bytes;
-    barrier(c, t->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    barrier_mips(c, t->img, 0, levels, VK_IMAGE_LAYOUT_UNDEFINED,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     cp.bufferOffset = off;
     cp.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     cp.imageSubresource.layerCount = 1;
     cp.imageExtent.width = w; cp.imageExtent.height = h; cp.imageExtent.depth = 1;
     vkCmdCopyBufferToImage(c->cmd, c->buf, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
-    barrier(c, t->img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    {
+        int32_t mw = (int32_t)w, mh = (int32_t)h;
+        for (l = 1; l < levels; l++) {
+            VkImageBlit bl = {0};
+            barrier_mips(c, t->img, l - 1, 1,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+            bl.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; bl.srcSubresource.layerCount = 1;
+            bl.srcSubresource.mipLevel = l - 1;
+            bl.dstSubresource = bl.srcSubresource; bl.dstSubresource.mipLevel = l;
+            bl.srcOffsets[1].x = mw; bl.srcOffsets[1].y = mh; bl.srcOffsets[1].z = 1;
+            mw = mw > 1 ? mw / 2 : 1; mh = mh > 1 ? mh / 2 : 1;
+            bl.dstOffsets[1].x = mw; bl.dstOffsets[1].y = mh; bl.dstOffsets[1].z = 1;
+            vkCmdBlitImage(c->cmd, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_LINEAR);
+        }
+        if (levels > 1)
+            barrier_mips(c, t->img, 0, levels - 1,
+                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    }
+    barrier_mips(c, t->img, levels - 1, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                 VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
     t->last_use = c->flip_serial;
+    if (levels > 1)
+        bytes += bytes / 3;              /* the chain: a third more */
     c->tex_bytes += bytes;
     t->bytes = bytes;
     tex_index_add(c, t);
