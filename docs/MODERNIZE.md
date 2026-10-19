@@ -82,12 +82,12 @@ fog hides the far end. Find the knobs first, then scale them.
       `sub_0024EA13` PerspectiveFovLH wrapper, `zn`/`zf` arguments) and the
       fog range the executor sees (fog mode/params per frame), per course
       (Snow Jam, Metro-City, a Peak 2 race). Record in Notes.
-- [ ] 2.2 Find the LOD / visibility distance tests: trace which code decides
+- [x] 2.2 Find the LOD / visibility distance tests: trace which code decides
       that a model instance is drawn and at which detail (renderer
       `[0x369528]` draw-list builders; look for float compares against
       distances / squared distances in the instance loop; `RECOMP_WATCH` /
       the decomp). Write down function addresses and constants in Notes.
-- [ ] 2.3 `RECOMP_DRAW_DIST` (multiplier, default to be chosen, 1 = original)
+- [x] 2.3 `RECOMP_DRAW_DIST` (multiplier, default to be chosen, 1 = original)
       applied to what 2.1/2.2 found (far plane, LOD distances; fog start/end
       only if the far end then shows the world's edge). `_gen` wrappers or a
       poke of the constants, whichever the code allows.
@@ -110,6 +110,29 @@ Notes:
   fog. So the far plane is a hard 30000 cut; next (2.2) the game's own
   per-object distance culling / LOD, which likely sits well inside it.
   Logs: logs\dd_p0e0.txt, dd_p0e1.txt, dd_p1e0.txt on the Windows copy.
+- 2.2: the camera setup is renderer vtable 0x2F7E50 slot 0x64 =
+  sub_001EAB40 (thiscall fovy, zn, zf): zf -> camera+0x7C, projection
+  (sub_0024EA13) and frustum (sub_001E8770). Every camera class constructs
+  with zf 30000 (0x46EA6000 in sub_0005E450/5E480/64440/68980/...).
+  Raising zf alone CRASHED (far x3, Peak 2): the in-game render object
+  (sub_000D3740 clears its lists) collects visible things in fixed arrays
+  with no bounds checks -- counts/arrays: +0x54 (512 x 8 B, octree cells,
+  sub_000D3540), +0x1058 (512 x 8 B, cells), +0x205C (2048: D1EA0/D1FF0/
+  D2490), +0x4060 (1024: D1EA0), +0x5068 (2048: D2540), +0x706C (512:
+  D2060), +0x7874 (128: D25F0 type 7), +0x7A7C (64: D2230), +0x7B80 (256:
+  D25F0 type 8), +0x7F84 (unused here). Peak fill at x1 (Peaks 1-3,
+  RECOMP_DRAWLIST_STATS=1): 54:98 1058:263 205C:272 4060:92 5068:179
+  706C:197 7B80:36 -- the cell lists have ~2x headroom (area grows ~d^2).
+  Fix: D2540/D25F0 re-implemented in C with the capacity checked; the other
+  producers (one entry per call, ret 8) and the octree walk D3540 (one entry
+  then recursion via D3420) skip the call when their list is full
+  ([DRAWDIST] ... list full). Far x3 on Peak 2: no crash, 60 FPS, cell
+  lists saturate at 512 (nodes skipped), 5068 reached 608.
+- 2.3: RECOMP_DRAW_DIST (multiplier, default 1) scales zf in a sub_001EAB40
+  wrapper while in game. Visible gain in race views is modest (terrain
+  hems the view in, the far mountains are backdrop). 2.4 should pick the
+  default (1.5-2 keeps the cell lists under 512) and look for skipped-cell
+  holes at x3.
 
 ## 3. HUD anchored to the screen edges (widescreen)
 
@@ -235,3 +258,4 @@ Notes:
 - 2026-10-19 — 1.3 launcher "Texture filtering" dropdown (Trilinear / 4x / 8x / 16x, default 16x), README knob. Item 1 done.
 - 2026-10-19 — Every item now ends with a launcher option step (2.5, 3.5, 4.5, 7.4, 5.4, 6.3).
 - 2026-10-19 — 2.1 measured: race far plane zf 30000 (zn 25/30, fovy 70), fog far beyond it; RECOMP_PROJ_TRACE / RECOMP_FOG_TRACE added.
+- 2026-10-20 — 2.2/2.3: far plane knob RECOMP_DRAW_DIST (camera setup sub_001EAB40); the render lists that overflowed at a longer view are bounded (C versions of D2540/D25F0, skip-when-full guards on D1EA0/D1FF0/D2490/D2060/D2230/D3540); far x3 runs without crashing.

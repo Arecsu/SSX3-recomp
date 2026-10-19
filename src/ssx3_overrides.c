@@ -180,6 +180,241 @@ int ssx3_WidescreenNow(void)
     return ssx3_InGame();
 }
 
+/*
+ * Draw distance (RECOMP_DRAW_DIST, multiplier, 1 = original). The renderer's
+ * camera setup (vtable 0x2F7E50 slot 0x64, thiscall (fovy, zn, zf)) stores
+ * zf in camera+0x7C, builds the projection (sub_0024EA13) and the frustum
+ * (sub_001E8770) from it. Every camera class passes zf = 30000 (0x46EA6000
+ * in their constructors), the hard cut at the end of the view in a race.
+ * Scaled here while in game; menus keep theirs.
+ */
+extern void sub_001EAB40_gen(void);
+
+void sub_001EAB40(void)
+{
+    static float mul = -1.0f;
+    if (mul < 0.0f) {
+        const char *e = getenv("RECOMP_DRAW_DIST");
+        mul = e && *e ? (float)atof(e) : 1.0f;
+        if (mul < 0.1f)
+            mul = 1.0f;
+    }
+    if (mul != 1.0f && ssx3_InGame()) {
+        uint32_t bits = MEM32(g_esp + 12);
+        float zf;
+        memcpy(&zf, &bits, 4);
+        zf *= mul;
+        memcpy(&bits, &zf, 4);
+        MEM32(g_esp + 12) = bits;
+    }
+    sub_001EAB40_gen();
+}
+
+/*
+ * The in-game renderer's visible-object lists (render object, e.g. via
+ * sub_000D3740): sub_000D2540 appends patches/instances to [+0x5068] /
+ * +0x506C (room for 2048), sub_000D25F0 type-7 objects to [+0x7874] /
+ * +0x7878 (128) and type-8 objects to [+0x7B80] / +0x7B84 (256) -- with no
+ * bounds check: enough for the original 30000 view, but a longer one
+ * (RECOMP_DRAW_DIST) ran past them and crashed. The same code in C, with
+ * the capacity checked: what does not fit is not drawn this frame.
+ * sub_0001E2C0 (thiscall, 2 args) is the per-object visibility test.
+ */
+extern void sub_0001E2C0(void);
+
+static int obj_hidden(uint32_t tester, uint32_t a, uint32_t b)
+{
+    PUSH32(g_esp, b);
+    PUSH32(g_esp, a);
+    g_ecx = tester;
+    PUSH32(g_esp, 0x000D262Bu);       /* a return address inside the caller */
+    sub_0001E2C0();                   /* ret 8: pops it and both arguments */
+    return (g_eax & 0xFF) != 0;
+}
+
+static void list_add(uint32_t self, uint32_t count_off, uint32_t cap, uint32_t obj, const char *what)
+{
+    uint32_t n = MEM32(self + count_off);
+    if (n < cap) {
+        MEM32(self + count_off + 4 + n * 4) = obj;
+        MEM32(self + count_off) = n + 1;
+    } else {
+        static unsigned said;
+        if (said++ < 4)
+            fprintf(stderr, "[DRAWDIST] %s list full (%u): further objects skipped this frame\n",
+                    what, cap);
+    }
+}
+
+void sub_000D2540(void)
+{
+    uint32_t self = g_ecx, list = MEM32(g_esp + 4);
+    int32_t n = (int32_t)MEM32(g_esp + 8), i;
+    for (i = 0; i < n; i++) {
+        uint32_t entry = list + (uint32_t)i * 8, obj = MEM32(MEM32(entry) + 0x24);
+        while (obj) {
+            int16_t sect = (int16_t)MEM16(obj + 0x1AE);
+            uint32_t tab = MEM32(MEM32(self + 0x50)), arg = MEM32(entry + 4);
+            if (sect >= 0 && MEM32(tab + MEM8(obj + 0x1AD) * 8 + 0x24) == 6
+                && MEM32(tab + (uint32_t)(int32_t)sect * 24 + 0x3EC) == 3
+                && (!arg || !obj_hidden(MEM32(self), obj + 0x140, arg)))
+                list_add(self, 0x5068, 2048, obj, "patch/instance");
+            obj = MEM32(obj);
+        }
+    }
+    g_esp += 12;                      /* ret 8 */
+}
+
+void sub_000D25F0(void)
+{
+    uint32_t self = g_ecx, list = MEM32(g_esp + 4);
+    int32_t n = (int32_t)MEM32(g_esp + 8), i;
+    for (i = 0; i < n; i++) {
+        uint32_t entry = list + (uint32_t)i * 8, obj = MEM32(MEM32(entry) + 0x28);
+        while (obj) {
+            uint32_t type = MEM32(obj + 8), arg = MEM32(entry + 4);
+            if (type == 7) {
+                if (!arg || !obj_hidden(MEM32(self), obj + 0x50, arg))
+                    list_add(self, 0x7874, 128, obj, "type-7");
+            } else if (type == 8) {
+                list_add(self, 0x7B80, 256, obj, "type-8");
+            }
+            obj = MEM32(obj);
+        }
+    }
+    g_esp += 12;                      /* ret 8 */
+}
+
+/*
+ * The other producers of those lists append at most one entry per call
+ * (all thiscall, this = the render object, ret 8): skipped when their list
+ * is full, so a longer view drops what does not fit instead of writing past
+ * the arrays. The octree walk sub_000D3540 (this = a visitor whose [+0]
+ * is the render object) adds one entry to +0x54 or +0x1058 (512 each)
+ * before recursing through sub_000D3420: skipping it skips that subtree.
+ * Capacities from the layout (4-byte entries unless noted).
+ */
+static int list_full(uint32_t obj, uint32_t count_off, uint32_t cap, const char *what)
+{
+    if (obj < 0x10000u || MEM32(obj + count_off) < cap)
+        return 0;
+    {
+        static unsigned said;
+        if (said++ < 8)
+            fprintf(stderr, "[DRAWDIST] %s list full (%u): skipped\n", what, cap);
+    }
+    return 1;
+}
+
+extern void sub_000D1EA0_gen(void);
+
+void sub_000D1EA0(void)
+{
+    uint32_t self = g_ecx;
+    if (list_full(self, 0x205C, 2048, "205C") || list_full(self, 0x4060, 1024, "4060")) {
+        g_esp += 12;                  /* ret 8 */
+        return;
+    }
+    sub_000D1EA0_gen();
+}
+
+extern void sub_000D1FF0_gen(void);
+
+void sub_000D1FF0(void)
+{
+    uint32_t self = g_ecx;
+    if (list_full(self, 0x205C, 2048, "205C")) {
+        g_esp += 12;                  /* ret 8 */
+        return;
+    }
+    sub_000D1FF0_gen();
+}
+
+extern void sub_000D2490_gen(void);
+
+void sub_000D2490(void)
+{
+    uint32_t self = g_ecx;
+    if (list_full(self, 0x205C, 2048, "205C")) {
+        g_esp += 12;                  /* ret 8 */
+        return;
+    }
+    sub_000D2490_gen();
+}
+
+extern void sub_000D2060_gen(void);
+
+void sub_000D2060(void)
+{
+    uint32_t self = g_ecx;
+    if (list_full(self, 0x706C, 512, "706C")) {
+        g_esp += 12;                  /* ret 8 */
+        return;
+    }
+    sub_000D2060_gen();
+}
+
+extern void sub_000D2230_gen(void);
+
+void sub_000D2230(void)
+{
+    uint32_t self = g_ecx;
+    if (list_full(self, 0x7A7C, 64, "7A7C")) {
+        g_esp += 12;                  /* ret 8 */
+        return;
+    }
+    sub_000D2230_gen();
+}
+
+extern void sub_000D3540_gen(void);
+
+void sub_000D3540(void)
+{
+    uint32_t self = g_ecx;
+    if (self >= 0x10000u && (list_full(MEM32(self), 0x54, 512, "54 (cells)")
+        || list_full(MEM32(self), 0x1058, 512, "1058 (cells)"))) {
+        g_esp += 12;                  /* ret 8 */
+        return;
+    }
+    sub_000D3540_gen();
+}
+
+/*
+ * RECOMP_DRAWLIST_STATS=1: the peak fill of every visible-object list of the
+ * in-game render object (sub_000D3740 clears them, then the octree walk and
+ * the list builders fill them), once a second -- how much room the original
+ * view leaves, i.e. how far RECOMP_DRAW_DIST can go. Count offsets and their
+ * capacities (entries) from the layout: +0x54 (512 x 8 B), +0x1058 (512 x
+ * 8 B), +0x205C, +0x4060, +0x5068 (2048), +0x706C (512), +0x7874 (128),
+ * +0x7A7C (64), +0x7B80 (256), +0x7F84.
+ */
+extern void sub_000D3740_gen(void);
+
+void sub_000D3740(void)
+{
+    static int on = -1;
+    static uint32_t peak[10];
+    static DWORD t0;
+    static const uint32_t off[10] = {0x54, 0x1058, 0x205C, 0x4060, 0x5068, 0x706C,
+                                     0x7874, 0x7A7C, 0x7B80, 0x7F84};
+    uint32_t self = g_ecx;
+    int k;
+    if (on < 0)
+        on = getenv("RECOMP_DRAWLIST_STATS") != NULL;
+    sub_000D3740_gen();
+    if (!on || self < 0x10000u)
+        return;
+    for (k = 0; k < 10; k++)
+        if (MEM32(self + off[k]) > peak[k])
+            peak[k] = MEM32(self + off[k]);
+    if (GetTickCount() - t0 >= 1000) {
+        fprintf(stderr, "[DRAWLIST] peak 54:%u 1058:%u 205C:%u 4060:%u 5068:%u 706C:%u 7874:%u 7A7C:%u 7B80:%u 7F84:%u\n",
+                peak[0], peak[1], peak[2], peak[3], peak[4], peak[5], peak[6], peak[7], peak[8], peak[9]);
+        memset(peak, 0, sizeof peak);
+        t0 = GetTickCount();
+    }
+}
+
 void sub_0024EA13(void)
 {
     {
