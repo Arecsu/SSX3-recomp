@@ -182,6 +182,27 @@ int ssx3_WidescreenNow(void)
 
 void sub_0024EA13(void)
 {
+    {
+        /* RECOMP_PROJ_TRACE=1: each new (fovy, aspect, zn, zf) the game asks
+         * for -- the near/far planes the draw distance work starts from. */
+        static int on = -1, n;
+        static uint32_t last[4];
+        uint32_t a[4];
+        int k;
+        if (on < 0)
+            on = getenv("RECOMP_PROJ_TRACE") != NULL;
+        for (k = 0; k < 4; k++)
+            a[k] = MEM32(g_esp + 8 + 4 * k);
+        if (on && n < 64 && memcmp(a, last, sizeof a)) {
+            float f[4];
+            memcpy(f, a, sizeof f);
+            memcpy(last, a, sizeof a);
+            n++;
+            fprintf(stderr, "[PROJ] t=%lu fovy %.4f (%.1f deg) aspect %.4f zn %.3f zf %.1f in-game %d caller %08X\n",
+                    GetTickCount(), f[0], f[0] * 57.29578f, f[1], f[2], f[3], ssx3_InGame(),
+                    MEM32(g_esp));
+        }
+    }
     if (ssx3_WidescreenNow()) {
         uint32_t bits = MEM32(g_esp + 12);
         float aspect;

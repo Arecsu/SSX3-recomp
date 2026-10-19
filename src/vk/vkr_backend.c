@@ -282,6 +282,28 @@ static void fill_state(const Nv2aTarget *t, VkrDrawState *st)
     u->fog_color[3] = (float)(t->fog_color >> 24) / 255.0f;
     u->fog_param[0] = t->fog_param[0]; u->fog_param[1] = t->fog_param[1];
     u->fog_param[2] = (float)t->fog_mode;
+    {
+        /* RECOMP_FOG_TRACE=1: each distinct fog setting once (linear fog
+         * f = p0 + p1 * d: start where f = 1, end where f = 0). */
+        static int on = -1, n;
+        static float seen[64][3];
+        int i;
+        if (on < 0)
+            on = getenv("RECOMP_FOG_TRACE") != NULL;
+        if (on && t->fog_enable && n < 64) {
+            for (i = 0; i < n; i++)
+                if (seen[i][0] == (float)t->fog_mode && seen[i][1] == t->fog_param[0]
+                    && seen[i][2] == t->fog_param[1])
+                    break;
+            if (i == n) {
+                float p0 = t->fog_param[0], p1 = t->fog_param[1];
+                seen[n][0] = (float)t->fog_mode; seen[n][1] = p0; seen[n][2] = p1; n++;
+                fprintf(stderr, "[FOG] mode %X p0 %.6g p1 %.6g -> start %.1f end %.1f colour %08X\n",
+                        t->fog_mode, p0, p1, p1 != 0.0f ? (1.0f - p0) / p1 : 0.0f,
+                        p1 != 0.0f ? -p0 / p1 : 0.0f, t->fog_color);
+            }
+        }
+    }
     for (k = 0; k < 4; k++) {
         u->tex_scale[k][0] = u->tex_scale[k][1] = 1.0f;
         u->tex_scale[k][2] = u->tex_scale[k][3] = 0.0f;

@@ -78,7 +78,7 @@ Notes:
 Tuned for the Xbox: props and trees switch to low detail or appear late, and
 fog hides the far end. Find the knobs first, then scale them.
 
-- [ ] 2.1 Measure: log the projection's near/far planes (our
+- [x] 2.1 Measure: log the projection's near/far planes (our
       `sub_0024EA13` PerspectiveFovLH wrapper, `zn`/`zf` arguments) and the
       fog range the executor sees (fog mode/params per frame), per course
       (Snow Jam, Metro-City, a Peak 2 race). Record in Notes.
@@ -99,6 +99,17 @@ fog hides the far end. Find the knobs first, then scale them.
       `RECOMP_DRAW_DIST`; README, screenshot.
 
 Notes:
+- 2.1 (RECOMP_PROJ_TRACE=1 in our sub_0024EA13 wrapper, RECOMP_FOG_TRACE=1
+  in vkr_backend.c; Snow Jam, Metro-City, Peak 2 race): every projection
+  comes from the camera setup at 0x001EACA5. Menus: zn 25, zf 5000, fovy
+  78.8/43.8 deg. In a race: zn 25 (and 30, two passes per frame), **zf
+  30000**, fovy 70 deg; during the fly-over the game animates the aspect
+  1.33 -> 1.68+ itself (widescreen was off). Fog (linear, mode 0x801) on
+  Snow Jam: start ~235000, end ~706000 -- far beyond zf, so fog is not
+  what limits the view; Metro-City and the Peak 2 race logged no in-race
+  fog. So the far plane is a hard 30000 cut; next (2.2) the game's own
+  per-object distance culling / LOD, which likely sits well inside it.
+  Logs: logs\dd_p0e0.txt, dd_p0e1.txt, dd_p1e0.txt on the Windows copy.
 
 ## 3. HUD anchored to the screen edges (widescreen)
 
@@ -223,3 +234,4 @@ Notes:
 - 2026-10-19 — 1.1b mip chains for the game's textures (RECOMP_TEX_MIPS); 1.2 A/B: smoother distant snow, GPU 14.2 -> 12.1 ms, 60 FPS on all peaks (4 runs).
 - 2026-10-19 — 1.3 launcher "Texture filtering" dropdown (Trilinear / 4x / 8x / 16x, default 16x), README knob. Item 1 done.
 - 2026-10-19 — Every item now ends with a launcher option step (2.5, 3.5, 4.5, 7.4, 5.4, 6.3).
+- 2026-10-19 — 2.1 measured: race far plane zf 30000 (zn 25/30, fovy 70), fog far beyond it; RECOMP_PROJ_TRACE / RECOMP_FOG_TRACE added.
