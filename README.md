@@ -93,6 +93,7 @@ variables:
 | `RECOMP_CRT` | `0` | `1` = CRT TV shader (needs a resolution above 480); tune with `RECOMP_CRT_PARAMS` |
 | `RECOMP_DEBUG_MENU` | `0` | `1` = EA's quick-start menu (Start on the title screen) |
 | `RECOMP_GAME_DIR` | `game` | the folder with `default.xbe` and `data\` |
+| `RECOMP_MSAA` | `4` | anti-aliasing: `0` off, `2`, `4`, `8` samples (as far as the GPU goes); cut-out edges (trees, fences) are smoothed too |
 | `RECOMP_HDTEX` | `hd-textures` | the HD texture pack (Bl4ckH4nd's, see below) and its `ssx3_map.txt`; `0` = off |
 | `RECOMP_FPS30` | `0` | `1` = keep the game's own 30 FPS stretches (split screen, Metro-City's tunnel); by default they render at 60 |
 | `RECOMP_FPS_OVERLAY` | `0` | `1` = start with the FPS counter on (F3 toggles it): game FPS, frames shown, slowest frame |

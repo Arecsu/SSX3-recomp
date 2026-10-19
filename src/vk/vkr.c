@@ -135,9 +135,16 @@ struct VkrContext {
     uint32_t w, h;
     float zmax;
     VkRect2D sc;                    /* current scissor (the NV2A clip rect) */
-    VkImage color, depth;
+    VkImage color, depth;           /* what draws go to (multisampled with MSAA) */
     VkDeviceMemory color_mem, depth_mem;
     VkImageView color_view, depth_view;
+    /* RECOMP_MSAA: samples per pixel of color/depth (1 = off); the frame is
+     * resolved into `resolved` at the flip, and everything that reads the
+     * frame (window, guest copy, CRT) reads that. */
+    VkSampleCountFlagBits samples;
+    VkImage resolved;
+    VkDeviceMemory resolved_mem;
+    VkImageView resolved_view;
     VkFormat depth_fmt;             /* D32_SFLOAT_S8_UINT (or D24S8; D32 = no stencil) */
     int has_stencil;
     int recording, in_pass;
@@ -260,9 +267,10 @@ static int make_buffer_ex(VkrContext *c, VkDeviceSize size, VkBufferUsageFlags u
     return 1;
 }
 
-static int make_image_ex(VkrContext *c, VkFormat fmt, VkImageUsageFlags usage,
+static int make_image_ms(VkrContext *c, VkFormat fmt, VkImageUsageFlags usage,
                          VkImageAspectFlags aspect, VkImage *img, VkDeviceMemory *mem,
-                         VkImageView *view, uint32_t width, uint32_t height, uint32_t levels)
+                         VkImageView *view, uint32_t width, uint32_t height, uint32_t levels,
+                         VkSampleCountFlagBits samples)
 {
     VkImageCreateInfo ii = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     VkMemoryRequirements mr;
@@ -271,7 +279,7 @@ static int make_image_ex(VkrContext *c, VkFormat fmt, VkImageUsageFlags usage,
     int t;
     ii.imageType = VK_IMAGE_TYPE_2D; ii.format = fmt;
     ii.extent.width = width; ii.extent.height = height; ii.extent.depth = 1;
-    ii.mipLevels = levels; ii.arrayLayers = 1; ii.samples = VK_SAMPLE_COUNT_1_BIT;
+    ii.mipLevels = levels; ii.arrayLayers = 1; ii.samples = samples;
     ii.tiling = VK_IMAGE_TILING_OPTIMAL; ii.usage = usage;
     ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     CK(vkCreateImage(c->dev, &ii, NULL, img));
@@ -286,6 +294,14 @@ static int make_image_ex(VkrContext *c, VkFormat fmt, VkImageUsageFlags usage,
     vi.subresourceRange.levelCount = levels; vi.subresourceRange.layerCount = 1;
     CK(vkCreateImageView(c->dev, &vi, NULL, view));
     return 1;
+}
+
+static int make_image_ex(VkrContext *c, VkFormat fmt, VkImageUsageFlags usage,
+                         VkImageAspectFlags aspect, VkImage *img, VkDeviceMemory *mem,
+                         VkImageView *view, uint32_t width, uint32_t height, uint32_t levels)
+{
+    return make_image_ms(c, fmt, usage, aspect, img, mem, view, width, height, levels,
+                         VK_SAMPLE_COUNT_1_BIT);
 }
 
 static int make_image(VkrContext *c, VkFormat fmt, VkImageUsageFlags usage,
@@ -551,7 +567,7 @@ static VkPipeline get_pipeline(VkrContext *c, const VkrDrawState *st, int gpu_vs
     rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
     rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rs.lineWidth = c->wide_lines ? (c->scale < c->max_line ? c->scale : c->max_line) : 1.0f;
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    ms.rasterizationSamples = c->samples;
     ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     cba.colorWriteMask = st->write_mask & 0xF;
     if (st->blend_enable) {
@@ -760,6 +776,25 @@ VkrContext *vkr_create(void)
         if (!c->has_stencil)
             fprintf(stderr, "[VKR] no depth-stencil format: stencil ignored\n");
     }
+    {
+        /* RECOMP_MSAA=0/2/4/8 (default 4): multisampled edges, at most what
+         * the GPU offers for colour, depth and stencil together. */
+        VkPhysicalDeviceProperties pp;
+        const char *e = getenv("RECOMP_MSAA");
+        int want = e && *e ? atoi(e) : 4;
+        VkSampleCountFlags ok;
+        vkGetPhysicalDeviceProperties(c->phys, &pp);
+        ok = pp.limits.framebufferColorSampleCounts & pp.limits.framebufferDepthSampleCounts
+           & (c->has_stencil ? pp.limits.framebufferStencilSampleCounts : ~0u);
+        c->samples = VK_SAMPLE_COUNT_1_BIT;
+        for (int n = 8; n > 1; n >>= 1)
+            if (want >= n && (ok & (VkSampleCountFlags)n)) {
+                c->samples = (VkSampleCountFlagBits)n;
+                break;
+            }
+        fprintf(stderr, "[VKR] MSAA %ux%s\n", (unsigned)c->samples,
+                c->samples == VK_SAMPLE_COUNT_1_BIT ? " (off)" : "");
+    }
     pthread_mutex_init(&c->lock, NULL);
     pthread_cond_init(&c->freed, NULL);
     use_frame(c, 0);
@@ -809,6 +844,12 @@ static void free_target(VkrContext *c)
         vkDestroyImage(c->dev, c->crt_out, NULL);
         vkFreeMemory(c->dev, c->crt_out_mem, NULL);
         c->crt_in = c->crt_out = VK_NULL_HANDLE;
+    }
+    if (c->resolved) {
+        vkDestroyImageView(c->dev, c->resolved_view, NULL);
+        vkDestroyImage(c->dev, c->resolved, NULL);
+        vkFreeMemory(c->dev, c->resolved_mem, NULL);
+        c->resolved = VK_NULL_HANDLE;
     }
     c->color = c->depth = VK_NULL_HANDLE;
 }
@@ -958,14 +999,20 @@ int vkr_set_target(VkrContext *c, uint32_t w, uint32_t h, float zmax)
     c->sh = (uint32_t)((float)h * c->scale + 0.5f);
     c->sc.offset.x = c->sc.offset.y = 0; c->sc.extent.width = c->sw; c->sc.extent.height = c->sh;
     c->gsc[0] = c->gsc[1] = 0; c->gsc[2] = w; c->gsc[3] = h;
-    if (!make_image(c, VK_FORMAT_B8G8R8A8_UNORM,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                    VK_IMAGE_ASPECT_COLOR_BIT, &c->color, &c->color_mem, &c->color_view,
-                    c->sw, c->sh))
+    if (!make_image_ms(c, VK_FORMAT_B8G8R8A8_UNORM,
+                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT, &c->color, &c->color_mem, &c->color_view,
+                       c->sw, c->sh, 1, c->samples))
         return 0;
-    if (!make_image(c, c->depth_fmt, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                    ds_aspect(c), &c->depth, &c->depth_mem, &c->depth_view,
-                    c->sw, c->sh))
+    if (!make_image_ms(c, c->depth_fmt, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                       ds_aspect(c), &c->depth, &c->depth_mem, &c->depth_view,
+                       c->sw, c->sh, 1, c->samples))
+        return 0;
+    if (c->samples != VK_SAMPLE_COUNT_1_BIT
+        && !make_image(c, VK_FORMAT_B8G8R8A8_UNORM,
+                       VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT, &c->resolved, &c->resolved_mem,
+                       &c->resolved_view, c->sw, c->sh))
         return 0;
     if ((c->scale != 1.0f || c->scale_x != 1.0f)
         && !make_image(c, VK_FORMAT_B8G8R8A8_UNORM,
@@ -1520,7 +1567,9 @@ int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
         float ws = st->w_buffer ? 1.0f / c->zmax : 0.0f;
         memcpy(&pcf[2], &ws, 4);
     }
-    pcf[3] = st->topology == VKR_TOPO_POINTS && st->point_sprite;
+    /* bit 0: point sprite; bits 8+: MSAA samples (alpha-test coverage) */
+    pcf[3] = (uint32_t)(st->topology == VKR_TOPO_POINTS && st->point_sprite)
+           | (uint32_t)c->samples << 8;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 64, 16, pcf);
 
     for (k = 0; k < 4; k++) {
@@ -1636,7 +1685,9 @@ int vkr_draw_vsh(VkrContext *c, const float *in, uint32_t nverts, uint32_t nin,
         float ws = st->w_buffer ? 1.0f / c->zmax : 0.0f;
         memcpy(&pcf[2], &ws, 4);
     }
-    pcf[3] = st->topology == VKR_TOPO_POINTS && st->point_sprite;
+    /* bit 0: point sprite; bits 8+: MSAA samples (alpha-test coverage) */
+    pcf[3] = (uint32_t)(st->topology == VKR_TOPO_POINTS && st->point_sprite)
+           | (uint32_t)c->samples << 8;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 64, 16, pcf);
 
     for (k = 0; k < 4; k++) {
@@ -1700,7 +1751,7 @@ uint32_t vkr_height(const VkrContext *c) { return c->h; }
 
 /* At a flip, c->color in TRANSFER_SRC: crt_in = c->color with mips, then
  * crt.frag into crt_out, left in TRANSFER_SRC for the read-back. */
-static void crt_pass(VkrContext *c)
+static void crt_pass(VkrContext *c, VkImage src)
 {
     VkImageCopy ic = {0};
     VkRenderingAttachmentInfo ca = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -1721,7 +1772,7 @@ static void crt_pass(VkrContext *c)
     ic.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; ic.srcSubresource.layerCount = 1;
     ic.dstSubresource = ic.srcSubresource;
     ic.extent.width = c->sw; ic.extent.height = c->sh; ic.extent.depth = 1;
-    vkCmdCopyImage(c->cmd, c->color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    vkCmdCopyImage(c->cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                    c->crt_in, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
     for (i = 1; i < c->crt_levels; i++) {
         VkImageBlit bl = {0};
@@ -1796,7 +1847,9 @@ int vkr_flip_submit(VkrContext *c)
     VkBufferImageCopy cp = {0};
     VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
     int slot = c->cur;
+    VkImage frame;                       /* the finished, single-sample image */
     if (!begin_cmd(c)) return -1;
+    frame = c->resolved ? c->resolved : c->color;
     if (c->squeeze_all > 0.5f) {
         /* Pillarboxed frame: the bars are black (nothing draws there). */
         VkClearAttachment ca = {VK_IMAGE_ASPECT_COLOR_BIT, 0, {{{0, 0, 0, 1}}}};
@@ -1813,12 +1866,30 @@ int vkr_flip_submit(VkrContext *c)
             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
             VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    if (c->resolved) {
+        /* MSAA: the samples averaged once per frame, here; draws keep
+         * accumulating into the multisampled target until then. */
+        VkImageResolve rs = {0};
+        barrier(c, c->resolved, VK_IMAGE_ASPECT_COLOR_BIT,
+                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        rs.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; rs.srcSubresource.layerCount = 1;
+        rs.dstSubresource = rs.srcSubresource;
+        rs.extent.width = c->sw; rs.extent.height = c->sh; rs.extent.depth = 1;
+        vkCmdResolveImage(c->cmd, c->color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                          c->resolved, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &rs);
+        barrier(c, c->resolved, VK_IMAGE_ASPECT_COLOR_BIT,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    }
     cp.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     cp.imageSubresource.layerCount = 1;
     cp.imageExtent.depth = 1;
     if (c->scale == 1.0f && c->scale_x == 1.0f) {
         cp.imageExtent.width = c->w; cp.imageExtent.height = c->h;
-        vkCmdCopyImageToBuffer(c->cmd, c->color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        vkCmdCopyImageToBuffer(c->cmd, frame, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                c->fr[slot].rb, 1, &cp);
     } else {
         /* The full image for the presenter, and a filtered guest-size copy
@@ -1826,11 +1897,11 @@ int vkr_flip_submit(VkrContext *c)
         VkImageBlit bl = {0};
         cp.imageExtent.width = c->sw; cp.imageExtent.height = c->sh;
         if (c->crt_in) {
-            crt_pass(c);
+            crt_pass(c, frame);
             vkCmdCopyImageToBuffer(c->cmd, c->crt_out, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                    c->fr[slot].rbh, 1, &cp);
         } else
-            vkCmdCopyImageToBuffer(c->cmd, c->color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            vkCmdCopyImageToBuffer(c->cmd, frame, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                    c->fr[slot].rbh, 1, &cp);
         barrier(c, c->down, VK_IMAGE_ASPECT_COLOR_BIT,
                 VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -1840,7 +1911,7 @@ int vkr_flip_submit(VkrContext *c)
         bl.dstSubresource = bl.srcSubresource;
         bl.srcOffsets[1].x = (int32_t)c->sw; bl.srcOffsets[1].y = (int32_t)c->sh; bl.srcOffsets[1].z = 1;
         bl.dstOffsets[1].x = (int32_t)c->w;  bl.dstOffsets[1].y = (int32_t)c->h;  bl.dstOffsets[1].z = 1;
-        vkCmdBlitImage(c->cmd, c->color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        vkCmdBlitImage(c->cmd, frame, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                        c->down, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_LINEAR);
         barrier(c, c->down, VK_IMAGE_ASPECT_COLOR_BIT,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,

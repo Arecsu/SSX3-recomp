@@ -10,8 +10,10 @@ aspect ratio: both reduced to 32x32 RGBA, distance = mean absolute
 difference of colour (0..1, weighted by alpha) and alpha. The closest DDS
 under --max-dist is mapped. It must be a clear winner -- the second best at
 least 1.25x further, unless the two DDS files are the same image (the PS2
-dumps hold one texture under several palettes). Near-uniform dumps (all
-black, all transparent) are skipped: they match anything.
+dumps hold one texture under several palettes) -- and at most half as far
+as the dump's own flat average colour, so the match explains its detail.
+Near-uniform dumps (all black, all transparent) are skipped: they match
+anything.
 
 PS2 alpha runs 0..128 (128 = opaque) and the PCSX2 dumps keep that scale
 in many files. A DDS whose alpha never goes above 140 is compared with its
@@ -92,7 +94,11 @@ def main():
             if dist(bs, cands[i][1]) > 0.01:          # another image, not a twin
                 second = dd
                 break
-        ok = best[0] <= a.max_dist and second >= best[0] * 1.25
+        # The match must explain the image's detail: at most half as far as
+        # the dump's own flat average colour is (else mostly-black images and
+        # tile atlases "match" any dark surface).
+        flat = dist(ds, np.broadcast_to(ds.mean(axis=(0, 1)), ds.shape))
+        ok = best[0] <= a.max_dist and second >= best[0] * 1.25 and best[0] <= flat * 0.5
         rows.append((f, bn, best[0], second, ok))
         if ok:
             mapping.append((key, bn + (" a2" if ba2 else "")))

@@ -805,6 +805,28 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   Race/Freestyle event on Peaks 1-3 and logs where it asks; interrupted after
   2 events (Snow Jam: never; Metro-City: twice) -- rerun for the rest. Split
   screen at 60 not tested yet.
+- HD TEXTURES (2026-10-19): hd-textures/ = Bl4ckH4nd's SSX 3 PS2 pack
+  (PCSX2 replacement pack, BC7 DDS, LFS; https://gbatemp.net/threads/my-ps2-packs.621422/,
+  included with EA's approval). PCSX2 names are PS2 GS hashes, so the pack
+  is matched by content: RECOMP_TEX_DUMP=<dir> (src/vk/vkr_hdtex.c) writes
+  each decoded texture once as <pixel-hash>_<w>x<h>_f<fmt>.tga;
+  tools/hdtex_match.py (32x32 RGBA signatures, same aspect, clear winner,
+  twin files allowed, flat/atlas dumps rejected: match <= 0.05 and <= half
+  the dump's flat-colour distance) writes hd-textures/ssx3_map.txt; "a2" =
+  the file's alpha is on the PS2 0..128 scale (doubled in xbox.frag via
+  tex_scale.z = -1). Runtime: bind_textures (vkr_backend.c) hashes a newly
+  decoded texture's pixels, hdtex_get loads the DDS as a BC7 image with all
+  mips (vkr_tex_create_bc7; staging full -> retried next frame). Samplers
+  now use mips. 507 textures mapped from Peaks 1-2 (tools/fps30_scan.ps1
+  -Env @{RECOMP_TEX_DUMP=...}); Peak 3 not dumped yet. Rider/hair textures
+  have no match.
+- MSAA (2026-10-19): RECOMP_MSAA (default 4, launcher dropdown): color and
+  depth multisampled, resolved once per flip into c->resolved (vkr.c),
+  which feeds window, guest copy and CRT. Alpha test GREATER/GEQUAL becomes
+  partial coverage (gl_SampleMask from (a - ref) / fwidth) for smooth
+  cut-out edges; main() sets gl_SampleMask = -1 first (a shader that writes
+  it leaves it undefined elsewhere: MSAA off showed pure noise). 5120x1440:
+  60 FPS, GPU 8.5-14 ms either way (scene variance dominates).
 - PARALLEL BOOT COLLISION (fixed 2026-10-15): with 8 instances, ~1 boot in 6
   opened \Device\Harddisk0\Partition5 with 0xC0000001 and the title quit to
   the dashboard ("exit requested", state ? and 0 draws -> reported as

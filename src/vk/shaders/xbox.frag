@@ -30,7 +30,8 @@ layout(push_constant) uniform PC {
     layout(offset = 64) uint alpha_func;  /* 0 = test off, else GL func 0x200..0x207 */
     uint alpha_ref;                       /* 0..255 */
     float w_scale;                        /* W-buffering: depth = w * this; 0 = off */
-    uint point_sprite;                    /* stage 3 coordinates = gl_PointCoord (xemu psh.c) */
+    uint point_sprite;                    /* bit 0: stage 3 coordinates = gl_PointCoord (xemu psh.c);
+                                           * bits 8+: MSAA samples per pixel */
 } pc;
 
 uint U(uvec4 a[2], uint i) { return a[i >> 2][i & 3u]; }
@@ -126,6 +127,10 @@ vec4 stage_fetch(int st, vec4 c, out bool kill)
 
 void main()
 {
+    /* Every sample, unless the alpha test below narrows it: a shader that
+     * writes gl_SampleMask anywhere leaves it undefined wherever it does not
+     * (random coverage -- noise all over the frame). */
+    gl_SampleMask[0] = -1;
     uint n = min(rc.misc.x & 255u, 8u), flags = rc.misc.x >> 8;
     vec4 col;
 
@@ -144,7 +149,7 @@ void main()
         t[0] = stage_fetch(0, v_tex0, kill);
         t[1] = stage_fetch(1, v_tex1, kill);
         t[2] = stage_fetch(2, v_tex2, kill);
-        t[3] = stage_fetch(3, pc.point_sprite != 0u ? vec4(gl_PointCoord, 1.0, 1.0) : v_tex3, kill);
+        t[3] = stage_fetch(3, (pc.point_sprite & 1u) != 0u ? vec4(gl_PointCoord, 1.0, 1.0) : v_tex3, kill);
 
         for (int i = 0; i < 16; i++)
             R[i] = vec4(0.0);
@@ -212,7 +217,23 @@ void main()
 
     if (pc.alpha_func != 0u) {
         float a = floor(col.a * 255.0 + 0.5), r = float(pc.alpha_ref);
+        uint ns = pc.point_sprite >> 8;
         bool pass;
+        if (ns > 1u && (pc.alpha_func == 0x204u || pc.alpha_func == 0x206u)) {
+            /* MSAA: "alpha above ref" as partial coverage across a pixel-wide
+             * ramp instead of all or nothing, so cut-out edges (trees,
+             * fences, crowds) are smoothed like polygon edges. */
+            float cov = clamp((col.a * 255.0 - r) / max(fwidth(col.a * 255.0), 1e-3) + 0.5, 0.0, 1.0);
+            uint n = uint(cov * float(ns) + 0.5);
+            if (n == 0u)
+                discard;
+            gl_SampleMask[0] = int((1u << n) - 1u);
+            out_color = col;
+#ifdef W_DEPTH
+            gl_FragDepth = clamp(pc.w_scale / gl_FragCoord.w, 0.0, 1.0);
+#endif
+            return;
+        }
         switch (pc.alpha_func) {
         case 0x200u: pass = false; break;
         case 0x201u: pass = a < r; break;
