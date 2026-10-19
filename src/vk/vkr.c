@@ -41,6 +41,8 @@ static double vkr_now_ms(void)
 struct VkrTex {
     uint64_t key;
     uint32_t w, h;
+    uint64_t bytes;                 /* device memory it counts for */
+    uint32_t flags;                 /* VKR_TEX_* */
     uint32_t last_use;              /* flip serial of the last lookup/update */
     VkImage img;
     VkDeviceMemory mem;
@@ -105,6 +107,7 @@ struct VkrContext {
     VkrTex **texs;                  /* every texture, for lookup and teardown */
     uint32_t ntexs, captexs;
     uint64_t tex_bytes;
+    int bc7;                        /* BC7 sampling: -1 not asked yet */
     /* Lookup by key: open addressing over indices into texs (-1 empty),
      * a power of two at least twice ntexs. The linear search it replaces
      * scanned every texture ever made, for every stage of every draw --
@@ -603,6 +606,10 @@ static VkSampler get_sampler(VkrContext *c, uint32_t au, uint32_t av, int linear
         default: m[k] = VK_SAMPLER_ADDRESS_MODE_REPEAT; break;
         }
     si.magFilter = si.minFilter = linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+    /* Mip levels where a texture has them (the HD replacements, vkr_hdtex.c);
+     * the game's own textures are one level, so this changes nothing there. */
+    si.mipmapMode = linear ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    si.maxLod = VK_LOD_CLAMP_NONE;
     si.addressModeU = m[0]; si.addressModeV = m[1]; si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     si.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     if (vkCreateSampler(c->dev, &si, NULL, &c->samplers[c->nsamplers].s) != VK_SUCCESS)
@@ -631,6 +638,7 @@ VkrContext *vkr_create(void)
     int f;
 
     if (!c) return NULL;
+    c->bc7 = -1;
     app.pApplicationName = "ssx3"; app.apiVersion = VK_API_VERSION_1_4;
     ii.pApplicationInfo = &app;
     if (vkCreateInstance(&ii, NULL, &c->inst) != VK_SUCCESS) goto fail;
@@ -681,10 +689,13 @@ VkrContext *vkr_create(void)
         vkGetPhysicalDeviceProperties(c->phys, &pp);
         if (pf.wideLines) {             /* lines as wide as the scale */
             en.wideLines = VK_TRUE;
-            di.pEnabledFeatures = &en;
             c->wide_lines = 1;
             c->max_line = pp.limits.lineWidthRange[1];
         }
+        en.textureCompressionBC = pf.textureCompressionBC;   /* HD textures */
+        if (!pf.textureCompressionBC)
+            c->bc7 = 0;
+        di.pEnabledFeatures = &en;
     }
     f13.dynamicRendering = VK_TRUE; f13.synchronization2 = VK_TRUE;
     f14.pushDescriptor = VK_TRUE;
@@ -856,7 +867,7 @@ static void tex_free_one(VkrContext *c, VkrTex *t)
     vkDestroyImageView(c->dev, t->view, NULL);
     vkDestroyImage(c->dev, t->img, NULL);
     vkFreeMemory(c->dev, t->mem, NULL);
-    c->tex_bytes -= (uint64_t)t->w * t->h * 4;
+    c->tex_bytes -= t->bytes;
     free(t);
 }
 
@@ -1226,6 +1237,24 @@ VkrTex *vkr_tex_find(VkrContext *c, uint64_t key)
     return NULL;
 }
 
+/* Into texs and the key index. */
+static void tex_index_add(VkrContext *c, VkrTex *t)
+{
+    if (c->ntexs == c->captexs) {
+        c->captexs = c->captexs ? c->captexs * 2 : 256;
+        c->texs = (VkrTex **)realloc(c->texs, c->captexs * sizeof *c->texs);
+    }
+    c->texs[c->ntexs++] = t;
+    if (c->ntexs * 2 + 2 > c->hcap)
+        tex_rehash(c);
+    else {
+        uint32_t h = tex_slot(t->key, c->hcap);
+        while (c->hidx[h] >= 0)
+            h = (h + 1) & (c->hcap - 1);
+        c->hidx[h] = (int32_t)(c->ntexs - 1);
+    }
+}
+
 /* New contents for an existing texture of the same size (a render target
  * the title redraws every frame: its shadow maps). Draws recorded before
  * this still read the old contents -- the copy is ordered after them. */
@@ -1310,21 +1339,100 @@ VkrTex *vkr_tex_create(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
             VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
-    if (c->ntexs == c->captexs) {
-        c->captexs = c->captexs ? c->captexs * 2 : 256;
-        c->texs = (VkrTex **)realloc(c->texs, c->captexs * sizeof *c->texs);
-    }
     t->last_use = c->flip_serial;
-    c->texs[c->ntexs++] = t;
     c->tex_bytes += bytes;
-    if (c->ntexs * 2 + 2 > c->hcap)
-        tex_rehash(c);
-    else {
-        uint32_t h = tex_slot(key, c->hcap);
-        while (c->hidx[h] >= 0)
-            h = (h + 1) & (c->hcap - 1);
-        c->hidx[h] = (int32_t)(c->ntexs - 1);
+    t->bytes = bytes;
+    tex_index_add(c, t);
+    return t;
+}
+
+int vkr_has_bc7(VkrContext *c)
+{
+    if (c->bc7 < 0) {
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(c->phys, VK_FORMAT_BC7_UNORM_BLOCK, &fp);
+        c->bc7 = (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
+        if (!c->bc7)
+            fprintf(stderr, "[VKR] this GPU cannot sample BC7: no HD textures\n");
     }
+    return c->bc7;
+}
+
+/* A BC7 texture with its mip chain (HD replacements, vkr_hdtex.c): data
+ * holds the levels one after another, as in a DDS file. NULL when the
+ * device cannot sample BC7 or the frame's staging buffer has no room left
+ * (the caller tries again on a later frame). */
+uint32_t vkr_tex_flags(const VkrTex *t)
+{
+    return t ? t->flags : 0;
+}
+
+VkrTex *vkr_tex_create_bc7(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
+                           uint32_t mips, const void *data, size_t size, uint32_t flags)
+{
+    VkrTex *t;
+    VkImageCreateInfo ii = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    VkMemoryRequirements mr;
+    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    VkImageViewCreateInfo vi = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    VkBufferImageCopy cp[16];
+    uint32_t off = (c->buf_used + 15) & ~15u, l, lw, lh;
+    size_t pos = 0;
+    int m;
+
+    if (!vkr_has_bc7(c) || !w || !h || !mips || mips > 16 || off + size > VKR_BUF_BYTES)
+        return NULL;
+    for (l = 0, lw = w, lh = h; l < mips; l++) {       /* the levels fit in data */
+        pos += (size_t)((lw + 3) / 4) * ((lh + 3) / 4) * 16;
+        lw = lw > 1 ? lw / 2 : 1; lh = lh > 1 ? lh / 2 : 1;
+    }
+    if (pos > size || !(t = (VkrTex *)calloc(1, sizeof *t)))
+        return NULL;
+    ii.imageType = VK_IMAGE_TYPE_2D; ii.format = VK_FORMAT_BC7_UNORM_BLOCK;
+    ii.extent.width = w; ii.extent.height = h; ii.extent.depth = 1;
+    ii.mipLevels = mips; ii.arrayLayers = 1; ii.samples = VK_SAMPLE_COUNT_1_BIT;
+    ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ii.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (vkCreateImage(c->dev, &ii, NULL, &t->img) != VK_SUCCESS) { free(t); return NULL; }
+    vkGetImageMemoryRequirements(c->dev, t->img, &mr);
+    m = find_mem(c, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    ai.allocationSize = mr.size; ai.memoryTypeIndex = (uint32_t)(m < 0 ? 0 : m);
+    if (vkAllocateMemory(c->dev, &ai, NULL, &t->mem) != VK_SUCCESS) {
+        vkDestroyImage(c->dev, t->img, NULL); free(t); return NULL;
+    }
+    vkBindImageMemory(c->dev, t->img, t->mem, 0);
+    vi.image = t->img; vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = ii.format;
+    vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    vi.subresourceRange.levelCount = mips; vi.subresourceRange.layerCount = 1;
+    vkCreateImageView(c->dev, &vi, NULL, &t->view);
+    t->key = key; t->w = w; t->h = h; t->bytes = pos; t->flags = flags;
+
+    if (!begin_cmd(c)) { tex_free_one(c, t); return NULL; }
+    end_pass(c);
+    memcpy(c->buf_map + off, data, pos);
+    c->buf_used = off + (uint32_t)pos;
+    memset(cp, 0, sizeof cp);
+    for (l = 0, lw = w, lh = h, pos = 0; l < mips; l++) {
+        cp[l].bufferOffset = off + pos;
+        cp[l].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        cp[l].imageSubresource.mipLevel = l;
+        cp[l].imageSubresource.layerCount = 1;
+        cp[l].imageExtent.width = lw; cp[l].imageExtent.height = lh; cp[l].imageExtent.depth = 1;
+        pos += (size_t)((lw + 3) / 4) * ((lh + 3) / 4) * 16;
+        lw = lw > 1 ? lw / 2 : 1; lh = lh > 1 ? lh / 2 : 1;
+    }
+    barrier_mips(c, t->img, 0, mips, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    vkCmdCopyBufferToImage(c->cmd, c->buf, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mips, cp);
+    barrier_mips(c, t->img, 0, mips, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                 VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    t->last_use = c->flip_serial;
+    c->tex_bytes += t->bytes;
+    tex_index_add(c, t);
     return t;
 }
 

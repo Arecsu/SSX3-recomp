@@ -2,6 +2,7 @@
 #ifndef SSX3_VKR_H
 #define SSX3_VKR_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 /* One vertex after the vertex program (mirrors Nv2aVshOutput). */
@@ -73,6 +74,12 @@ VkrTex *vkr_tex_find(VkrContext *c, uint64_t key);
 VkrTex *vkr_tex_create(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
                        const uint32_t *pixels);
 int vkr_tex_update(VkrContext *c, VkrTex *t, uint64_t key, const uint32_t *pixels);
+int vkr_has_bc7(VkrContext *c);
+/* BC7 with mips (levels back to back, as in a DDS); NULL if not possible now. */
+#define VKR_TEX_ALPHA2 1u                /* alpha on the PS2 scale: x2 when sampled */
+VkrTex *vkr_tex_create_bc7(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
+                           uint32_t mips, const void *data, size_t size, uint32_t flags);
+uint32_t vkr_tex_flags(const VkrTex *t);
 uint32_t vkr_tex_generation(VkrContext *c);   /* changes when all textures were freed */
 
 /* Draw an indexed triangle, line or point list (st->topology). */

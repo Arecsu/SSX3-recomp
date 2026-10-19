@@ -25,5 +25,12 @@ Controls
   keys.ini to change the keys.
   F11 or Alt+Enter: fullscreen.  F3: FPS counter.
 
+HD textures
+  The hd-textures folder holds Bl4ckH4nd's HD texture pack for SSX 3
+  (made for the PS2 version, used with permission:
+  https://gbatemp.net/threads/my-ps2-packs.621422/). The game draws the
+  matching textures from it; the "HD textures" box in the launcher turns
+  them off.
+
 Saves are written next to the game files (UDATA). Logs go to a logs
 folder next to the game folder; "Open logs" in the launcher shows them.

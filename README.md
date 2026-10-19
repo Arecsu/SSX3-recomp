@@ -41,6 +41,7 @@ the scripts below.
 
 | | |
 |---|---|
+| **HD textures.** Bl4ckH4nd's HD texture pack for the PS2 version ([gbatemp](https://gbatemp.net/threads/my-ps2-packs.621422/)) is included: the renderer swaps each matched texture for its HD version, mipmaps included. Left: the original; right: HD. | ![HD textures](docs/screenshots/45-hd-textures.png) |
 | **True widescreen.** The game's camera projection (D3DX `PerspectiveFovLH`) is widened to your monitor's aspect, so you see more of the mountain instead of a stretched picture. The HUD keeps its 4:3 proportions, and menus are pillarboxed. | ![16:9](docs/screenshots/34-widescreen-16x9-snow-jam.png) |
 | **Native resolution.** The Vulkan renderer draws at your monitor's height (5120x1440 above, 1920x1080 here) and hands the full image to the window. The game itself still sees 640x480. | ![1080p](docs/screenshots/38-character-select-1080p.png) |
 | **Lighting matches the hardware.** Riders were washed out because vertex colours were not clamped the way the Xbox GPU clamps them. Left: xemu; right: this project. | ![lighting](docs/screenshots/39-lighting-vs-xemu.png) |
@@ -92,6 +93,7 @@ variables:
 | `RECOMP_CRT` | `0` | `1` = CRT TV shader (needs a resolution above 480); tune with `RECOMP_CRT_PARAMS` |
 | `RECOMP_DEBUG_MENU` | `0` | `1` = EA's quick-start menu (Start on the title screen) |
 | `RECOMP_GAME_DIR` | `game` | the folder with `default.xbe` and `data\` |
+| `RECOMP_HDTEX` | `hd-textures` | the HD texture pack (Bl4ckH4nd's, see below) and its `ssx3_map.txt`; `0` = off |
 | `RECOMP_FPS30` | `0` | `1` = keep the game's own 30 FPS stretches (split screen, Metro-City's tunnel); by default they render at 60 |
 | `RECOMP_FPS_OVERLAY` | `0` | `1` = start with the FPS counter on (F3 toggles it): game FPS, frames shown, slowest frame |
 
@@ -183,8 +185,9 @@ no save. Run these from the repo root on Windows:
 This is an unofficial fan project, not affiliated with or endorsed by
 Electronic Arts or Microsoft. SSX and SSX 3 are trademarks of Electronic
 Arts. The repository holds only original code, tooling and notes: no game
-code, data or assets. The build is generated from a copy of the game you
-own, and the screenshots show this project running.
+code or data. The build is generated from a copy of the game you own, and
+the screenshots show this project running. The one set of assets is
+`hd-textures/`: Bl4ckH4nd's HD texture pack, included with EA's approval.
 
 ## License
 
@@ -192,7 +195,15 @@ GPL-2.0-or-later (see [LICENSE](LICENSE)), copyright Koen Hendriks and
 Corné Dorrestijn. One exception: `patches/xboxrecomp-local.patch` changes
 the [xboxrecomp](https://github.com/sp00nznet/xboxrecomp) toolkit and is
 offered under the toolkit's own licenses (MIT, and LGPL-2.1 for its APU
-files), so the fixes can go upstream.
+files), so the fixes can go upstream. The DDS files in `hd-textures/` are
+not covered by the GPL: they are Bl4ckH4nd's work (see Credits).
+
+## Credits
+
+- **HD textures**: [Bl4ckH4nd](https://gbatemp.net/threads/my-ps2-packs.621422/),
+  the SSX 3 HD texture pack made for the PS2 version (PCSX2), in
+  `hd-textures/`. `tools/hdtex_match.py` pairs its files with the Xbox
+  game's textures (`hd-textures/ssx3_map.txt`).
 
 ## More
 

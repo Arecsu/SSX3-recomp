@@ -111,7 +111,7 @@ endif()
 option(SSX3_VULKAN "Build the Vulkan renderer" ON)
 if(SSX3_VULKAN)
     add_subdirectory(src/vk ${CMAKE_BINARY_DIR}/vk)
-    target_sources(${PROJECT_NAME} PRIVATE src/vk/vkr_backend.c)
+    target_sources(${PROJECT_NAME} PRIVATE src/vk/vkr_backend.c src/vk/vkr_hdtex.c)
     target_include_directories(${PROJECT_NAME} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/vk ${XBOXRECOMP_DIR}/src/kernel)
     target_link_libraries(${PROJECT_NAME} PRIVATE vkr)

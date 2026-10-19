@@ -114,7 +114,10 @@ vec4 stage_fetch(int st, vec4 c, out bool kill)
     }
     if (mode == 1u || mode == 2u || mode == 3u) {
         vec2 uv = (c.xy / q) * rc.tex_scale[st].xy;
-        return texture(tex[st], uv);
+        vec4 r = texture(tex[st], uv);
+        if (rc.tex_scale[st].z < -0.5)          /* HD replacement, PS2 alpha scale */
+            r.a = min(r.a * 2.0, 1.0);
+        return r;
     }
     if (mode == 4u)
         return clamp(c, 0.0, 1.0);
@@ -129,8 +132,12 @@ void main()
     if (rc.misc.z == 0u) {
         /* Combiners never programmed: stage 0 texel * diffuse. */
         col = v_d0;
-        if ((rc.misc.y & 31u) != 0u)
-            col *= texture(tex[0], v_tex0.xy * rc.tex_scale[0].xy);
+        if ((rc.misc.y & 31u) != 0u) {
+            vec4 r = texture(tex[0], v_tex0.xy * rc.tex_scale[0].xy);
+            if (rc.tex_scale[0].z < -0.5)
+                r.a = min(r.a * 2.0, 1.0);
+            col *= r;
+        }
     } else {
         vec4 t[4];
         bool kill;

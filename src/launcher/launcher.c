@@ -32,7 +32,7 @@
 
 enum {
     ID_PATH = 100, ID_BROWSE, ID_STATUS,
-    ID_RES, ID_ASPECT, ID_FULLSCREEN, ID_CRT, ID_FPS,
+    ID_RES, ID_ASPECT, ID_FULLSCREEN, ID_CRT, ID_FPS, ID_HDTEX,
     ID_SKIPINTRO, ID_DEBUGMENU,
     ID_PAD0, ID_PAD1, ID_PAD2, ID_PAD3, ID_KEYS,
     ID_LOGS, ID_PLAY,
@@ -265,6 +265,7 @@ static void load_settings(void)
     CheckDlgButton(s_wnd, ID_FULLSCREEN, ini_int("fullscreen", 0));
     CheckDlgButton(s_wnd, ID_CRT, ini_int("crt", 0));
     CheckDlgButton(s_wnd, ID_FPS, ini_int("fps_counter", 0));
+    CheckDlgButton(s_wnd, ID_HDTEX, ini_int("hd_textures", 1));
     CheckDlgButton(s_wnd, ID_SKIPINTRO, ini_int("skip_intro", 1));
     CheckDlgButton(s_wnd, ID_DEBUGMENU, ini_int("debug_menu", 0));
     update_status();
@@ -280,6 +281,7 @@ static void save_settings(void)
     ini_set_int("fullscreen", IsDlgButtonChecked(s_wnd, ID_FULLSCREEN) == BST_CHECKED);
     ini_set_int("crt", IsDlgButtonChecked(s_wnd, ID_CRT) == BST_CHECKED);
     ini_set_int("fps_counter", IsDlgButtonChecked(s_wnd, ID_FPS) == BST_CHECKED);
+    ini_set_int("hd_textures", IsDlgButtonChecked(s_wnd, ID_HDTEX) == BST_CHECKED);
     ini_set_int("skip_intro", IsDlgButtonChecked(s_wnd, ID_SKIPINTRO) == BST_CHECKED);
     ini_set_int("debug_menu", IsDlgButtonChecked(s_wnd, ID_DEBUGMENU) == BST_CHECKED);
 }
@@ -313,6 +315,7 @@ static void play(void)
     SetEnvironmentVariableA("RECOMP_FULLSCREEN", IsDlgButtonChecked(s_wnd, ID_FULLSCREEN) ? "1" : NULL);
     SetEnvironmentVariableA("RECOMP_CRT", IsDlgButtonChecked(s_wnd, ID_CRT) ? "1" : NULL);
     SetEnvironmentVariableA("RECOMP_FPS_OVERLAY", IsDlgButtonChecked(s_wnd, ID_FPS) ? "1" : NULL);
+    SetEnvironmentVariableA("RECOMP_HDTEX", IsDlgButtonChecked(s_wnd, ID_HDTEX) ? NULL : "0");
     SetEnvironmentVariableA("RECOMP_SKIP_INTRO", IsDlgButtonChecked(s_wnd, ID_SKIPINTRO) ? "1" : "0");
     SetEnvironmentVariableA("RECOMP_DEBUG_MENU", IsDlgButtonChecked(s_wnd, ID_DEBUGMENU) ? "1" : NULL);
 
@@ -409,6 +412,9 @@ static void build(void)
     add("BUTTON", "CRT TV shader (needs a resolution above 480p)", BS_AUTOCHECKBOX | WS_TABSTOP, ID_CRT, 20, y, 400, 22, s_font);
     y += 24;
     add("BUTTON", "FPS counter (F3 toggles in game)", BS_AUTOCHECKBOX | WS_TABSTOP, ID_FPS, 20, y, 300, 22, s_font);
+    y += 24;
+    add("BUTTON", "HD textures (the pack's DDS files in the hd-textures folder)",
+        BS_AUTOCHECKBOX | WS_TABSTOP, ID_HDTEX, 20, y, 480, 22, s_font);
     y += 34;
 
     add("STATIC", "Game", 0, -1, 20, y, 400, 18, s_bold);

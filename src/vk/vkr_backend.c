@@ -57,6 +57,7 @@ static void stats_tick(void)
 #include "nv2a_backend.h"
 #include "vkr.h"
 #include "vkr_backend.h"
+#include "vkr_hdtex.h"
 
 extern ptrdiff_t xbox_GetMemoryOffset(void);
 extern void xbox_FramebufferPublishImage(const uint32_t *px, uint32_t w, uint32_t h);
@@ -348,19 +349,33 @@ static void bind_textures(VkrDrawState *st)
             uint32_t rows = ti.cube ? ti.height * 6 : ti.height;  /* cube: faces stacked */
             uint32_t *px = (uint32_t *)malloc((size_t)ti.width * rows * 4);
             int rt = is_rt(ti.offset), j;
+            uint64_t key = ti.hash;
             if (px && nv2a_exec_tex_decode(k, px)) {
                 /* A render target redrawn every frame: one texture per
                  * address, updated in place, not a new one per frame. */
                 VkrTex *old = NULL;
+                if (!rt && !ti.cube && hdtex_active()) {
+                    /* HD replacement / texture dump (vkr_hdtex.c). One that
+                     * cannot be made this frame: the game's pixels under a
+                     * key nothing looks up, so the next frame tries again. */
+                    uint64_t pk = hdtex_key(px, ti.width, ti.height);
+                    int r;
+                    hdtex_dump(pk, px, ti.width, ti.height, ti.format);
+                    r = hdtex_get(s_vk, pk, ti.hash, &tex);
+                    if (r < 0)
+                        key = ti.hash ^ 0x8000000000000000ull;
+                }
                 if (rt)
                     for (j = 0; j < s_nrt_tex; j++)
                         if (s_rt_tex[j].off == ti.offset && s_rt_tex[j].w == ti.width
                             && s_rt_tex[j].h == ti.height)
                             old = s_rt_tex[j].tex;
-                if (old && vkr_tex_update(s_vk, old, ti.hash, px))
+                if (tex)
+                    ;                   /* the HD replacement */
+                else if (old && vkr_tex_update(s_vk, old, ti.hash, px))
                     tex = old;
                 else {
-                    tex = vkr_tex_create(s_vk, ti.hash, ti.width, rows, px);
+                    tex = vkr_tex_create(s_vk, key, ti.width, rows, px);
                     if (tex && rt && s_nrt_tex < 16) {
                         s_rt_tex[s_nrt_tex].off = ti.offset; s_rt_tex[s_nrt_tex].w = ti.width;
                         s_rt_tex[s_nrt_tex].h = ti.height; s_rt_tex[s_nrt_tex].tex = tex;
@@ -377,7 +392,9 @@ static void bind_textures(VkrDrawState *st)
         st->linear[k] = ti.linear_filter;
         st->u.tex_scale[k][0] = ti.normalised ? 1.0f : 1.0f / (float)ti.width;
         st->u.tex_scale[k][1] = ti.normalised ? 1.0f : 1.0f / (float)ti.height;
-        st->u.tex_scale[k][2] = ti.cube ? 1.0f : 0.0f;
+        /* z: 1 = cube map, -1 = alpha on the PS2 scale (an HD replacement) */
+        st->u.tex_scale[k][2] = ti.cube ? 1.0f
+                              : (vkr_tex_flags(tex) & VKR_TEX_ALPHA2) ? -1.0f : 0.0f;
         st->u.tex_scale[k][3] = (float)ti.height;
     }
 }

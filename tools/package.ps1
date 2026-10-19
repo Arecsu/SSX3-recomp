@@ -1,5 +1,6 @@
 # Release folder + zip for players: launcher.exe, ssx3_recomp.exe, LICENSE,
-# keys.example.ini and a short README -- no game files (the player points the
+# keys.example.ini, a short README and hd-textures\ (Bl4ckH4nd's HD texture
+# pack with its map, ~370 MB) -- no game files (the player points the
 # launcher at their own SSX 3 rip). Build first (tools\build.bat).
 #   powershell -File tools\package.ps1 [-Out dist] [-Name SSX3-recomp]
 param([string]$Out = "dist", [string]$Name = "SSX3-recomp")
@@ -15,6 +16,9 @@ Copy-Item (Join-Path $root "build\ssx3_recomp.exe") $dir
 Copy-Item (Join-Path $root "keys.example.ini") $dir
 Copy-Item (Join-Path $root "LICENSE") (Join-Path $dir "LICENSE.txt")
 Copy-Item (Join-Path $root "docs\PLAYER-README.txt") (Join-Path $dir "README.txt")
+$hd = Join-Path $dir "hd-textures"
+New-Item -ItemType Directory -Force -Path $hd | Out-Null
+Copy-Item (Join-Path $root "hd-textures\*") $hd -Include "*.dds", "ssx3_map.txt", "README.txt"
 $zip = Join-Path (Join-Path $root $Out) "$Name.zip"
 Remove-Item $zip -ErrorAction SilentlyContinue
 Compress-Archive -Path $dir -DestinationPath $zip

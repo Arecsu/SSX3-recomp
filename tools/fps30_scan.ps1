@@ -1,13 +1,16 @@
 # Every Race / Freestyle event on Peaks 1-3: where the game asks for its
 # 30 Hz mode ([FPS30], ssx3_overrides.c sub_000CC8F0) and what FPS is reached.
-#   powershell -File tools\fps30_scan.ps1 [-RideSec 180] [-Out logs\fps30_scan.txt]
-param([int]$RideSec = 180, [string]$Out = "logs\fps30_scan.txt")
+# -Env adds variables to every run, e.g. @{RECOMP_TEX_DUMP='work\texdump'} to
+# collect every course's textures for tools/hdtex_match.py at the same time.
+#   powershell -File tools\fps30_scan.ps1 [-RideSec 180] [-Out logs\fps30_scan.txt] [-Env @{...}]
+param([int]$RideSec = 180, [string]$Out = "logs\fps30_scan.txt", [hashtable]$Env = @{})
 $root = Split-Path -Parent $PSScriptRoot
 $live = Join-Path $root "tools\live.ps1"
 $err = Join-Path $root "stderr.txt"
 "fps30 scan $(Get-Date -Format s), ride $RideSec s" | Set-Content (Join-Path $root $Out)
 foreach ($peak in 0, 1, 2) { foreach ($mode in 0, 1) { foreach ($ev in 0, 1, 2) {
-    $e = @{ RECOMP_FRAME_STATS = "1"; RECOMP_AUTONAV = "race,rider=0,peak=$peak,mode=$mode,event=$ev" }
+    $e = $Env.Clone()
+    $e["RECOMP_FRAME_STATS"] = "1"; $e["RECOMP_AUTONAV"] = "race,rider=0,peak=$peak,mode=$mode,event=$ev"
     & $live start -Env $e | Out-Null
     $t0 = Get-Date; $ok = $false
     while (((Get-Date) - $t0).TotalSeconds -lt 150) {
