@@ -253,28 +253,41 @@ Notes:
   plus the earlier runs this session, no stalls/crashes (user: keep
   testing lean).
 
-## 5. Above 60 FPS (120/144 Hz)
+## 5. Above 60 FPS (120/144 Hz) — closed: not feasible
 
 The game logic runs at 60 updates/s (frame timer 1000/60 ms, input ring at
 60 Hz). Two possible routes; investigate before committing to one.
 Time-boxed: if 5.1 finds no clean timestep, stop and write down why.
 
-- [ ] 5.1 Investigate the timestep: is there a dt (float seconds per update)
+- [x] 5.1 Investigate the timestep: is there a dt (float seconds per update)
       that physics, animation and timers use, or are rates hard-coded per
       update? (frame timer `sub_001AE480`/`sub_001AE030`, app loop
       `sub_001AD880` update counter `+0x20`/`+0x24`, `app+0x28/0x30/0x34`
       floats.) Notes: findings + go / no-go for each route.
-- [ ] 5.2 Route A (if a dt exists): updates at N Hz with dt = 1/N
+- [-] 5.2 (skipped: no-go, see Notes) Route A (if a dt exists): updates at N Hz with dt = 1/N
       (`RECOMP_LOGIC_HZ`), frame timer period 1000/N; check physics (speed,
       jumps), animation, audio sync, AI, race timer accuracy against 60 Hz
       runs (finish time of a scripted race, `[FRAMES]`).
-- [ ] 5.3 Route B (if not): render-side interpolation is out of scope
+- [x] 5.3 Route B (if not): render-side interpolation is out of scope
       (would need every transform captured); write the conclusion and close.
-- [ ] 5.4 If A works: present at N Hz (window pacing for 120/144 Hz
+- [-] 5.4 (skipped: no-go) If A works: present at N Hz (window pacing for 120/144 Hz
       monitors, VRR). Launcher: "Frame rate" dropdown (60 / 120 / 144 /
       monitor) -> `RECOMP_LOGIC_HZ`; README, screenshot.
 
 Notes:
+- 5.1 (2026-10-20): no single timestep. The app keeps a nominal rate and
+  dt (app runner sub_001ADAC0: app+0x14 = 60, app+0x18 = 1/60; the frame
+  timer is armed with 60), but the game logic does not use one shared dt:
+  72 call sites push the literal 1/60 (0x3C888889) as an argument
+  (physics/collision ~0x134000-0x143000, effects ~0x1C6000-0x1DC000,
+  frontend), the float 1/60 occurs ~200 times in the data (memory operands),
+  and counters tick once per update. Route A would mean finding and
+  patching every one of those -- any missed one runs at double speed
+  (physics, animation, AI, the race clock). Route B (interpolating between
+  60 Hz frames) needs every transform captured: out of scope (plan).
+  Closed. What remains for high-refresh monitors: steady 60 FPS pacing
+  (done earlier) and VRR; app+0x28 (input samples per tick) is a game-speed
+  knob, not a frame-rate one (used for fast boot, item 7).
 
 ## 6. Audio effects (reverb)
 
@@ -311,3 +324,4 @@ Notes:
 - 2026-10-20 — Item 3 done: HUD anchored to the screen edges in widescreen (RECOMP_HUD_EDGES, default on; launcher checkbox); race and freestyle HUD checked at 32:9 and 16:9.
 - 2026-10-20 — Item 4 done: shadow maps on the GPU at 512x512 by default (RECOMP_SHADOW_RES; launcher "Shadow quality" Original / High / Ultra).
 - 2026-10-20 — Item 7 done: loads were already short; the frontend's fixed waits (title intro, hard-disk check) now fast-forward x4 (RECOMP_FAST_BOOT; launcher "Fast boot"): boot -> briefing 22.2 -> 14.1 s.
+- 2026-10-20 — Item 5 closed as not feasible: no shared timestep (1/60 pushed literally at 72 call sites, ~200 constants, per-update counters); notes in the plan.
