@@ -300,10 +300,10 @@ item became getting the speaker mix right.
 - [x] 6.2 Correct stereo downmix of the speaker bins (toolkit apu_dsp.c):
       centre and rears at -3 dB, LFE at -6 dB -- the old even/odd rule put
       the whole centre channel in the left speaker.
-- [ ] 6.3 5.1 output: the game already mixes front/centre/rear; an XAudio2
+- [x] 6.3 5.1 output: the game already mixes front/centre/rear; an XAudio2
       6-channel mastering voice fed bins 0-5 directly (`RECOMP_AUDIO_CHANNELS`
       = 2 / 6, default stereo), the frame buffer carrying 6 channels.
-- [ ] 6.4 Launcher: "Audio output" dropdown (Stereo / 5.1 surround) ->
+- [x] 6.4 Launcher: "Audio output" dropdown (Stereo / 5.1 surround) ->
       `RECOMP_AUDIO_CHANNELS`; README, screenshot.
 - [ ] 6.5 **[user]** Listening check: stereo balance (the announcer and
       centred sounds no longer lean left), and 5.1 on a surround setup if
@@ -316,6 +316,14 @@ Notes:
   (10) or the FX sends (11+). No reverb is being lost. The stereo mixdown
   (even bins left, odd right) put the centre channel in the left speaker
   only.
+- 6.3: toolkit apu_xaudio2.c: RECOMP_AUDIO_CHANNELS=6 makes a 5.1
+  (WAVEFORMATEXTENSIBLE, FL FR C LFE BL BR) source voice on a mastering voice
+  with the device's own channel count (XAudio2 maps or downmixes by the
+  masks). The stereo pipeline is unchanged; apu_dsp.c pushes centre/LFE/
+  rears into a FIFO in production order (zeros when muted) and
+  xa2_submit_samples takes as many as it submits -- also for dropped
+  buffers, so it stays in step. Checked (muted run): voice created, 188
+  buffers/s, 0 underruns/drops. Not heard yet: 6.5.
 
 ---
 
@@ -334,3 +342,4 @@ Notes:
 - 2026-10-20 — Item 7 done: loads were already short; the frontend's fixed waits (title intro, hard-disk check) now fast-forward x4 (RECOMP_FAST_BOOT; launcher "Fast boot"): boot -> briefing 22.2 -> 14.1 s.
 - 2026-10-20 — Item 5 closed as not feasible: no shared timestep (1/60 pushed literally at 72 call sites, ~200 constants, per-update counters); notes in the plan.
 - 2026-10-20 — 6.1/6.2: SSX 3 sends nothing to the reverb/FX bins (measured), so item 6 became the speaker mix: stereo downmix fixed (the centre channel went to the left speaker only); 5.1 output next.
+- 2026-10-20 — 6.3/6.4: 5.1 surround output (RECOMP_AUDIO_CHANNELS=6; launcher "Audio output"). Only 6.5, the user's listening check, is left in the plan.

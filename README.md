@@ -98,6 +98,7 @@ variables:
 | `RECOMP_HUD_EDGES` | `1` | widescreen: the race HUD at the screen edges instead of the 4:3 middle (`0` = middle); `RECOMP_HUD_MARGIN` insets it (% of the way) |
 | `RECOMP_SHADOW_RES` | `4` | rider shadow maps drawn on the GPU at this times 128x128 (`1`, `4`, `8`; `0` = the old software path) |
 | `RECOMP_FAST_BOOT` | `4` | the title's intro wait and the "Checking hard disk" screen run this many times faster (`0` = off); boot to the main menu ~4.6 s instead of ~12.7 s |
+| `RECOMP_AUDIO_CHANNELS` | `2` | `6` = 5.1 surround output (the game mixes front, centre and rear speakers; Windows); stereo uses a proper downmix |
 | `RECOMP_MSAA` | `4` | anti-aliasing: `0` off, `2`, `4`, `8` samples (as far as the GPU goes); cut-out edges (trees, fences) are smoothed too |
 | `RECOMP_HDTEX` | `hd-textures` | the HD texture pack (Bl4ckH4nd's, see below) and its `ssx3_map.txt`; `0` = off |
 | `RECOMP_FPS30` | `0` | `1` = keep the game's own 30 FPS stretches (split screen, Metro-City's tunnel); by default they render at 60 |

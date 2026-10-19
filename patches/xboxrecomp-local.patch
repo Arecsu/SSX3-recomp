@@ -238,19 +238,22 @@ index 258048c..ce8ded3 100644
      qemu_thread_create(&d->apu_thread, "mcpx.apu_thread",
                         mcpx_apu_frame_thread, d, QEMU_THREAD_JOINABLE);
 diff --git a/src/apu/apu_dsp.c b/src/apu/apu_dsp.c
-index 7156be9..9587be8 100644
+index 7156be9..bfd82cd 100644
 --- a/src/apu/apu_dsp.c
 +++ b/src/apu/apu_dsp.c
-@@ -25,6 +25,8 @@
+@@ -24,7 +24,11 @@
+ 
  #include "apu_state.h"
  #include "fpconv.h"
++#include "apu_xaudio2.h"
++extern volatile int g_audio_muted;
  
 +#include <math.h>
 +#include <stdio.h>
  #include <stdlib.h>
  #include <string.h>
  
-@@ -157,6 +159,32 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d,
+@@ -157,7 +161,34 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d,
  
      int off = (d->ep_frame_div % 8) * NUM_SAMPLES_PER_FRAME;
  
@@ -281,9 +284,11 @@ index 7156be9..9587be8 100644
 +    }
 +
      if (d->monitor.point != MCPX_APU_DEBUG_MON_VP) {
++        const int surround = xa2_channels() == 6 && mcpx_apu_mixdown_all();
          for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
              /* Bins 2..31 used to be computed and then dropped on the floor.
-@@ -188,9 +216,16 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d,
+              * On hardware the GP and EP mix the submixes down; here they are
+@@ -188,9 +219,32 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d,
               * mixdown that stops discarding audio. */
              float left, right;
              if (mcpx_apu_mixdown_all()) {
@@ -297,8 +302,24 @@ index 7156be9..9587be8 100644
 +                 * left speaker (SSX 3 feeds bins 0, 1, 2, 4, 5). Bins 6 and
 +                 * up keep the even-left / odd-right pairing. */
 +                const float k3 = 0.70710678f, k6 = 0.5f;
-+                left  = mixbins[0][i] + k3 * mixbins[2][i] + k6 * mixbins[3][i] + k3 * mixbins[4][i];
-+                right = mixbins[1][i] + k3 * mixbins[2][i] + k6 * mixbins[3][i] + k3 * mixbins[5][i];
++                if (surround) {
++                    /* 5.1 out (RECOMP_AUDIO_CHANNELS=6): the speakers as
++                     * they are; centre, LFE and rears go beside the front
++                     * pair (apu_xaudio2.c). */
++                    int16_t s4[4];
++                    for (int c = 0; c < 4; ++c) {
++                        float v = g_audio_muted ? 0.0f : mixbins[2 + c][i];
++                        if (v > 1.0f) v = 1.0f;
++                        if (v < -1.0f) v = -1.0f;
++                        s4[c] = (int16_t)(v * 32767.0f);
++                    }
++                    xa2_surround_push(s4, 1);
++                    left = mixbins[0][i];
++                    right = mixbins[1][i];
++                } else {
++                    left  = mixbins[0][i] + k3 * mixbins[2][i] + k6 * mixbins[3][i] + k3 * mixbins[4][i];
++                    right = mixbins[1][i] + k3 * mixbins[2][i] + k6 * mixbins[3][i] + k3 * mixbins[5][i];
++                }
 +                for (int b = 6; b < NUM_MIXBINS; ++b) {
                      if (b & 1) right += mixbins[b][i];
                      else       left  += mixbins[b][i];
@@ -325,7 +346,7 @@ index f45b42b..d03ef75 100644
      uint64_t mask = 1ULL << (v % 64);
      if (lock) {
 diff --git a/src/apu/apu_xaudio2.c b/src/apu/apu_xaudio2.c
-index cd69e57..7f2d501 100644
+index cd69e57..31201f4 100644
 --- a/src/apu/apu_xaudio2.c
 +++ b/src/apu/apu_xaudio2.c
 @@ -11,8 +11,8 @@
@@ -339,9 +360,13 @@ index cd69e57..7f2d501 100644
  #if defined(_WIN32)
  
  #define COBJMACROS
-@@ -25,7 +25,8 @@
+@@ -23,17 +23,57 @@
+ #pragma comment(lib, "ole32.lib")
+ 
  #define XA2_SAMPLE_RATE   48000
- #define XA2_CHANNELS      2
+-#define XA2_CHANNELS      2
++#define XA2_CHANNELS      g_xa2_ch
++#define XA2_MAX_CHANNELS  6
  #define XA2_BUF_SAMPLES   1024   /* ~21ms per submission */
 -#define XA2_NUM_BUFS      3
 +#define XA2_NUM_BUFS      16     /* ring size; how many may queue depends on
@@ -349,7 +374,45 @@ index cd69e57..7f2d501 100644
  
  static IXAudio2               *g_xa2 = NULL;
  static IXAudio2MasteringVoice *g_xa2_master = NULL;
-@@ -34,6 +35,8 @@ static int16_t                 g_xa2_bufs[XA2_NUM_BUFS][XA2_BUF_SAMPLES][2];
+ static IXAudio2SourceVoice    *g_xa2_source = NULL;
+-static int16_t                 g_xa2_bufs[XA2_NUM_BUFS][XA2_BUF_SAMPLES][2];
++static int16_t                 g_xa2_bufs[XA2_NUM_BUFS][XA2_BUF_SAMPLES][XA2_MAX_CHANNELS];
++static int                     g_xa2_ch = 2;
++/* 5.1: centre, LFE and rears, pushed by the mixdown (apu_dsp.c) in the
++ * order the front pair is produced, taken again at submission. */
++#define SUR_FIFO 16384
++static int16_t                 g_sur[SUR_FIFO][4];
++static unsigned                g_sur_r, g_sur_w;
++
++int xa2_channels(void)
++{
++    static int ch = -1;
++    if (ch < 0) {
++        const char *e = getenv("RECOMP_AUDIO_CHANNELS");
++        ch = e && atoi(e) == 6 ? 6 : 2;
++    }
++    return ch;
++}
++
++void xa2_surround_push(const int16_t *s, int n)
++{
++    int i;
++    for (i = 0; i < n; i++) {
++        if (g_sur_w - g_sur_r >= SUR_FIFO)
++            g_sur_r++;                  /* nobody is taking them: keep the newest */
++        memcpy(g_sur[g_sur_w % SUR_FIFO], s + 4 * i, 8);
++        g_sur_w++;
++    }
++}
++
++static void sur_pop(int16_t out[4])
++{
++    if (g_sur_r != g_sur_w) {
++        memcpy(out, g_sur[g_sur_r % SUR_FIFO], 8);
++        g_sur_r++;
++    } else
++        memset(out, 0, 8);
++}
  static int                     g_xa2_next_buf = 0;
  static int                     g_xa2_initialized = 0;
  static int                     g_xa2_frames_written = 0;
@@ -358,8 +421,80 @@ index cd69e57..7f2d501 100644
  
  int xa2_init(void)
  {
-@@ -138,7 +141,44 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
+@@ -42,6 +82,7 @@ int xa2_init(void)
+     WAVEFORMATEX wfx = { 0 };
+ 
+     if (g_xa2_initialized) return 1;
++    g_xa2_ch = xa2_channels();
+ 
+     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
+@@ -56,8 +97,10 @@ int xa2_init(void)
+         goto fail;
+     }
+ 
++    /* 5.1: the device's own channel count; XAudio2 maps (or downmixes) the
++     * 5.1 source to it from the channel masks. */
+     hr = IXAudio2_CreateMasteringVoice(g_xa2, &g_xa2_master,
+-        XA2_CHANNELS, XA2_SAMPLE_RATE, 0, NULL, NULL, 0);
++        g_xa2_ch == 6 ? XAUDIO2_DEFAULT_CHANNELS : XA2_CHANNELS, XA2_SAMPLE_RATE, 0, NULL, NULL, 0);
+     if (FAILED(hr)) {
+         fprintf(stderr, "[XA2] CreateMasteringVoice failed: 0x%08lX\n", hr);
+         goto fail;
+@@ -70,8 +113,26 @@ int xa2_init(void)
+     wfx.nBlockAlign     = XA2_CHANNELS * 2;
+     wfx.nAvgBytesPerSec = XA2_SAMPLE_RATE * wfx.nBlockAlign;
+ 
+-    hr = IXAudio2_CreateSourceVoice(g_xa2, &g_xa2_source,
+-        &wfx, 0, XAUDIO2_DEFAULT_FREQ_RATIO, NULL, NULL, NULL);
++    if (g_xa2_ch == 6) {
++        static WAVEFORMATEXTENSIBLE wfe;
++        memset(&wfe, 0, sizeof wfe);
++        wfe.Format = wfx;
++        wfe.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
++        wfe.Format.cbSize = sizeof wfe - sizeof wfe.Format;
++        wfe.Samples.wValidBitsPerSample = 16;
++        wfe.dwChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER
++                          | SPEAKER_LOW_FREQUENCY | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;
++        {
++            /* KSDATAFORMAT_SUBTYPE_PCM */
++            static const GUID pcm = {0x00000001, 0x0000, 0x0010,
++                                     {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
++            wfe.SubFormat = pcm;
++        }
++        hr = IXAudio2_CreateSourceVoice(g_xa2, &g_xa2_source,
++            &wfe.Format, 0, XAUDIO2_DEFAULT_FREQ_RATIO, NULL, NULL, NULL);
++    } else
++        hr = IXAudio2_CreateSourceVoice(g_xa2, &g_xa2_source,
++            &wfx, 0, XAUDIO2_DEFAULT_FREQ_RATIO, NULL, NULL, NULL);
+     if (FAILED(hr)) {
+         fprintf(stderr, "[XA2] CreateSourceVoice failed: 0x%08lX\n", hr);
+         goto fail;
+@@ -87,8 +148,8 @@ int xa2_init(void)
+     g_xa2_initialized = 1;
+     g_xa2_frames_written = 0;
+ 
+-    fprintf(stderr, "[XA2] XAudio2 initialized (%d Hz stereo 16-bit, %d x %d-sample buffers)\n",
+-            XA2_SAMPLE_RATE, XA2_NUM_BUFS, XA2_BUF_SAMPLES);
++    fprintf(stderr, "[XA2] XAudio2 initialized (%d Hz %s 16-bit, %d x %d-sample buffers)\n",
++            XA2_SAMPLE_RATE, g_xa2_ch == 6 ? "5.1" : "stereo", XA2_NUM_BUFS, XA2_BUF_SAMPLES);
+     return 1;
+ 
+ fail:
+@@ -135,14 +196,68 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
+     int copy_samples;
+     HRESULT hr;
+ 
++    int16_t sur[XA2_BUF_SAMPLES][4];
++
      if (!g_xa2_initialized || !g_xa2_source) return 0;
++    if (g_xa2_ch == 6) {
++        /* Taken now, even if the buffer is dropped below: the FIFO stays in
++         * step with the front pair. */
++        int k, n = num_samples > XA2_BUF_SAMPLES ? XA2_BUF_SAMPLES : num_samples;
++        for (k = 0; k < n; k++)
++            sur_pop(sur[k]);
++    }
  
      IXAudio2SourceVoice_GetState(g_xa2_source, &state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
 -    if ((int)state.BuffersQueued >= XA2_NUM_BUFS) return 0;
@@ -371,7 +506,7 @@ index cd69e57..7f2d501 100644
 +     * Keep a cushion: start, and restart after running (nearly) dry, with
 +     * silence up to 8 buffers (43 ms). The full side is handled below. */
 +    if (num_samples <= 256 && state.BuffersQueued <= 1) {
-+        static const int16_t silence[256][2];
++        static const int16_t silence[256][XA2_MAX_CHANNELS];
 +        XAUDIO2_BUFFER sb;
 +        UINT32 k;
 +        memset(&sb, 0, sizeof(sb));
@@ -404,7 +539,20 @@ index cd69e57..7f2d501 100644
  
      idx = g_xa2_next_buf;
      copy_samples = (num_samples > XA2_BUF_SAMPLES) ? XA2_BUF_SAMPLES : num_samples;
-@@ -156,17 +196,148 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
+-    memcpy(g_xa2_bufs[idx], samples, copy_samples * XA2_CHANNELS * sizeof(int16_t));
++    if (g_xa2_ch == 6) {
++        int k;
++        for (k = 0; k < copy_samples; k++) {
++            g_xa2_bufs[idx][k][0] = samples[2 * k];
++            g_xa2_bufs[idx][k][1] = samples[2 * k + 1];
++            memcpy(&g_xa2_bufs[idx][k][2], sur[k], 8);
++        }
++    } else
++        memcpy(g_xa2_bufs[idx], samples, copy_samples * XA2_CHANNELS * sizeof(int16_t));
+ 
+     memset(&xbuf, 0, sizeof(xbuf));
+     xbuf.AudioBytes = copy_samples * XA2_CHANNELS * sizeof(int16_t);
+@@ -156,17 +271,151 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
      return 1;
  }
  
@@ -441,6 +589,9 @@ index cd69e57..7f2d501 100644
  
 -#else /* !_WIN32 -- POSIX stubs (no audio output yet) */
 +#else /* !_WIN32 -- SDL2 audio queue */
++
++int xa2_channels(void) { return 2; }      /* 5.1: Windows (XAudio2) only */
++void xa2_surround_push(const int16_t *s, int n) { (void)s; (void)n; }
 +
 +#include <SDL.h>
 +
@@ -481,12 +632,7 @@ index cd69e57..7f2d501 100644
 +            SDL_GetCurrentAudioDriver(), have.freq, have.samples);
 +    return 1;
 +}
- 
--int  xa2_init(void)                                   { return 0; }
--void xa2_shutdown(void)                               {}
--int  xa2_is_active(void)                              { return 0; }
--int  xa2_submit_samples(const int16_t *s, int n)      { (void)s; (void)n; return 0; }
--int  xa2_get_buffer_size(void)                        { return 0; }
++
 +void xa2_shutdown(void)
 +{
 +    if (!g_sdl_dev) return;
@@ -500,7 +646,12 @@ index cd69e57..7f2d501 100644
 +{
 +    return g_sdl_dev != 0;
 +}
-+
+ 
+-int  xa2_init(void)                                   { return 0; }
+-void xa2_shutdown(void)                               {}
+-int  xa2_is_active(void)                              { return 0; }
+-int  xa2_submit_samples(const int16_t *s, int n)      { (void)s; (void)n; return 0; }
+-int  xa2_get_buffer_size(void)                        { return 0; }
 +static int sdl_queued(int buf_samples)
 +{
 +    return (int)(SDL_GetQueuedAudioSize(g_sdl_dev) / (buf_samples * XA2_CHANNELS * sizeof(int16_t)));
@@ -560,11 +711,20 @@ index cd69e57..7f2d501 100644
  
  #endif /* _WIN32 */
 diff --git a/src/apu/apu_xaudio2.h b/src/apu/apu_xaudio2.h
-index 83e652d..aa540a3 100644
+index 83e652d..235e61f 100644
 --- a/src/apu/apu_xaudio2.h
 +++ b/src/apu/apu_xaudio2.h
-@@ -20,5 +20,7 @@ int xa2_submit_samples(const int16_t *samples, int num_samples);
+@@ -18,7 +18,16 @@ int xa2_is_active(void);
+ /* Submit interleaved stereo 16-bit samples. Returns 1 if accepted. */
+ int xa2_submit_samples(const int16_t *samples, int num_samples);
  
++/* Output channels: 2, or 6 (5.1: FL FR C LFE BL BR) with
++ * RECOMP_AUDIO_CHANNELS=6 on Windows. With 6, xa2_submit_samples still takes
++ * the front pair; the other four come from xa2_surround_push, in the same
++ * sample order (a FIFO on the frame thread). */
++int  xa2_channels(void);
++void xa2_surround_push(const int16_t *c_lfe_bl_br, int num_samples);
++
  /* Get the preferred buffer size in samples. */
  int xa2_get_buffer_size(void);
 +int xa2_queued(void);   /* buffers queued for the device */
