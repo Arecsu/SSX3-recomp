@@ -679,6 +679,53 @@ static void primlog(const VkrDrawState *st, uint32_t n, int gpu_vsh)
     fflush(stderr);
 }
 
+/* HUD at the screen edges (widescreen, in game; RECOMP_HUD_EDGES, default
+ * on; RECOMP_HUD_MARGIN = inset in % of the way to the edge). The game draws
+ * its HUD for 4:3; the vertex shaders keep 2D draws in the 4:3 middle. A 2D
+ * draw (every vertex w == 1) whose box centre lies in the left third of the
+ * guest screen moves with the left edge, right third with the right edge;
+ * the middle third (timer, prompts, dialogs) stays centred, and full-width
+ * passes keep their stretch. Returns the NDC x offset for the shaders. */
+static int hud_edges_on(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RECOMP_HUD_EDGES");
+        on = !(e && *e == '0');
+    }
+    return on && ssx3_WidescreenNow();
+}
+
+static float hud_shift(const Nv2aVshOutput *v, uint32_t n)
+{
+    static float margin = -1.0f;
+    float x0 = 1e9f, x1 = -1e9f, sq, cx, gw = s_w ? (float)s_w : 640.0f;
+    uint32_t i;
+    if (!n || !hud_edges_on())
+        return 0.0f;
+    for (i = 0; i < n; i++) {
+        if (v[i].pos[3] != 1.0f)
+            return 0.0f;                /* 3D */
+        if (v[i].pos[0] < x0) x0 = v[i].pos[0];
+        if (v[i].pos[0] > x1) x1 = v[i].pos[0];
+    }
+    if (x1 - x0 > gw * 0.9f)
+        return 0.0f;                    /* full-width pass */
+    if (margin < 0.0f) {
+        const char *e = getenv("RECOMP_HUD_MARGIN");
+        margin = e && *e ? (float)atof(e) / 100.0f : 0.0f;
+        if (margin < 0.0f) margin = 0.0f;
+        if (margin > 1.0f) margin = 1.0f;
+    }
+    sq = 1.0f / (ssx3_Aspect() * 0.75f);   /* the shaders' squeeze2d */
+    cx = (x0 + x1) * 0.5f;
+    if (cx < gw / 3.0f)
+        return (sq - 1.0f) * (1.0f - margin);
+    if (cx > gw * 2.0f / 3.0f)
+        return (1.0f - sq) * (1.0f - margin);
+    return 0.0f;
+}
+
 static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, uint32_t n)
 {
     uint32_t *idx, k = 0, topo;
@@ -706,6 +753,7 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
         memset(&st, 0, sizeof st);
         fill_state(t, &st);
         st.topology = topo;
+        st.hud_shift = hud_shift(v, n);
         double t2;
         bind_textures(&st);
         primlog(&st, n, 0);
@@ -741,6 +789,11 @@ static int be_draw_vsh(const Nv2aTarget *t, uint32_t prim, const float *in, uint
     if (s_stats < 0) s_stats = getenv("RECOMP_VKR_STATS") != NULL;
     if (s_stats) { td = now_ms(); stats_tick(); }
     if (!is_main(t))
+        return 0;
+    /* Small draws in widescreen game: the CPU runs the program (microseconds
+     * for a HUD element), so be_draw sees where the draw lands on screen and
+     * can anchor it (hud_shift). */
+    if (n <= 64 && hud_edges_on())
         return 0;
     if (!(idx = build_idx(prim, n, &k, &topo)))
         return 0;

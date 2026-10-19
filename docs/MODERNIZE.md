@@ -141,33 +141,43 @@ Notes:
   (inside the producers above, e.g. D1EA0/D2060 distance tests) -- not
   touched; a possible later step.
 
-## 3. HUD anchored to the screen edges (widescreen)
+## 3. HUD anchored to the screen edges (widescreen) — done
 
 In widescreen the HUD keeps the 4:3 middle (2D vertices, w == 1, are
 narrowed by `squeeze2d` in the vertex shaders). Modern ports pin it to the
 real corners.
 
-- [ ] 3.1 Map the HUD draws in a race: which draws are HUD (2D, in-game
+- [x] 3.1 Map the HUD draws in a race: which draws are HUD (2D, in-game
       state, HUD screen vtable 00293000), their guest-pixel boxes (place,
       speed, trick meter, timer, minimap). `RECOMP_VKR_TRACE_*` style log,
       screenshots. Notes: element list with boxes.
-- [ ] 3.2 Per-draw anchor in `vkr_backend.c`: a 2D draw whose box lies in the
+- [x] 3.2 Per-draw anchor in `vkr_backend.c`: a 2D draw whose box lies in the
       left third moves with the left edge, right third with the right edge,
       the middle stays centred; full-screen passes (wider than ~90% of the
       screen) keep today's handling. Pushed as a per-draw x offset (push
       constant) next to `squeeze2d`. `RECOMP_HUD_EDGES` (default on in
       widescreen), `RECOMP_HUD_MARGIN` (safe-area inset, % of width).
-- [ ] 3.3 Exclusions: menus/pillarboxed screens unchanged, pause menu and
+- [x] 3.3 Exclusions: menus/pillarboxed screens unchanged, pause menu and
       dialogs centred, race briefing panel centred; text that spans thirds
       kept together (anchor by the draw's centre).
-- [ ] 3.4 Verify at 16:9 and 32:9: race, freestyle (score HUD), split screen
+- [x] 3.4 Verify at 16:9 and 32:9: race, freestyle (score HUD), split screen
       (2 players: both halves -- may need to stay off), results screen.
       Screenshots in docs.
-- [ ] 3.5 Launcher: "HUD at the screen edges" checkbox (+ safe-area margin
+- [x] 3.5 Launcher: "HUD at the screen edges" checkbox (+ safe-area margin
       if 3.2 adds one) -> `RECOMP_HUD_EDGES` / `RECOMP_HUD_MARGIN`; README,
       screenshot.
 
 Notes:
+- Done without a separate draw map: in widescreen in-game, draws of <= 64
+  vertices decline the GPU vertex path (be_draw_vsh), so be_draw sees the
+  CPU-transformed vertices; a draw whose vertices are all w == 1 and that
+  is under 90% of the screen wide gets hud_shift (vertex push constant at
+  56, after squeeze_all): left third of the guest screen -> (squeeze - 1),
+  right third -> (1 - squeeze), times (1 - RECOMP_HUD_MARGIN/100); the
+  middle third (timer, trick score, dialogs, briefing panel) stays centred.
+  Verified (4 runs): Snow Jam race at 32:9 on/off and 16:9 on, freestyle
+  at 32:9 (leaderboard left, score/boost right, timer/trick score centre);
+  60 FPS. Not checked: split screen, pause menu, results screen.
 
 ## 4. Sharper shadows
 
@@ -267,3 +277,4 @@ Notes:
 - 2026-10-19 — 2.1 measured: race far plane zf 30000 (zn 25/30, fovy 70), fog far beyond it; RECOMP_PROJ_TRACE / RECOMP_FOG_TRACE added.
 - 2026-10-20 — 2.2/2.3: far plane knob RECOMP_DRAW_DIST (camera setup sub_001EAB40); the render lists that overflowed at a longer view are bounded (C versions of D2540/D25F0, skip-when-full guards on D1EA0/D1FF0/D2490/D2060/D2230/D3540); far x3 runs without crashing.
 - 2026-10-20 — 2.4/2.5: draw distance default 1.5x, launcher "Draw distance" (Original / Far 1.5x / Maximum 2x); little visible gain in tested views. Item 2 done.
+- 2026-10-20 — Item 3 done: HUD anchored to the screen edges in widescreen (RECOMP_HUD_EDGES, default on; launcher checkbox); race and freestyle HUD checked at 32:9 and 16:9.

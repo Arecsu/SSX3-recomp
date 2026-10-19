@@ -95,6 +95,7 @@ variables:
 | `RECOMP_GAME_DIR` | `game` | the folder with `default.xbe` and `data\` |
 | `RECOMP_ANISO` | `16` | anisotropic filtering (`0` = trilinear); the game's textures also get mip chains (`RECOMP_TEX_MIPS=0` turns those off) |
 | `RECOMP_DRAW_DIST` | `1.5` | view distance in races, times the original (`1` = original, up to `2`) |
+| `RECOMP_HUD_EDGES` | `1` | widescreen: the race HUD at the screen edges instead of the 4:3 middle (`0` = middle); `RECOMP_HUD_MARGIN` insets it (% of the way) |
 | `RECOMP_MSAA` | `4` | anti-aliasing: `0` off, `2`, `4`, `8` samples (as far as the GPU goes); cut-out edges (trees, fences) are smoothed too |
 | `RECOMP_HDTEX` | `hd-textures` | the HD texture pack (Bl4ckH4nd's, see below) and its `ssx3_map.txt`; `0` = off |
 | `RECOMP_FPS30` | `0` | `1` = keep the game's own 30 FPS stretches (split screen, Metro-City's tunnel); by default they render at 60 |
