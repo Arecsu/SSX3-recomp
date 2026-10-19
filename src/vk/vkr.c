@@ -108,6 +108,7 @@ struct VkrContext {
     uint32_t ntexs, captexs;
     uint64_t tex_bytes;
     int bc7;                        /* BC7 sampling: -1 not asked yet */
+    float aniso;                    /* RECOMP_ANISO: max anisotropy, 0 = off */
     /* Lookup by key: open addressing over indices into texs (-1 empty),
      * a power of two at least twice ntexs. The linear search it replaces
      * scanned every texture ever made, for every stage of every draw --
@@ -626,6 +627,10 @@ static VkSampler get_sampler(VkrContext *c, uint32_t au, uint32_t av, int linear
      * the game's own textures are one level, so this changes nothing there. */
     si.mipmapMode = linear ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
     si.maxLod = VK_LOD_CLAMP_NONE;
+    if (linear && c->aniso > 1.0f) {
+        si.anisotropyEnable = VK_TRUE;
+        si.maxAnisotropy = c->aniso;
+    }
     si.addressModeU = m[0]; si.addressModeV = m[1]; si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     si.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     if (vkCreateSampler(c->dev, &si, NULL, &c->samplers[c->nsamplers].s) != VK_SUCCESS)
@@ -709,6 +714,20 @@ VkrContext *vkr_create(void)
             c->max_line = pp.limits.lineWidthRange[1];
         }
         en.textureCompressionBC = pf.textureCompressionBC;   /* HD textures */
+        {
+            /* RECOMP_ANISO (default 16; 0 or 1 = off): anisotropic filtering
+             * on every linear-filtered sampler -- the slopes are seen at
+             * grazing angles, where plain filtering blurs a few metres ahead. */
+            const char *e = getenv("RECOMP_ANISO");
+            float want = e && *e ? (float)atof(e) : 16.0f;
+            if (pf.samplerAnisotropy && want > 1.0f) {
+                en.samplerAnisotropy = VK_TRUE;
+                c->aniso = want < pp.limits.maxSamplerAnisotropy ? want
+                                                                 : pp.limits.maxSamplerAnisotropy;
+            }
+            fprintf(stderr, "[VKR] anisotropic filtering %s (%.0fx)\n",
+                    c->aniso > 1.0f ? "on" : "off", c->aniso > 1.0f ? c->aniso : 1.0f);
+        }
         if (!pf.textureCompressionBC)
             c->bc7 = 0;
         di.pEnabledFeatures = &en;

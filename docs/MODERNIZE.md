@@ -38,10 +38,17 @@ Execution order (quick and visible first, the risky ones last):
 The game's slopes are seen at grazing angles almost all the time; with only
 trilinear filtering the snow (and the HD textures) blurs a few metres ahead.
 
-- [ ] 1.1 Enable `samplerAnisotropy` when the device offers it (`vkr.c`
+- [x] 1.1 Enable `samplerAnisotropy` when the device offers it (`vkr.c`
       device features), `RECOMP_ANISO` (default 16, `0`/`1` = off, capped at
       `maxSamplerAnisotropy`) on every linear-filtered sampler in
       `get_sampler`; log the value once.
+- [ ] 1.1b Mip chains for the game's own textures: the backend decodes only
+      the base level, so distant snow has nothing to filter down to (it
+      shimmers, and anisotropic filtering has less to work with). Build the
+      chain on the GPU at upload (vkCmdBlitImage level by level, linear) for
+      textures that are sampled with a linear filter; not for render
+      targets updated in place (or regenerate on update). `RECOMP_TEX_MIPS`
+      (default on).
 - [ ] 1.2 A/B: Snow Jam race at 5120x1440 (32:9), `RECOMP_ANISO=0` vs 16:
       screenshots (slope ahead of the rider, crop at full resolution) and
       `RECOMP_VKR_GPUPROF` GPU averages; FPS must hold 60.
@@ -50,6 +57,8 @@ trilinear filtering the snow (and the HD textures) blurs a few metres ahead.
       README. Refresh `docs/screenshots/44-launcher.png`.
 
 Notes:
+- 1.1: `c->aniso` in vkr.c (device feature + `get_sampler`), logs
+  `[VKR] anisotropic filtering on (16x)`; RTX 4080 SUPER max is 16.
 
 ## 2. Draw distance and pop-in
 
@@ -187,3 +196,4 @@ Notes:
 ## Progress log
 
 - 2026-10-19 — Plan written (items 1-7, steps, execution order).
+- 2026-10-19 — 1.1 anisotropic filtering: RECOMP_ANISO (default 16x) on all linear samplers; Snow Jam boots to the race. Added step 1.1b (mip chains for the game's own textures: only the base level is uploaded today).
