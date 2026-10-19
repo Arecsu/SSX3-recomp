@@ -2,8 +2,11 @@
 
 PC-port upgrades in the spirit of the 60 FPS, widescreen, MSAA and HD texture
 work: each one a setting with a sensible default, an environment variable
-(`RECOMP_*`, set only when unset in `src/main.c`) and, where players care,
-a launcher option.
+(`RECOMP_*`, set only when unset in `src/main.c`) and **always a launcher
+option** (user, 2026-10-19): every item ends with its launcher step
+(`src/launcher/launcher.c`: control, `launcher.ini` key, environment
+variable at Play), the README knob row and a refreshed
+`docs/screenshots/44-launcher.png`.
 
 This file is also the work queue. Work goes **one step at a time**: a step
 is small enough to finish, verify and commit in one sitting, and every
@@ -92,8 +95,8 @@ fog hides the far end. Find the knobs first, then scale them.
       times), FPS/GPU at 5120x1440, a full Peak 1-2 race each for streaming
       problems (missing sections, stalls -- `[STREAMDUMP]`), memory (the
       guest heap: `[ALLOC] FAILED`).
-- [ ] 2.5 Launcher option (Standard / Far / Maximum) if 2.4 shows a clear
-      win; docs.
+- [ ] 2.5 Launcher: "Draw distance" dropdown (Original / Far / Maximum) ->
+      `RECOMP_DRAW_DIST`; README, screenshot.
 
 Notes:
 
@@ -118,7 +121,10 @@ real corners.
       kept together (anchor by the draw's centre).
 - [ ] 3.4 Verify at 16:9 and 32:9: race, freestyle (score HUD), split screen
       (2 players: both halves -- may need to stay off), results screen.
-      Screenshots in docs; launcher checkbox "HUD at the screen edges".
+      Screenshots in docs.
+- [ ] 3.5 Launcher: "HUD at the screen edges" checkbox (+ safe-area margin
+      if 3.2 adds one) -> `RECOMP_HUD_EDGES` / `RECOMP_HUD_MARGIN`; README,
+      screenshot.
 
 Notes:
 
@@ -140,7 +146,9 @@ projected onto the snow: soft and blocky at 1440p.
       `tex_scale`; clip rect (2,2,124,124) scaled.
 - [ ] 4.4 Verify vs the software path (`RECOMP_SHADOW_RES=1`): same shape,
       sharper; no black wedge regression; GPU time; Peak 1 race + freestyle.
-- [ ] 4.5 Default (e.g. 4 = 512x512), launcher "Shadow quality", docs.
+- [ ] 4.5 Default (e.g. 4 = 512x512). Launcher: "Shadow quality" dropdown
+      (Original 128 / High 512 / Ultra 1024) -> `RECOMP_SHADOW_RES`; README,
+      screenshot.
 
 Notes:
 
@@ -158,6 +166,8 @@ Not measured yet; course loads take several seconds.
       minimum durations). Each fix behind a knob, measured before/after.
 - [ ] 7.3 Reliability check of the faster load: `tools\race_par.ps1` 8x2
       (load stalls were timing-sensitive before).
+- [ ] 7.4 Launcher: "Fast loading" checkbox for the 7.2 knobs (default on);
+      README, screenshot.
 
 Notes:
 
@@ -179,7 +189,8 @@ Time-boxed: if 5.1 finds no clean timestep, stop and write down why.
 - [ ] 5.3 Route B (if not): render-side interpolation is out of scope
       (would need every transform captured); write the conclusion and close.
 - [ ] 5.4 If A works: present at N Hz (window pacing for 120/144 Hz
-      monitors, VRR), launcher "Frame rate" option, docs.
+      monitors, VRR). Launcher: "Frame rate" dropdown (60 / 120 / 144 /
+      monitor) -> `RECOMP_LOGIC_HZ`; README, screenshot.
 
 Notes:
 
@@ -196,7 +207,9 @@ effects (I3DL2 reverb: caves, tunnels, lodge) are silent.
       a feedback-delay network) on the voices' effect send (the APU's FX
       mixbins), parameters from 6.1; `RECOMP_REVERB` (default on once
       approved, `0` off).
-- [ ] 6.3 **[user]** Listening check: tunnel in Metro-City, lodge, open slope
+- [ ] 6.3 Launcher: "Reverb" checkbox -> `RECOMP_REVERB` (+ a level
+      slider/dropdown if 6.2 has a wet level); README, screenshot.
+- [ ] 6.4 **[user]** Listening check: tunnel in Metro-City, lodge, open slope
       (expect little reverb there); adjust wet level from the feedback.
 
 Notes:
@@ -209,3 +222,4 @@ Notes:
 - 2026-10-19 — 1.1 anisotropic filtering: RECOMP_ANISO (default 16x) on all linear samplers; Snow Jam boots to the race. Added step 1.1b (mip chains for the game's own textures: only the base level is uploaded today).
 - 2026-10-19 — 1.1b mip chains for the game's textures (RECOMP_TEX_MIPS); 1.2 A/B: smoother distant snow, GPU 14.2 -> 12.1 ms, 60 FPS on all peaks (4 runs).
 - 2026-10-19 — 1.3 launcher "Texture filtering" dropdown (Trilinear / 4x / 8x / 16x, default 16x), README knob. Item 1 done.
+- 2026-10-19 — Every item now ends with a launcher option step (2.5, 3.5, 4.5, 7.4, 5.4, 6.3).
