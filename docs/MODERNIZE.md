@@ -219,24 +219,39 @@ Notes:
   crisp silhouette at 512 instead of a blob (shots\shadb0 vs shadb4).
   Black-wedge regression not seen in the runs (5 runs).
 
-## 7. Shorter loading times
+## 7. Shorter loading times — done
 
 Not measured yet; course loads take several seconds.
 
-- [ ] 7.1 Measure: boot -> title, title -> main menu, race load (Snow Jam,
+- [x] 7.1 Measure: boot -> title, title -> main menu, race load (Snow Jam,
       Metro-City, a Peak 3 course) with timestamps from game_state.txt /
       `[STATE]`; `RECOMP_WAIT_STATS=1` and `RECOMP_CPU_STATS=1` during a load
       (where do the threads wait: file I/O, guest CPU, timers, the
       streamer's `KeDelayExecutionThread` naps?).
-- [ ] 7.2 Fix what 7.1 shows if cheap (e.g. streamer sleeps shortened while a
+- [x] 7.2 Fix what 7.1 shows if cheap (e.g. streamer sleeps shortened while a
       loading screen is up, file reads served from a host cache, fixed
       minimum durations). Each fix behind a knob, measured before/after.
-- [ ] 7.3 Reliability check of the faster load: `tools\race_par.ps1` 8x2
+- [x] 7.3 Reliability check of the faster load: `tools\race_par.ps1` 8x2
       (load stalls were timing-sensitive before).
-- [ ] 7.4 Launcher: "Fast loading" checkbox for the 7.2 knobs (default on);
+- [x] 7.4 Launcher: "Fast loading" checkbox for the 7.2 knobs (default on);
       README, screenshot.
 
 Notes:
+- 7.1 (state/autonav timestamps, Snow Jam / Metro-City / Peak 2): boot ->
+  frontend 0.6 s, the race load itself ~0.6 s (`loading` state) + ~2 s of
+  in-game setup -- loads are already fast. The wait is the frontend: the
+  title's intro doesn't take Start until ~5.6 s, and "Checking hard disk"
+  (screen 1, vt 0028B428, its state at +0x478 steps to 6) stays ~4.8 s.
+- 7.2: app+0x28 is the game's speed (input samples per timer tick, 1.0,
+  sub_001AD5F0; the app loop runs one update per sample, up to 12 per
+  frame). A wrapper on sub_001AD720 sets it to RECOMP_FAST_BOOT (default 4)
+  while the frontend has no active screen yet (title intro) or the hard
+  disk screen is up, and puts the game's value back after. Boot -> race
+  briefing 22.2 -> 14.1 s; main menu 12.7 -> 4.6 s.
+- 7.3: the race load path is untouched (fast-forward only on those two
+  frontend waits), so instead of a race_par batch: 2 boots to the briefing
+  plus the earlier runs this session, no stalls/crashes (user: keep
+  testing lean).
 
 ## 5. Above 60 FPS (120/144 Hz)
 
@@ -295,3 +310,4 @@ Notes:
 - 2026-10-20 — 2.4/2.5: draw distance default 1.5x, launcher "Draw distance" (Original / Far 1.5x / Maximum 2x); little visible gain in tested views. Item 2 done.
 - 2026-10-20 — Item 3 done: HUD anchored to the screen edges in widescreen (RECOMP_HUD_EDGES, default on; launcher checkbox); race and freestyle HUD checked at 32:9 and 16:9.
 - 2026-10-20 — Item 4 done: shadow maps on the GPU at 512x512 by default (RECOMP_SHADOW_RES; launcher "Shadow quality" Original / High / Ultra).
+- 2026-10-20 — Item 7 done: loads were already short; the frontend's fixed waits (title intro, hard-disk check) now fast-forward x4 (RECOMP_FAST_BOOT; launcher "Fast boot"): boot -> briefing 22.2 -> 14.1 s.

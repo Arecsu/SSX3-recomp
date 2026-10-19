@@ -181,6 +181,51 @@ int ssx3_WidescreenNow(void)
 }
 
 /*
+ * Fast boot (RECOMP_FAST_BOOT, default on; =N sets the speed, 0 = off). On
+ * a PC the loads are short (a race loads in ~0.6 s); what keeps the player
+ * waiting at boot are two fixed frontend pauses: the title's ~5 s intro
+ * before it takes Start (frontend, no screen active yet) and the ~5 s
+ * "Checking hard disk" screen (vtable 0028B428). Each timer tick the app
+ * (sub_001AD720 -> sub_001AD5F0, this = app [0x3A930C]) takes
+ * round(app+0x28 + carry) input samples, and the app loop runs one update
+ * per sample (up to 12 per frame): app+0x28 is the game's own speed, 1.0.
+ * Raised to 4 during those two pauses they pass four times as fast.
+ */
+extern void sub_001AD720_gen(void);
+extern volatile uint32_t g_ssx3_ui_screen_vt, g_ssx3_ui_screen_ptr;
+
+void sub_001AD720(void)
+{
+    static float fast = -1.0f, orig;
+    static int boosted;
+    uint32_t app = MEM32(0x003A930Cu), cur;
+    if (fast < 0.0f) {
+        const char *e = getenv("RECOMP_FAST_BOOT");
+        fast = e && *e ? (float)atof(e) : 4.0f;
+        if (fast > 12.0f) fast = 12.0f;
+    }
+    if (fast > 1.0f && app >= 0x10000u) {
+        int want;
+        cur = MEM32(app + 4);
+        want = cur >= 0x10000u && MEM32(cur) == 0x00289618u      /* frontend */
+            && (!g_ssx3_ui_screen_ptr || g_ssx3_ui_screen_vt == 0x0028B428u);
+        if (want && !boosted) {
+            uint32_t bits = MEM32(app + 0x28);
+            memcpy(&orig, &bits, 4);
+            memcpy(&bits, &fast, 4);
+            MEM32(app + 0x28) = bits;
+            boosted = 1;
+        } else if (!want && boosted) {
+            uint32_t bits;
+            memcpy(&bits, &orig, 4);
+            MEM32(app + 0x28) = bits;
+            boosted = 0;
+        }
+    }
+    sub_001AD720_gen();
+}
+
+/*
  * Draw distance (RECOMP_DRAW_DIST, multiplier; default 1.5, 1 = original,
  * 2 = the most the render lists below hold at their peak). The renderer's
  * camera setup (vtable 0x2F7E50 slot 0x64, thiscall (fovy, zn, zf)) stores

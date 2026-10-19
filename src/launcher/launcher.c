@@ -33,7 +33,7 @@
 enum {
     ID_PATH = 100, ID_BROWSE, ID_STATUS,
     ID_RES, ID_ASPECT, ID_MSAA, ID_ANISO, ID_DRAWDIST, ID_SHADOWS, ID_HUDEDGES, ID_FULLSCREEN, ID_CRT, ID_FPS, ID_HDTEX,
-    ID_SKIPINTRO, ID_DEBUGMENU,
+    ID_SKIPINTRO, ID_FASTBOOT, ID_DEBUGMENU,
     ID_PAD0, ID_PAD1, ID_PAD2, ID_PAD3, ID_KEYS,
     ID_LOGS, ID_PLAY,
     ID_TIMER = 1
@@ -294,6 +294,7 @@ static void load_settings(void)
     CheckDlgButton(s_wnd, ID_HDTEX, ini_int("hd_textures", 1));
     CheckDlgButton(s_wnd, ID_HUDEDGES, ini_int("hud_edges", 1));
     CheckDlgButton(s_wnd, ID_SKIPINTRO, ini_int("skip_intro", 1));
+    CheckDlgButton(s_wnd, ID_FASTBOOT, ini_int("fast_boot", 1));
     CheckDlgButton(s_wnd, ID_DEBUGMENU, ini_int("debug_menu", 0));
     update_status();
 }
@@ -315,6 +316,7 @@ static void save_settings(void)
     ini_set_int("hd_textures", IsDlgButtonChecked(s_wnd, ID_HDTEX) == BST_CHECKED);
     ini_set_int("hud_edges", IsDlgButtonChecked(s_wnd, ID_HUDEDGES) == BST_CHECKED);
     ini_set_int("skip_intro", IsDlgButtonChecked(s_wnd, ID_SKIPINTRO) == BST_CHECKED);
+    ini_set_int("fast_boot", IsDlgButtonChecked(s_wnd, ID_FASTBOOT) == BST_CHECKED);
     ini_set_int("debug_menu", IsDlgButtonChecked(s_wnd, ID_DEBUGMENU) == BST_CHECKED);
 }
 
@@ -364,6 +366,7 @@ static void play(void)
     SetEnvironmentVariableA("RECOMP_HDTEX", IsDlgButtonChecked(s_wnd, ID_HDTEX) ? NULL : "0");
     SetEnvironmentVariableA("RECOMP_HUD_EDGES", IsDlgButtonChecked(s_wnd, ID_HUDEDGES) ? NULL : "0");
     SetEnvironmentVariableA("RECOMP_SKIP_INTRO", IsDlgButtonChecked(s_wnd, ID_SKIPINTRO) ? "1" : "0");
+    SetEnvironmentVariableA("RECOMP_FAST_BOOT", IsDlgButtonChecked(s_wnd, ID_FASTBOOT) ? NULL : "0");
     SetEnvironmentVariableA("RECOMP_DEBUG_MENU", IsDlgButtonChecked(s_wnd, ID_DEBUGMENU) ? "1" : NULL);
 
     ZeroMemory(&si, sizeof si);
@@ -490,6 +493,9 @@ static void build(void)
     add("STATIC", "Game", 0, -1, 20, y, 400, 18, s_bold);
     y += 24;
     add("BUTTON", "Skip the intro movies", BS_AUTOCHECKBOX | WS_TABSTOP, ID_SKIPINTRO, 20, y, 300, 22, s_font);
+    y += 24;
+    add("BUTTON", "Fast boot (shorter title and hard-disk-check waits)", BS_AUTOCHECKBOX | WS_TABSTOP,
+        ID_FASTBOOT, 20, y, 480, 22, s_font);
     y += 24;
     add("BUTTON", "Debug mode: EA's quick-start menu (press Start on the title screen)",
         BS_AUTOCHECKBOX | WS_TABSTOP, ID_DEBUGMENU, 20, y, 480, 22, s_font);
