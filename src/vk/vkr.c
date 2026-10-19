@@ -144,6 +144,23 @@ struct VkrContext {
      * resolved into `resolved` at the flip, and everything that reads the
      * frame (window, guest copy, CRT) reads that. */
     VkSampleCountFlagBits samples;
+    /* Offscreen GPU targets (vkr_offscreen_use): the guest surface's address
+     * as key; while one is current, the target fields above are its own and
+     * the main target's are kept in `main`. */
+    struct VkrOff {
+        uint32_t key, w, h, sw, sh, valid, in_rt;
+        float scale;
+        VkImage color, depth;
+        VkDeviceMemory color_mem, depth_mem;
+        VkImageView color_view, depth_view;
+        struct VkrTex *tex;
+    } off[8];
+    int noff, cur_off;
+    struct {
+        VkImage color, depth; VkImageView color_view, depth_view;
+        uint32_t w, h, sw, sh; float scale, scale_x, squeeze2d, squeeze_all, zmax;
+        VkRect2D sc; uint32_t gsc[4]; int color_valid; VkSampleCountFlagBits samples;
+    } main;
     VkImage resolved;
     VkDeviceMemory resolved_mem;
     VkImageView resolved_view;
@@ -543,7 +560,7 @@ static VkPipeline get_pipeline(VkrContext *c, const VkrDrawState *st, int gpu_vs
     if (!st->blend_enable) key[1] = key[2] = key[3] = 0;
     key[5] = (uint32_t)gpu_vsh;
     key[6] = st->topology;
-    key[7] = (uint32_t)(st->w_buffer != 0);
+    key[7] = (uint32_t)(st->w_buffer != 0) | (uint32_t)c->samples << 4;  /* + MSAA vs offscreen */
     for (i = 0; i < c->npipes; i++)
         if (!memcmp(c->pipes[i].key, key, sizeof key))
             return c->pipes[i].pipe;
@@ -662,6 +679,7 @@ VkrContext *vkr_create(void)
     if (!c) return NULL;
     c->bc7 = -1;
     c->tex_mips = -1;
+    c->cur_off = -1;
     app.pApplicationName = "ssx3"; app.apiVersion = VK_API_VERSION_1_4;
     ii.pApplicationInfo = &app;
     if (vkCreateInstance(&ii, NULL, &c->inst) != VK_SUCCESS) goto fail;
@@ -1008,10 +1026,13 @@ static int flush_wait(VkrContext *c)
     return 1;
 }
 
+void vkr_offscreen_done(VkrContext *c);
+
 int vkr_set_target(VkrContext *c, uint32_t w, uint32_t h, float zmax)
 {
     void *map;
     int f;
+    vkr_offscreen_done(c);
     if (c->color && !flush_wait(c))
         return 0;
     free_target(c);
@@ -1288,6 +1309,136 @@ void vkr_clear_ds(VkrContext *c, int clear_depth, float depth, int clear_stencil
     ca.clearValue.depthStencil.depth = depth;
     ca.clearValue.depthStencil.stencil = stencil;
     vkCmdClearAttachments(c->cmd, 1, &ca, 1, &cr);
+}
+
+/* ---- offscreen targets ---------------------------------------------------
+ * A guest render target the title later samples as a texture (SSX 3's rider
+ * shadow maps, 128x128), drawn on the GPU at `scale` times its size instead
+ * of in software: vkr_offscreen_use(key) makes it the current target (draws,
+ * clears and the scissor go there, in its guest pixels), vkr_offscreen_done
+ * goes back to the main target, and vkr_offscreen_tex hands its image to a
+ * draw that samples it. Nothing is written back to guest memory. */
+static void off_to_read(VkrContext *c, struct VkrOff *o)
+{
+    if (!o->in_rt)
+        return;
+    barrier(c, o->color, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    o->in_rt = 0;
+}
+
+void vkr_offscreen_done(VkrContext *c)
+{
+    struct VkrOff *o;
+    if (c->cur_off < 0)
+        return;
+    o = &c->off[c->cur_off];
+    end_pass(c);
+    o->valid = c->color_valid;
+    off_to_read(c, o);
+    c->color = c->main.color; c->depth = c->main.depth;
+    c->color_view = c->main.color_view; c->depth_view = c->main.depth_view;
+    c->w = c->main.w; c->h = c->main.h; c->sw = c->main.sw; c->sh = c->main.sh;
+    c->scale = c->main.scale; c->scale_x = c->main.scale_x;
+    c->squeeze2d = c->main.squeeze2d; c->squeeze_all = c->main.squeeze_all;
+    c->zmax = c->main.zmax; c->sc = c->main.sc; memcpy(c->gsc, c->main.gsc, sizeof c->gsc);
+    c->color_valid = c->main.color_valid; c->samples = c->main.samples;
+    c->cur_off = -1;
+}
+
+int vkr_offscreen_use(VkrContext *c, uint32_t key, uint32_t w, uint32_t h, float scale, float zmax)
+{
+    struct VkrOff *o = NULL;
+    int i;
+    if (!c->color || !begin_cmd(c))
+        return 0;
+    for (i = 0; i < c->noff; i++)
+        if (c->off[i].key == key && c->off[i].w == w && c->off[i].h == h)
+            o = &c->off[i];
+    if (c->cur_off >= 0 && o == &c->off[c->cur_off])
+        return 1;
+    vkr_offscreen_done(c);
+    if (!o) {
+        if (c->noff == 8)
+            return 0;
+        o = &c->off[c->noff];
+        memset(o, 0, sizeof *o);
+        o->key = key; o->w = w; o->h = h; o->scale = scale;
+        o->sw = (uint32_t)((float)w * scale + 0.5f); o->sh = (uint32_t)((float)h * scale + 0.5f);
+        end_pass(c);
+        if (!make_image(c, VK_FORMAT_B8G8R8A8_UNORM,
+                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                        VK_IMAGE_ASPECT_COLOR_BIT, &o->color, &o->color_mem, &o->color_view,
+                        o->sw, o->sh)
+            || !make_image(c, c->depth_fmt, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                           ds_aspect(c), &o->depth, &o->depth_mem, &o->depth_view, o->sw, o->sh))
+            return 0;
+        o->tex = (VkrTex *)calloc(1, sizeof *o->tex);
+        o->tex->img = o->color; o->tex->view = o->color_view;
+        o->tex->w = o->sw; o->tex->h = o->sh; o->tex->key = 0x0FF5C0000000000ull | key;
+        barrier(c, o->color, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        barrier(c, o->depth, ds_aspect(c), VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
+                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+        fprintf(stderr, "[VKR] offscreen target %08X %ux%u on the GPU at %ux%u\n", key, w, h, o->sw, o->sh);
+        c->noff++;
+    }
+    end_pass(c);
+    c->main.color = c->color; c->main.depth = c->depth;
+    c->main.color_view = c->color_view; c->main.depth_view = c->depth_view;
+    c->main.w = c->w; c->main.h = c->h; c->main.sw = c->sw; c->main.sh = c->sh;
+    c->main.scale = c->scale; c->main.scale_x = c->scale_x;
+    c->main.squeeze2d = c->squeeze2d; c->main.squeeze_all = c->squeeze_all;
+    c->main.zmax = c->zmax; c->main.sc = c->sc; memcpy(c->main.gsc, c->gsc, sizeof c->gsc);
+    c->main.color_valid = c->color_valid; c->main.samples = c->samples;
+    barrier(c, o->color, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    o->in_rt = 1;
+    c->color = o->color; c->depth = o->depth;
+    c->color_view = o->color_view; c->depth_view = o->depth_view;
+    c->w = o->w; c->h = o->h; c->sw = o->sw; c->sh = o->sh;
+    c->scale = c->scale_x = o->scale;
+    c->squeeze2d = 1.0f; c->squeeze_all = 0.0f;
+    if (zmax > 0.0f)
+        c->zmax = zmax;
+    c->color_valid = o->valid;
+    c->samples = VK_SAMPLE_COUNT_1_BIT;
+    c->cur_off = (int)(o - c->off);
+    c->sc.offset.x = c->sc.offset.y = 0; c->sc.extent.width = o->sw; c->sc.extent.height = o->sh;
+    c->gsc[0] = c->gsc[1] = 0; c->gsc[2] = w; c->gsc[3] = h;
+    return 1;
+}
+
+/* 1 and its guest size if key is an offscreen target already. */
+int vkr_offscreen_size(VkrContext *c, uint32_t key, uint32_t *w, uint32_t *h)
+{
+    int i;
+    for (i = 0; i < c->noff; i++)
+        if (c->off[i].key == key) {
+            *w = c->off[i].w; *h = c->off[i].h;
+            return 1;
+        }
+    return 0;
+}
+
+VkrTex *vkr_offscreen_tex(VkrContext *c, uint32_t key)
+{
+    int i;
+    for (i = 0; i < c->noff; i++)
+        if (c->off[i].key == key && c->off[i].valid) {
+            if (c->cur_off == i)
+                return NULL;            /* sampling the target being drawn: not supported */
+            return c->off[i].tex;
+        }
+    return NULL;
 }
 
 VkrTex *vkr_tex_find(VkrContext *c, uint64_t key)
@@ -1914,6 +2065,7 @@ int vkr_flip_submit(VkrContext *c)
     VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
     int slot = c->cur;
     VkImage frame;                       /* the finished, single-sample image */
+    vkr_offscreen_done(c);               /* the frame is the main target's */
     if (!begin_cmd(c)) return -1;
     frame = c->resolved ? c->resolved : c->color;
     if (c->squeeze_all > 0.5f) {

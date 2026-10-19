@@ -179,29 +179,45 @@ Notes:
   at 32:9 (leaderboard left, score/boost right, timer/trick score centre);
   60 FPS. Not checked: split screen, pause menu, results screen.
 
-## 4. Sharper shadows
+## 4. Sharper shadows — done
 
 Rider shadows come from 128x128 swizzled shadow maps the executor draws in
 software (`[VKR] offscreen surface ... drawn in software`), then sampled
 projected onto the snow: soft and blocky at 1440p.
 
-- [ ] 4.1 Offscreen targets in `vkr.c`: colour (+ depth if the shadow pass
+- [x] 4.1 Offscreen targets in `vkr.c`: colour (+ depth if the shadow pass
       uses it) images per guest surface address, sized surface x
       `RECOMP_SHADOW_RES` scale; begin/end rendering into them; clears.
-- [ ] 4.2 Route draws to the shadow-map surfaces (swizzled 128x128 colour
+- [x] 4.2 Route draws to the shadow-map surfaces (swizzled 128x128 colour
       targets) to the GPU target instead of software; keep the guest copy
       only if something else reads it (check: the title never reads them
       back on the CPU?).
-- [ ] 4.3 Bind the GPU image directly when a later draw samples that surface
+- [x] 4.3 Bind the GPU image directly when a later draw samples that surface
       (today `is_rt` + decode from guest memory), with the scale folded into
       `tex_scale`; clip rect (2,2,124,124) scaled.
-- [ ] 4.4 Verify vs the software path (`RECOMP_SHADOW_RES=1`): same shape,
+- [x] 4.4 Verify vs the software path (`RECOMP_SHADOW_RES=1`): same shape,
       sharper; no black wedge regression; GPU time; Peak 1 race + freestyle.
-- [ ] 4.5 Default (e.g. 4 = 512x512). Launcher: "Shadow quality" dropdown
+- [x] 4.5 Default (e.g. 4 = 512x512). Launcher: "Shadow quality" dropdown
       (Original 128 / High 512 / Ultra 1024) -> `RECOMP_SHADOW_RES`; README,
       screenshot.
 
 Notes:
+- vkr.c: up to 8 offscreen targets (struct VkrOff, keyed by guest address):
+  vkr_offscreen_use swaps the target fields (images, size, scale, scissor,
+  samples) and saves the main target's in c->main; vkr_offscreen_done
+  restores them (also at every flip and vkr_set_target); the colour image
+  is SHADER_READ outside its passes and is bound through a VkrTex wrapper
+  (vkr_offscreen_tex). Pipelines carry the sample count in key[7] (main may
+  be MSAA, offscreen is 1x). vkr_backend.c pick_target: a swizzled 32-bit
+  target -> offscreen at RECOMP_SHADOW_RES x its size (clip rounded up to a
+  power of two: 128x128 for SSX 3); the same address in pitch layout (the
+  game clears its shadow maps that way every frame) also goes there --
+  without it the shadows smeared across frames. bind_textures takes the
+  offscreen image first for render-target addresses. Nothing is written to
+  guest memory any more (the title never reads them on the CPU). 6 maps per
+  race, 60 FPS, GPU unchanged; Snow Jam: the other riders' shadows are a
+  crisp silhouette at 512 instead of a blob (shots\shadb0 vs shadb4).
+  Black-wedge regression not seen in the runs (5 runs).
 
 ## 7. Shorter loading times
 
@@ -278,3 +294,4 @@ Notes:
 - 2026-10-20 — 2.2/2.3: far plane knob RECOMP_DRAW_DIST (camera setup sub_001EAB40); the render lists that overflowed at a longer view are bounded (C versions of D2540/D25F0, skip-when-full guards on D1EA0/D1FF0/D2490/D2060/D2230/D3540); far x3 runs without crashing.
 - 2026-10-20 — 2.4/2.5: draw distance default 1.5x, launcher "Draw distance" (Original / Far 1.5x / Maximum 2x); little visible gain in tested views. Item 2 done.
 - 2026-10-20 — Item 3 done: HUD anchored to the screen edges in widescreen (RECOMP_HUD_EDGES, default on; launcher checkbox); race and freestyle HUD checked at 32:9 and 16:9.
+- 2026-10-20 — Item 4 done: shadow maps on the GPU at 512x512 by default (RECOMP_SHADOW_RES; launcher "Shadow quality" Original / High / Ultra).

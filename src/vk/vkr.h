@@ -79,6 +79,13 @@ VkrTex *vkr_tex_create_ex(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,
                           const uint32_t *pixels, int mips);
 int vkr_tex_update(VkrContext *c, VkrTex *t, uint64_t key, const uint32_t *pixels);
 int vkr_has_bc7(VkrContext *c);
+/* Offscreen GPU targets keyed by the guest surface address (shadow maps):
+ * make one current (w x h guest pixels, drawn at scale), go back to the
+ * main target, or get its image to sample (NULL if never drawn). */
+int     vkr_offscreen_use(VkrContext *c, uint32_t key, uint32_t w, uint32_t h, float scale, float zmax);
+void    vkr_offscreen_done(VkrContext *c);
+VkrTex *vkr_offscreen_tex(VkrContext *c, uint32_t key);
+int     vkr_offscreen_size(VkrContext *c, uint32_t key, uint32_t *w, uint32_t *h);
 /* BC7 with mips (levels back to back, as in a DDS); NULL if not possible now. */
 #define VKR_TEX_ALPHA2 1u                /* alpha on the PS2 scale: x2 when sampled */
 VkrTex *vkr_tex_create_bc7(VkrContext *c, uint64_t key, uint32_t w, uint32_t h,

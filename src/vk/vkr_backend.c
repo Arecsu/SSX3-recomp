@@ -231,6 +231,65 @@ static int is_main(const Nv2aTarget *t)
     return 1;
 }
 
+/* Sharper shadows (RECOMP_SHADOW_RES, scale of the guest size, default 4:
+ * SSX 3's 128x128 rider shadow maps at 512x512; 0 = the old software path):
+ * a swizzled 32-bit render target is drawn on the GPU into an offscreen
+ * target (vkr_offscreen_use) and later draws sample that image directly
+ * (bind_textures). Its size: the clip rectangle rounded up to a power of
+ * two (swizzled surfaces are). */
+static float shadow_scale(void)
+{
+    static float sc = -1.0f;
+    if (sc < 0.0f) {
+        const char *e = getenv("RECOMP_SHADOW_RES");
+        sc = e && *e ? (float)atof(e) : 4.0f;
+        if (sc < 0.0f || sc > 8.0f)
+            sc = 4.0f;
+    }
+    return sc;
+}
+
+static uint32_t pow2_ceil(uint32_t v)
+{
+    uint32_t p = 1;
+    while (p < v)
+        p <<= 1;
+    return p;
+}
+
+static int off_target(const Nv2aTarget *t)
+{
+    uint32_t w, h;
+    if (shadow_scale() <= 0.0f || t->bpp != 4)
+        return 0;
+    if (!t->swizzled) {
+        /* The same surface addressed in pitch layout: SSX 3 clears its
+         * shadow maps that way every frame -- the GPU copy must see it. */
+        if (!vkr_offscreen_size(s_vk, t->color_offset, &w, &h))
+            return 0;
+    } else {
+        w = pow2_ceil(t->x + t->width); h = pow2_ceil(t->y + t->height);
+        if (w > 1024 || h > 1024)
+            return 0;
+    }
+    note_rt(t->color_offset);
+    if (!vkr_offscreen_use(s_vk, t->color_offset, w, h, shadow_scale(), (float)t->zmax))
+        return 0;
+    vkr_set_scissor(s_vk, t->x, t->y, t->width, t->height);
+    return 1;
+}
+
+/* The draw's target: an offscreen GPU target (1), the main target (1), or
+ * neither (0: the executor draws it in software). */
+static int pick_target(const Nv2aTarget *t, int *offscreen)
+{
+    *offscreen = off_target(t);
+    if (*offscreen)
+        return 1;
+    vkr_offscreen_done(s_vk);
+    return is_main(t);
+}
+
 static void fill_state(const Nv2aTarget *t, VkrDrawState *st)
 {
     vkr_set_pillarbox(s_vk, !ssx3_WidescreenNow());
@@ -364,7 +423,11 @@ static void bind_textures(VkrDrawState *st)
             continue;
         if (!nv2a_exec_tex_info(k, &ti))
             continue;
-        tex = vkr_tex_find(s_vk, ti.hash);
+        /* A render target drawn on the GPU (shadow maps): its image, not
+         * guest memory (which nothing writes any more). */
+        tex = is_rt(ti.offset) && !ti.cube ? vkr_offscreen_tex(s_vk, ti.offset) : NULL;
+        if (!tex)
+            tex = vkr_tex_find(s_vk, ti.hash);
         if (s_stats) s_t[1] += now_ms() - t0;
         if (!tex) {
             double t1 = s_stats ? now_ms() : 0;
@@ -729,11 +792,12 @@ static float hud_shift(const Nv2aVshOutput *v, uint32_t n)
 static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, uint32_t n)
 {
     uint32_t *idx, k = 0, topo;
+    int offscreen;
 
     double td = 0;
     if (s_stats < 0) s_stats = getenv("RECOMP_VKR_STATS") != NULL;
     if (s_stats) { td = now_ms(); stats_tick(); }
-    if (!is_main(t)) {
+    if (!pick_target(t, &offscreen)) {
         /* RECOMP_VKR_SKIP_RT=1 (measurement): drop draws into swizzled
          * render targets (the rider shadow maps) instead of handing them to
          * the software rasteriser -- what drawing them costs. */
@@ -753,7 +817,7 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
         memset(&st, 0, sizeof st);
         fill_state(t, &st);
         st.topology = topo;
-        st.hud_shift = hud_shift(v, n);
+        st.hud_shift = offscreen ? 0.0f : hud_shift(v, n);
         double t2;
         bind_textures(&st);
         primlog(&st, n, 0);
@@ -783,17 +847,18 @@ static int be_draw_vsh(const Nv2aTarget *t, uint32_t prim, const float *in, uint
                        const Nv2aVshProgram *p)
 {
     uint32_t *idx, k = 0, topo;
+    int offscreen;
     double td = 0;
     if (s_trace == 2)
         return 0;
     if (s_stats < 0) s_stats = getenv("RECOMP_VKR_STATS") != NULL;
     if (s_stats) { td = now_ms(); stats_tick(); }
-    if (!is_main(t))
+    if (!pick_target(t, &offscreen))
         return 0;
     /* Small draws in widescreen game: the CPU runs the program (microseconds
      * for a HUD element), so be_draw sees where the draw lands on screen and
      * can anchor it (hud_shift). */
-    if (n <= 64 && hud_edges_on())
+    if (!offscreen && n <= 64 && hud_edges_on())
         return 0;
     if (!(idx = build_idx(prim, n, &k, &topo)))
         return 0;
@@ -878,9 +943,11 @@ static void clearlog(const Nv2aTarget *t, uint32_t flags, float depth)
 static int be_clear(const Nv2aTarget *t, uint32_t flags, uint32_t argb, float depth)
 {
     float c[4];
-    if (!is_main(t))
+    int offscreen;
+    if (!pick_target(t, &offscreen))
         return 0;
-    clearlog(t, flags, depth);
+    if (!offscreen)
+        clearlog(t, flags, depth);
     c[0] = (float)((argb >> 16) & 0xFF) / 255.0f;
     c[1] = (float)((argb >> 8) & 0xFF) / 255.0f;
     c[2] = (float)(argb & 0xFF) / 255.0f;
