@@ -289,25 +289,33 @@ Notes:
   (done earlier) and VRR; app+0x28 (input samples per tick) is a game-speed
   knob, not a frame-rate one (used for fast boot, item 7).
 
-## 6. Audio effects (reverb)
+## 6. Audio: effects, downmix, surround
 
-The APU's effects DSP (GP DSP56300 microcode) is a stub, so DirectSound's
-effects (I3DL2 reverb: caves, tunnels, lodge) are silent.
+The plan assumed SSX 3 uses DirectSound's I3DL2 reverb (lost because the
+APU's effects DSP is a stub). Measured first (6.1): it does not -- so the
+item became getting the speaker mix right.
 
-- [ ] 6.1 Find what SSX 3 asks for: the DirectSound effect image it downloads,
-      I3DL2 listener/reverb parameter writes per scene (DSOUND
-      `SetI3DL2Listener`-style calls, effect parameter uploads to the GP);
-      log them per course/area (`RECOMP_FX_TRACE`).
-- [ ] 6.2 Host reverb on the mix: an I3DL2-style reverb (e.g. Freeverb /
-      a feedback-delay network) on the voices' effect send (the APU's FX
-      mixbins), parameters from 6.1; `RECOMP_REVERB` (default on once
-      approved, `0` off).
-- [ ] 6.3 Launcher: "Reverb" checkbox -> `RECOMP_REVERB` (+ a level
-      slider/dropdown if 6.2 has a wet level); README, screenshot.
-- [ ] 6.4 **[user]** Listening check: tunnel in Metro-City, lodge, open slope
-      (expect little reverb there); adjust wet level from the feedback.
+- [x] 6.1 Find what SSX 3 asks for: `RECOMP_APU_BINS=1` (toolkit apu_dsp.c)
+      prints the RMS level of every mixbin once a second.
+- [x] 6.2 Correct stereo downmix of the speaker bins (toolkit apu_dsp.c):
+      centre and rears at -3 dB, LFE at -6 dB -- the old even/odd rule put
+      the whole centre channel in the left speaker.
+- [ ] 6.3 5.1 output: the game already mixes front/centre/rear; an XAudio2
+      6-channel mastering voice fed bins 0-5 directly (`RECOMP_AUDIO_CHANNELS`
+      = 2 / 6, default stereo), the frame buffer carrying 6 channels.
+- [ ] 6.4 Launcher: "Audio output" dropdown (Stereo / 5.1 surround) ->
+      `RECOMP_AUDIO_CHANNELS`; README, screenshot.
+- [ ] 6.5 **[user]** Listening check: stereo balance (the announcer and
+      centred sounds no longer lean left), and 5.1 on a surround setup if
+      available.
 
 Notes:
+- 6.1 (Snow Jam and Metro-City races, 75 s each, RECOMP_APU_BINS=1): only
+  bins 0, 1, 2, 4, 5 carry sound (FL, FR, centre, BL, BR; rms ~0.03-0.16);
+  no LFE (3), nothing in the crosstalk bins (6-9), the I3DL2 reverb send
+  (10) or the FX sends (11+). No reverb is being lost. The stereo mixdown
+  (even bins left, odd right) put the centre channel in the left speaker
+  only.
 
 ---
 
@@ -325,3 +333,4 @@ Notes:
 - 2026-10-20 — Item 4 done: shadow maps on the GPU at 512x512 by default (RECOMP_SHADOW_RES; launcher "Shadow quality" Original / High / Ultra).
 - 2026-10-20 — Item 7 done: loads were already short; the frontend's fixed waits (title intro, hard-disk check) now fast-forward x4 (RECOMP_FAST_BOOT; launcher "Fast boot"): boot -> briefing 22.2 -> 14.1 s.
 - 2026-10-20 — Item 5 closed as not feasible: no shared timestep (1/60 pushed literally at 72 call sites, ~200 constants, per-update counters); notes in the plan.
+- 2026-10-20 — 6.1/6.2: SSX 3 sends nothing to the reverb/FX bins (measured), so item 6 became the speaker mix: stereo downmix fixed (the centre channel went to the left speaker only); 5.1 output next.

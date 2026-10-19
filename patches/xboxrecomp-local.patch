@@ -237,6 +237,72 @@ index 258048c..ce8ded3 100644
      /* Start background frame thread */
      qemu_thread_create(&d->apu_thread, "mcpx.apu_thread",
                         mcpx_apu_frame_thread, d, QEMU_THREAD_JOINABLE);
+diff --git a/src/apu/apu_dsp.c b/src/apu/apu_dsp.c
+index 7156be9..9587be8 100644
+--- a/src/apu/apu_dsp.c
++++ b/src/apu/apu_dsp.c
+@@ -25,6 +25,8 @@
+ #include "apu_state.h"
+ #include "fpconv.h"
+ 
++#include <math.h>
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
+@@ -157,6 +159,32 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d,
+ 
+     int off = (d->ep_frame_div % 8) * NUM_SAMPLES_PER_FRAME;
+ 
++    {
++        /* RECOMP_APU_BINS=1: once a second, the RMS level of every mixbin
++         * that carried sound (DirectSound: 0-5 speakers, 6-9 crosstalk, 10
++         * the I3DL2 reverb send, 11+ FX sends) -- which bins a title feeds
++         * the effects processor this mixdown stands in for. */
++        static int on = -1;
++        static double sum[NUM_MIXBINS];
++        static unsigned frames;
++        if (on < 0)
++            on = getenv("RECOMP_APU_BINS") != NULL;
++        if (on) {
++            for (int b = 0; b < NUM_MIXBINS; ++b)
++                for (int i = 0; i < NUM_SAMPLES_PER_FRAME; ++i)
++                    sum[b] += (double)mixbins[b][i] * mixbins[b][i];
++            if (++frames >= 1500) {          /* 1500 x 32 samples = 1 s at 48 kHz */
++                fprintf(stderr, "[APU-BINS] rms");
++                for (int b = 0; b < NUM_MIXBINS; ++b)
++                    if (sum[b] > 0.0)
++                        fprintf(stderr, " %d:%.4f", b, sqrt(sum[b] / (frames * NUM_SAMPLES_PER_FRAME)));
++                fprintf(stderr, "\n");
++                memset(sum, 0, sizeof sum);
++                frames = 0;
++            }
++        }
++    }
++
+     if (d->monitor.point != MCPX_APU_DEBUG_MON_VP) {
+         for (int i = 0; i < NUM_SAMPLES_PER_FRAME; i++) {
+             /* Bins 2..31 used to be computed and then dropped on the floor.
+@@ -188,9 +216,16 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d,
+              * mixdown that stops discarding audio. */
+             float left, right;
+             if (mcpx_apu_mixdown_all()) {
+-                left = 0.0f;
+-                right = 0.0f;
+-                for (int b = 0; b < NUM_MIXBINS; ++b) {
++                /* Bins 0-5 are DirectSound's speakers (FL FR C LFE BL BR):
++                 * the standard stereo downmix -- centre and rears at -3 dB
++                 * into both sides / their side, LFE at -6 dB into both. The
++                 * even/odd rule below put the whole centre channel in the
++                 * left speaker (SSX 3 feeds bins 0, 1, 2, 4, 5). Bins 6 and
++                 * up keep the even-left / odd-right pairing. */
++                const float k3 = 0.70710678f, k6 = 0.5f;
++                left  = mixbins[0][i] + k3 * mixbins[2][i] + k6 * mixbins[3][i] + k3 * mixbins[4][i];
++                right = mixbins[1][i] + k3 * mixbins[2][i] + k6 * mixbins[3][i] + k3 * mixbins[5][i];
++                for (int b = 6; b < NUM_MIXBINS; ++b) {
+                     if (b & 1) right += mixbins[b][i];
+                     else       left  += mixbins[b][i];
+                 }
 diff --git a/src/apu/apu_vp.c b/src/apu/apu_vp.c
 index f45b42b..d03ef75 100644
 --- a/src/apu/apu_vp.c
