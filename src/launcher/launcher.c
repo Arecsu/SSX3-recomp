@@ -431,7 +431,7 @@ static void build(void)
     y += 24;
     add("BUTTON", "FPS counter (F3 toggles in game)", BS_AUTOCHECKBOX | WS_TABSTOP, ID_FPS, 20, y, 300, 22, s_font);
     y += 24;
-    add("BUTTON", "HD textures (the pack's DDS files in the hd-textures folder)",
+    add("BUTTON", "HD textures (Bl4ckH4nd's HD texture pack)",
         BS_AUTOCHECKBOX | WS_TABSTOP, ID_HDTEX, 20, y, 480, 22, s_font);
     y += 34;
 
