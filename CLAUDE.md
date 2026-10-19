@@ -31,6 +31,8 @@ CPU): race at a steady 60 FPS. The black
 shapes over the race backdrop were the executor dropping ARRAY_ELEMENT32
 (0x1808, the odd last index of an index list) -- fixed in the toolkit patch.
 
+**Modernising (2026-10-19):** [docs/MODERNIZE.md](docs/MODERNIZE.md) is the work queue for the PC upgrades (anisotropic filtering, draw distance, HUD at the edges, shadows, loading, >60 FPS, reverb): one step per commit, first unticked box next.
+
 **Roadmap:** [docs/ROADMAP.md](docs/ROADMAP.md) is the plan and tracker (phases,
 gates, checkboxes, progress log). Work from it: pick the next unchecked item of
 the earliest open phase, tick it in the commit that lands it, and add a dated

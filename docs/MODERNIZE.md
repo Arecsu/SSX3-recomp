@@ -1,0 +1,189 @@
+# Modernising SSX 3: the plan
+
+PC-port upgrades in the spirit of the 60 FPS, widescreen, MSAA and HD texture
+work: each one a setting with a sensible default, an environment variable
+(`RECOMP_*`, set only when unset in `src/main.c`) and, where players care,
+a launcher option.
+
+This file is also the work queue. Work goes **one step at a time**: a step
+is small enough to finish, verify and commit in one sitting, and every
+finished step is committed and pushed with its box ticked and a dated line
+in the progress log at the bottom. Stopping at any point loses at most the
+step in progress; the next session starts at the first unticked box.
+
+## How a step is done
+
+1. `~/.local/bin/claude-usage --check 70` first: stop if over.
+2. Take the first unticked step of the first item that is not done, blocked
+   or waiting on the user (execution order below).
+3. Do it. Functional checks: one single-instance scripted run first
+   (`tools\live.ps1`, `tools\burst.ps1`, `tools\bench.ps1`; muted, ignores the
+   real controllers). Screenshots via `RECOMP_SNAP_PRESENTED=1`, never of the
+   desktop. Parallel batches only to measure failure rates.
+4. If the user's game is running, `build\ssx3_recomp.exe` is locked: rename it
+   aside (`build\ssx3_recomp.running-old*.exe`), never end their process.
+5. Commit (author Koen Hendriks <info@koenhendriks.nl>, no Claude trailers),
+   push to `origin` and `github`. Tick the box, add a progress-log line, and
+   note anything the next step needs to know in that item's **Notes**.
+6. A step that needs the user (listening, playing, a choice) is marked
+   **[user]** and skipped until they answer; carry on with the next item.
+
+Execution order (quick and visible first, the risky ones last):
+**1 → 2 → 3 → 4 → 7 → 5 → 6**.
+
+---
+
+## 1. Anisotropic filtering
+
+The game's slopes are seen at grazing angles almost all the time; with only
+trilinear filtering the snow (and the HD textures) blurs a few metres ahead.
+
+- [ ] 1.1 Enable `samplerAnisotropy` when the device offers it (`vkr.c`
+      device features), `RECOMP_ANISO` (default 16, `0`/`1` = off, capped at
+      `maxSamplerAnisotropy`) on every linear-filtered sampler in
+      `get_sampler`; log the value once.
+- [ ] 1.2 A/B: Snow Jam race at 5120x1440 (32:9), `RECOMP_ANISO=0` vs 16:
+      screenshots (slope ahead of the rider, crop at full resolution) and
+      `RECOMP_VKR_GPUPROF` GPU averages; FPS must hold 60.
+- [ ] 1.3 Launcher: "Texture filtering" dropdown (Trilinear, 4x, 8x, 16x
+      anisotropic; default 16x) -> `RECOMP_ANISO`; README knob row; player
+      README. Refresh `docs/screenshots/44-launcher.png`.
+
+Notes:
+
+## 2. Draw distance and pop-in
+
+Tuned for the Xbox: props and trees switch to low detail or appear late, and
+fog hides the far end. Find the knobs first, then scale them.
+
+- [ ] 2.1 Measure: log the projection's near/far planes (our
+      `sub_0024EA13` PerspectiveFovLH wrapper, `zn`/`zf` arguments) and the
+      fog range the executor sees (fog mode/params per frame), per course
+      (Snow Jam, Metro-City, a Peak 2 race). Record in Notes.
+- [ ] 2.2 Find the LOD / visibility distance tests: trace which code decides
+      that a model instance is drawn and at which detail (renderer
+      `[0x369528]` draw-list builders; look for float compares against
+      distances / squared distances in the instance loop; `RECOMP_WATCH` /
+      the decomp). Write down function addresses and constants in Notes.
+- [ ] 2.3 `RECOMP_DRAW_DIST` (multiplier, default to be chosen, 1 = original)
+      applied to what 2.1/2.2 found (far plane, LOD distances; fog start/end
+      only if the far end then shows the world's edge). `_gen` wrappers or a
+      poke of the constants, whichever the code allows.
+- [ ] 2.4 Verify: A/B screenshots at the same course spots (burst at fixed
+      times), FPS/GPU at 5120x1440, a full Peak 1-2 race each for streaming
+      problems (missing sections, stalls -- `[STREAMDUMP]`), memory (the
+      guest heap: `[ALLOC] FAILED`).
+- [ ] 2.5 Launcher option (Standard / Far / Maximum) if 2.4 shows a clear
+      win; docs.
+
+Notes:
+
+## 3. HUD anchored to the screen edges (widescreen)
+
+In widescreen the HUD keeps the 4:3 middle (2D vertices, w == 1, are
+narrowed by `squeeze2d` in the vertex shaders). Modern ports pin it to the
+real corners.
+
+- [ ] 3.1 Map the HUD draws in a race: which draws are HUD (2D, in-game
+      state, HUD screen vtable 00293000), their guest-pixel boxes (place,
+      speed, trick meter, timer, minimap). `RECOMP_VKR_TRACE_*` style log,
+      screenshots. Notes: element list with boxes.
+- [ ] 3.2 Per-draw anchor in `vkr_backend.c`: a 2D draw whose box lies in the
+      left third moves with the left edge, right third with the right edge,
+      the middle stays centred; full-screen passes (wider than ~90% of the
+      screen) keep today's handling. Pushed as a per-draw x offset (push
+      constant) next to `squeeze2d`. `RECOMP_HUD_EDGES` (default on in
+      widescreen), `RECOMP_HUD_MARGIN` (safe-area inset, % of width).
+- [ ] 3.3 Exclusions: menus/pillarboxed screens unchanged, pause menu and
+      dialogs centred, race briefing panel centred; text that spans thirds
+      kept together (anchor by the draw's centre).
+- [ ] 3.4 Verify at 16:9 and 32:9: race, freestyle (score HUD), split screen
+      (2 players: both halves -- may need to stay off), results screen.
+      Screenshots in docs; launcher checkbox "HUD at the screen edges".
+
+Notes:
+
+## 4. Sharper shadows
+
+Rider shadows come from 128x128 swizzled shadow maps the executor draws in
+software (`[VKR] offscreen surface ... drawn in software`), then sampled
+projected onto the snow: soft and blocky at 1440p.
+
+- [ ] 4.1 Offscreen targets in `vkr.c`: colour (+ depth if the shadow pass
+      uses it) images per guest surface address, sized surface x
+      `RECOMP_SHADOW_RES` scale; begin/end rendering into them; clears.
+- [ ] 4.2 Route draws to the shadow-map surfaces (swizzled 128x128 colour
+      targets) to the GPU target instead of software; keep the guest copy
+      only if something else reads it (check: the title never reads them
+      back on the CPU?).
+- [ ] 4.3 Bind the GPU image directly when a later draw samples that surface
+      (today `is_rt` + decode from guest memory), with the scale folded into
+      `tex_scale`; clip rect (2,2,124,124) scaled.
+- [ ] 4.4 Verify vs the software path (`RECOMP_SHADOW_RES=1`): same shape,
+      sharper; no black wedge regression; GPU time; Peak 1 race + freestyle.
+- [ ] 4.5 Default (e.g. 4 = 512x512), launcher "Shadow quality", docs.
+
+Notes:
+
+## 7. Shorter loading times
+
+Not measured yet; course loads take several seconds.
+
+- [ ] 7.1 Measure: boot -> title, title -> main menu, race load (Snow Jam,
+      Metro-City, a Peak 3 course) with timestamps from game_state.txt /
+      `[STATE]`; `RECOMP_WAIT_STATS=1` and `RECOMP_CPU_STATS=1` during a load
+      (where do the threads wait: file I/O, guest CPU, timers, the
+      streamer's `KeDelayExecutionThread` naps?).
+- [ ] 7.2 Fix what 7.1 shows if cheap (e.g. streamer sleeps shortened while a
+      loading screen is up, file reads served from a host cache, fixed
+      minimum durations). Each fix behind a knob, measured before/after.
+- [ ] 7.3 Reliability check of the faster load: `tools\race_par.ps1` 8x2
+      (load stalls were timing-sensitive before).
+
+Notes:
+
+## 5. Above 60 FPS (120/144 Hz)
+
+The game logic runs at 60 updates/s (frame timer 1000/60 ms, input ring at
+60 Hz). Two possible routes; investigate before committing to one.
+Time-boxed: if 5.1 finds no clean timestep, stop and write down why.
+
+- [ ] 5.1 Investigate the timestep: is there a dt (float seconds per update)
+      that physics, animation and timers use, or are rates hard-coded per
+      update? (frame timer `sub_001AE480`/`sub_001AE030`, app loop
+      `sub_001AD880` update counter `+0x20`/`+0x24`, `app+0x28/0x30/0x34`
+      floats.) Notes: findings + go / no-go for each route.
+- [ ] 5.2 Route A (if a dt exists): updates at N Hz with dt = 1/N
+      (`RECOMP_LOGIC_HZ`), frame timer period 1000/N; check physics (speed,
+      jumps), animation, audio sync, AI, race timer accuracy against 60 Hz
+      runs (finish time of a scripted race, `[FRAMES]`).
+- [ ] 5.3 Route B (if not): render-side interpolation is out of scope
+      (would need every transform captured); write the conclusion and close.
+- [ ] 5.4 If A works: present at N Hz (window pacing for 120/144 Hz
+      monitors, VRR), launcher "Frame rate" option, docs.
+
+Notes:
+
+## 6. Audio effects (reverb)
+
+The APU's effects DSP (GP DSP56300 microcode) is a stub, so DirectSound's
+effects (I3DL2 reverb: caves, tunnels, lodge) are silent.
+
+- [ ] 6.1 Find what SSX 3 asks for: the DirectSound effect image it downloads,
+      I3DL2 listener/reverb parameter writes per scene (DSOUND
+      `SetI3DL2Listener`-style calls, effect parameter uploads to the GP);
+      log them per course/area (`RECOMP_FX_TRACE`).
+- [ ] 6.2 Host reverb on the mix: an I3DL2-style reverb (e.g. Freeverb /
+      a feedback-delay network) on the voices' effect send (the APU's FX
+      mixbins), parameters from 6.1; `RECOMP_REVERB` (default on once
+      approved, `0` off).
+- [ ] 6.3 **[user]** Listening check: tunnel in Metro-City, lodge, open slope
+      (expect little reverb there); adjust wet level from the feedback.
+
+Notes:
+
+---
+
+## Progress log
+
+- 2026-10-19 — Plan written (items 1-7, steps, execution order).
