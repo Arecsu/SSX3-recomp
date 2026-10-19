@@ -36,7 +36,7 @@ Execution order (quick and visible first, the risky ones last):
 
 ---
 
-## 1. Anisotropic filtering
+## 1. Anisotropic filtering — done
 
 The game's slopes are seen at grazing angles almost all the time; with only
 trilinear filtering the snow (and the HD textures) blurs a few metres ahead.
@@ -55,7 +55,7 @@ trilinear filtering the snow (and the HD textures) blurs a few metres ahead.
 - [x] 1.2 A/B: Snow Jam race at 5120x1440 (32:9), `RECOMP_ANISO=0` vs 16:
       screenshots (slope ahead of the rider, crop at full resolution) and
       `RECOMP_VKR_GPUPROF` GPU averages; FPS must hold 60.
-- [ ] 1.3 Launcher: "Texture filtering" dropdown (Trilinear, 4x, 8x, 16x
+- [x] 1.3 Launcher: "Texture filtering" dropdown (Trilinear, 4x, 8x, 16x
       anisotropic; default 16x) -> `RECOMP_ANISO`; README knob row; player
       README. Refresh `docs/screenshots/44-launcher.png`.
 
@@ -208,3 +208,4 @@ Notes:
 - 2026-10-19 — Plan written (items 1-7, steps, execution order).
 - 2026-10-19 — 1.1 anisotropic filtering: RECOMP_ANISO (default 16x) on all linear samplers; Snow Jam boots to the race. Added step 1.1b (mip chains for the game's own textures: only the base level is uploaded today).
 - 2026-10-19 — 1.1b mip chains for the game's textures (RECOMP_TEX_MIPS); 1.2 A/B: smoother distant snow, GPU 14.2 -> 12.1 ms, 60 FPS on all peaks (4 runs).
+- 2026-10-19 — 1.3 launcher "Texture filtering" dropdown (Trilinear / 4x / 8x / 16x, default 16x), README knob. Item 1 done.

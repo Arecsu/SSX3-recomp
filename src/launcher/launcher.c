@@ -32,7 +32,7 @@
 
 enum {
     ID_PATH = 100, ID_BROWSE, ID_STATUS,
-    ID_RES, ID_ASPECT, ID_MSAA, ID_FULLSCREEN, ID_CRT, ID_FPS, ID_HDTEX,
+    ID_RES, ID_ASPECT, ID_MSAA, ID_ANISO, ID_FULLSCREEN, ID_CRT, ID_FPS, ID_HDTEX,
     ID_SKIPINTRO, ID_DEBUGMENU,
     ID_PAD0, ID_PAD1, ID_PAD2, ID_PAD3, ID_KEYS,
     ID_LOGS, ID_PLAY,
@@ -53,6 +53,12 @@ static const struct { const char *label, *value; } k_aspect[] = {
     {"21:9", "21:9"},
     {"32:9", "32:9"},
     {"4:3 (original)", "0"},
+};
+static const struct { const char *label, *value; } k_aniso[] = {
+    {"Trilinear", "0"},
+    {"4x anisotropic", "4"},
+    {"8x anisotropic", "8"},
+    {"16x anisotropic (sharpest)", "16"},
 };
 static const struct { const char *label, *value; } k_msaa[] = {
     {"Off", "0"},
@@ -269,6 +275,7 @@ static void load_settings(void)
     SendDlgItemMessageA(s_wnd, ID_RES, CB_SETCURSEL, ini_int("resolution", 0), 0);
     SendDlgItemMessageA(s_wnd, ID_ASPECT, CB_SETCURSEL, ini_int("aspect", 0), 0);
     SendDlgItemMessageA(s_wnd, ID_MSAA, CB_SETCURSEL, ini_int("msaa", 2), 0);
+    SendDlgItemMessageA(s_wnd, ID_ANISO, CB_SETCURSEL, ini_int("aniso", 3), 0);
     CheckDlgButton(s_wnd, ID_FULLSCREEN, ini_int("fullscreen", 0));
     CheckDlgButton(s_wnd, ID_CRT, ini_int("crt", 0));
     CheckDlgButton(s_wnd, ID_FPS, ini_int("fps_counter", 0));
@@ -286,6 +293,7 @@ static void save_settings(void)
     ini_set_int("resolution", (int)SendDlgItemMessageA(s_wnd, ID_RES, CB_GETCURSEL, 0, 0));
     ini_set_int("aspect", (int)SendDlgItemMessageA(s_wnd, ID_ASPECT, CB_GETCURSEL, 0, 0));
     ini_set_int("msaa", (int)SendDlgItemMessageA(s_wnd, ID_MSAA, CB_GETCURSEL, 0, 0));
+    ini_set_int("aniso", (int)SendDlgItemMessageA(s_wnd, ID_ANISO, CB_GETCURSEL, 0, 0));
     ini_set_int("fullscreen", IsDlgButtonChecked(s_wnd, ID_FULLSCREEN) == BST_CHECKED);
     ini_set_int("crt", IsDlgButtonChecked(s_wnd, ID_CRT) == BST_CHECKED);
     ini_set_int("fps_counter", IsDlgButtonChecked(s_wnd, ID_FPS) == BST_CHECKED);
@@ -324,6 +332,9 @@ static void play(void)
         int aa = (int)SendDlgItemMessageA(s_wnd, ID_MSAA, CB_GETCURSEL, 0, 0);
         SetEnvironmentVariableA("RECOMP_MSAA", aa >= 0 && aa < (int)(sizeof k_msaa / sizeof k_msaa[0])
                                                ? k_msaa[aa].value : NULL);
+        aa = (int)SendDlgItemMessageA(s_wnd, ID_ANISO, CB_GETCURSEL, 0, 0);
+        SetEnvironmentVariableA("RECOMP_ANISO", aa >= 0 && aa < (int)(sizeof k_aniso / sizeof k_aniso[0])
+                                                ? k_aniso[aa].value : NULL);
     }
     SetEnvironmentVariableA("RECOMP_FULLSCREEN", IsDlgButtonChecked(s_wnd, ID_FULLSCREEN) ? "1" : NULL);
     SetEnvironmentVariableA("RECOMP_CRT", IsDlgButtonChecked(s_wnd, ID_CRT) ? "1" : NULL);
@@ -424,6 +435,11 @@ static void build(void)
     cb = add("COMBOBOX", "", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, ID_MSAA, 140, y, 260, 200, s_font);
     for (i = 0; i < (int)(sizeof k_msaa / sizeof k_msaa[0]); i++)
         SendMessageA(cb, CB_ADDSTRING, 0, (LPARAM)k_msaa[i].label);
+    y += 30;
+    add("STATIC", "Texture filtering", 0, -1, 20, y + 4, 115, 20, s_font);
+    cb = add("COMBOBOX", "", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, ID_ANISO, 140, y, 260, 200, s_font);
+    for (i = 0; i < (int)(sizeof k_aniso / sizeof k_aniso[0]); i++)
+        SendMessageA(cb, CB_ADDSTRING, 0, (LPARAM)k_aniso[i].label);
     y += 32;
     add("BUTTON", "Fullscreen (F11 toggles in game)", BS_AUTOCHECKBOX | WS_TABSTOP, ID_FULLSCREEN, 20, y, 300, 22, s_font);
     y += 24;
