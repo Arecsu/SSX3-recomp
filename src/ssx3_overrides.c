@@ -181,7 +181,8 @@ int ssx3_WidescreenNow(void)
 }
 
 /*
- * Draw distance (RECOMP_DRAW_DIST, multiplier, 1 = original). The renderer's
+ * Draw distance (RECOMP_DRAW_DIST, multiplier; default 1.5, 1 = original,
+ * 2 = the most the render lists below hold at their peak). The renderer's
  * camera setup (vtable 0x2F7E50 slot 0x64, thiscall (fovy, zn, zf)) stores
  * zf in camera+0x7C, builds the projection (sub_0024EA13) and the frustum
  * (sub_001E8770) from it. Every camera class passes zf = 30000 (0x46EA6000
@@ -195,7 +196,7 @@ void sub_001EAB40(void)
     static float mul = -1.0f;
     if (mul < 0.0f) {
         const char *e = getenv("RECOMP_DRAW_DIST");
-        mul = e && *e ? (float)atof(e) : 1.0f;
+        mul = e && *e ? (float)atof(e) : 1.5f;
         if (mul < 0.1f)
             mul = 1.0f;
     }

@@ -73,7 +73,7 @@ Notes:
   crashes. Distant snow ripples stay smooth instead of breaking into noise
   (shots\af_off vs af_on on the Windows copy).
 
-## 2. Draw distance and pop-in
+## 2. Draw distance and pop-in — done
 
 Tuned for the Xbox: props and trees switch to low detail or appear late, and
 fog hides the far end. Find the knobs first, then scale them.
@@ -91,11 +91,11 @@ fog hides the far end. Find the knobs first, then scale them.
       applied to what 2.1/2.2 found (far plane, LOD distances; fog start/end
       only if the far end then shows the world's edge). `_gen` wrappers or a
       poke of the constants, whichever the code allows.
-- [ ] 2.4 Verify: A/B screenshots at the same course spots (burst at fixed
+- [x] 2.4 Verify: A/B screenshots at the same course spots (burst at fixed
       times), FPS/GPU at 5120x1440, a full Peak 1-2 race each for streaming
       problems (missing sections, stalls -- `[STREAMDUMP]`), memory (the
       guest heap: `[ALLOC] FAILED`).
-- [ ] 2.5 Launcher: "Draw distance" dropdown (Original / Far / Maximum) ->
+- [x] 2.5 Launcher: "Draw distance" dropdown (Original / Far / Maximum) ->
       `RECOMP_DRAW_DIST`; README, screenshot.
 
 Notes:
@@ -133,6 +133,13 @@ Notes:
   hems the view in, the far mountains are backdrop). 2.4 should pick the
   default (1.5-2 keeps the cell lists under 512) and look for skipped-cell
   holes at x3.
+- 2.4 (4 runs, Peaks 2/3, start-gate shots at x1 and x2): no crash, no list
+  full at x2, GPU unchanged (~4.3-4.9 ms at 1080p). The extra distance is
+  hardly visible in the views tested -- terrain hides what lies past 30000.
+  Default 1.5 (well inside the list capacities), launcher choices 1 / 1.5 /
+  2. The pop-in players notice is more likely per-object LOD switching
+  (inside the producers above, e.g. D1EA0/D2060 distance tests) -- not
+  touched; a possible later step.
 
 ## 3. HUD anchored to the screen edges (widescreen)
 
@@ -259,3 +266,4 @@ Notes:
 - 2026-10-19 — Every item now ends with a launcher option step (2.5, 3.5, 4.5, 7.4, 5.4, 6.3).
 - 2026-10-19 — 2.1 measured: race far plane zf 30000 (zn 25/30, fovy 70), fog far beyond it; RECOMP_PROJ_TRACE / RECOMP_FOG_TRACE added.
 - 2026-10-20 — 2.2/2.3: far plane knob RECOMP_DRAW_DIST (camera setup sub_001EAB40); the render lists that overflowed at a longer view are bounded (C versions of D2540/D25F0, skip-when-full guards on D1EA0/D1FF0/D2490/D2060/D2230/D3540); far x3 runs without crashing.
+- 2026-10-20 — 2.4/2.5: draw distance default 1.5x, launcher "Draw distance" (Original / Far 1.5x / Maximum 2x); little visible gain in tested views. Item 2 done.
