@@ -55,6 +55,7 @@ static void stats_tick(void)
 }
 
 #include "nv2a_backend.h"
+#include "nv2a_vsh_interp.h"
 #include "vkr.h"
 #include "vkr_backend.h"
 #include "vkr_hdtex.h"
@@ -923,6 +924,22 @@ static float hud_shift(const Nv2aVshOutput *v, uint32_t n)
     return hud_traced(&b, n, hud_place(&b), "new: by its own centre");
 }
 
+/* Vertex 0 of a GPU-path draw through the CPU interpreter (the program and
+ * constants are the current ones): 1 if it comes out 2D (w == 1). */
+static int draw_is_2d(const float *in, const Nv2aVshProgram *p)
+{
+    float v[NV2A_VSH_INPUTS][4];
+    Nv2aVshOutput o;
+    int a;
+    memset(v, 0, sizeof v);
+    for (a = 0; a < NV2A_VSH_INPUTS; a++)
+        if (p->in_slot[a] != 0xFF)
+            memcpy(v[a], in + 4 * p->in_slot[a], 16);
+    if (!nv2a_vsh_run((const float (*)[4])v, &o))
+        return 0;
+    return o.pos[3] == 1.0f;
+}
+
 static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, uint32_t n)
 {
     uint32_t *idx, k = 0, topo;
@@ -989,10 +1006,12 @@ static int be_draw_vsh(const Nv2aTarget *t, uint32_t prim, const float *in, uint
     if (s_stats) { td = now_ms(); stats_tick(); }
     if (!pick_target(t, &offscreen))
         return 0;
-    /* Small draws in widescreen game: the CPU runs the program (microseconds
-     * for a HUD element), so be_draw sees where the draw lands on screen and
-     * can anchor it (hud_shift). */
-    if (!offscreen && n <= 64 && hud_edges_on())
+    /* 2D draws in widescreen game: the CPU runs the program, so be_draw sees
+     * where the draw lands on screen and can anchor it (hud_shift). Which
+     * draws are 2D: vertex 0 run on the CPU, w == 1. (A size limit decided
+     * it before -- a text batch that grew past it went back to the middle
+     * for a frame: the HUD jumped between the edge and the 4:3 middle.) */
+    if (!offscreen && hud_edges_on() && draw_is_2d(in, p))
         return 0;
     if (!(idx = build_idx(prim, n, &k, &topo)))
         return 0;

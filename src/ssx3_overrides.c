@@ -938,7 +938,7 @@ volatile uint32_t g_ssx3_ui_screen_vt, g_ssx3_ui_screen_id, g_ssx3_ui_screen_ptr
  * (00297E30), the pause menu (002981D8), the Quit dialog (00297B60) and the
  * like. Forgotten at the first screen change outside a race, so a screen
  * freed with the race is never read. */
-static volatile uint32_t s_ingame_menu;
+static volatile uint32_t s_ingame_menu, s_ingame_menu_vt;
 
 /* Screen states: 4 opening, 5 up, 6 closing (the pause menu goes 4 -> 5 ->
  * 6 over a few dozen frames; 2 is inactive). */
@@ -955,8 +955,21 @@ static int ssx3_ScreenShown(uint32_t scr)
  * middle. */
 int ssx3_InGameMenuUp(void)
 {
+    /* The same screen still (its vtable): a closed one's memory is reused,
+     * and its old state word then read 4..6 now and then -- every such frame
+     * put the whole race HUD back in the middle (the HUD "jumped"). */
     uint32_t scr = s_ingame_menu;
-    return scr && ssx3_InGame() && ssx3_ScreenShown(scr);
+    return scr && ssx3_InGame() && MEM32(scr) == s_ingame_menu_vt && ssx3_ScreenShown(scr);
+}
+
+/* Forget the remembered menu once it has closed (or is no longer that
+ * screen): the briefing panel closed at the race start stayed remembered
+ * for the whole race. */
+static void ingame_menu_check(uint32_t scr)
+{
+    if (scr && scr == s_ingame_menu
+        && (MEM32(scr) != s_ingame_menu_vt || !ssx3_ScreenShown(scr)))
+        s_ingame_menu = 0;
 }
 
 void sub_00202460(void)
@@ -987,8 +1000,11 @@ void sub_00202460(void)
     }
     if (!ssx3_InGame())
         s_ingame_menu = 0;
-    else if (scr && MEM32(scr) != SSX3_HUD_SCREEN_VT && ssx3_ScreenShown(scr))
+    else if (scr && MEM32(scr) != SSX3_HUD_SCREEN_VT && ssx3_ScreenShown(scr)) {
         s_ingame_menu = scr;
+        s_ingame_menu_vt = MEM32(scr);
+    } else
+        ingame_menu_check(scr);
     if (scr && ((MEM16(scr + 0x1C) >> 8) & 0x3F) == 5 && MEM32(scr) != SSX3_HUD_SCREEN_VT) {
         uint32_t vt = MEM32(scr), id = MEM32(scr + 0xC);
         g_ssx3_ui_screen_ptr = scr;
@@ -1002,6 +1018,7 @@ void sub_00202460(void)
         }
     }
     sub_00202460_gen();
+    ingame_menu_check(scr);             /* the state as the change left it */
 }
 
 void sub_0008C540(void)

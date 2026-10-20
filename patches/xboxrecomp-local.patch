@@ -6231,7 +6231,7 @@ index 0000000..165eab0
 +    return s_lut_serial;
 +}
 diff --git a/src/video/fb_present.c b/src/video/fb_present.c
-index 08bae4b..cf5a352 100644
+index 08bae4b..6c1bcb6 100644
 --- a/src/video/fb_present.c
 +++ b/src/video/fb_present.c
 @@ -15,12 +15,15 @@
@@ -6694,7 +6694,7 @@ index 08bae4b..cf5a352 100644
              line[x * 3 + 0] = (uint8_t)(src[x] & 0xFF);
              line[x * 3 + 1] = (uint8_t)((src[x] >> 8) & 0xFF);
              line[x * 3 + 2] = (uint8_t)((src[x] >> 16) & 0xFF);
-@@ -250,12 +604,78 @@ int xbox_FramebufferDumpBmp(const char *path)
+@@ -250,12 +604,146 @@ int xbox_FramebufferDumpBmp(const char *path)
          fwrite(line, 1, row, f);
      }
      free(line);
@@ -6712,6 +6712,65 @@ index 08bae4b..cf5a352 100644
 + * shown to the BMP path it contains and delete it. Screenshots taken from
 + * inside work whatever presents the frame -- PrintWindow cannot read a D3D11
 + * swap chain -- and with the window covered (tools\live.ps1 snap uses it). */
++/* RECOMP_SNAP_SEQ=N with the snapshot trigger: the next N frames the window
++ * presents, one after another (copied to memory as they come, written as
++ * <path>_NN.bmp once all are in) -- frame-to-frame changes such as a HUD
++ * element jumping, which single screenshots seconds apart cannot show. */
++static int       s_seq_want, s_seq_have;
++static uint32_t *s_seq_px[64];
++static uint32_t  s_seq_w[64], s_seq_h[64];
++static char      s_seq_base[MAX_PATH];
++
++static void seq_write_bmp(const char *path, const uint32_t *px, uint32_t w, uint32_t h)
++{
++    FILE *f = fopen(path, "wb");
++    uint32_t row = (w * 3u + 3u) & ~3u, img = row * h, total = 54u + img, y, x;
++    uint8_t hdr[54] = {'B', 'M'}, *line;
++    if (!f)
++        return;
++    memcpy(hdr + 2, &total, 4); hdr[10] = 54; hdr[14] = 40;
++    memcpy(hdr + 18, &w, 4); memcpy(hdr + 22, &h, 4); hdr[26] = 1; hdr[28] = 24;
++    memcpy(hdr + 34, &img, 4);
++    fwrite(hdr, 1, 54, f);
++    line = (uint8_t *)calloc(1, row);
++    for (y = h; line && y-- > 0;) {
++        const uint32_t *src = px + (size_t)y * w;
++        for (x = 0; x < w; x++) {
++            line[x * 3] = (uint8_t)src[x]; line[x * 3 + 1] = (uint8_t)(src[x] >> 8);
++            line[x * 3 + 2] = (uint8_t)(src[x] >> 16);
++        }
++        fwrite(line, 1, row, f);
++    }
++    free(line);
++    fclose(f);
++}
++
++static void seq_frame(const uint32_t *px, uint32_t w, uint32_t h)
++{
++    int i;
++    if (s_seq_have >= s_seq_want)
++        return;
++    i = s_seq_have;
++    s_seq_px[i] = (uint32_t *)malloc((size_t)w * h * 4);
++    if (s_seq_px[i]) {
++        memcpy(s_seq_px[i], px, (size_t)w * h * 4);
++        s_seq_w[i] = w; s_seq_h[i] = h;
++    }
++    if (++s_seq_have == s_seq_want) {
++        char p[MAX_PATH + 16];
++        for (i = 0; i < s_seq_want; i++) {
++            if (s_seq_px[i]) {
++                snprintf(p, sizeof p, "%s_%02d.bmp", s_seq_base, i);
++                seq_write_bmp(p, s_seq_px[i], s_seq_w[i], s_seq_h[i]);
++                free(s_seq_px[i]);
++                s_seq_px[i] = NULL;
++            }
++        }
++        fprintf(stderr, "[FBWIN] %d consecutive frames written to %s_NN.bmp\n", s_seq_want, s_seq_base);
++        s_seq_want = s_seq_have = 0;
++    }
++}
++
 +static void snap_trigger_poll(void)
 +{
 +    static int checked;
@@ -6736,6 +6795,15 @@ index 08bae4b..cf5a352 100644
 +    path[n] = 0;
 +    DeleteFileA(trig);
 +    if (n) {
++        const char *seq = getenv("RECOMP_SNAP_SEQ");
++        if (seq && atoi(seq) > 0 && !s_seq_want) {
++            snprintf(s_seq_base, sizeof s_seq_base, "%s", path);
++            if (n > 4 && !_stricmp(s_seq_base + n - 4, ".bmp"))
++                s_seq_base[n - 4] = 0;
++            s_seq_want = atoi(seq) > 64 ? 64 : atoi(seq);
++            s_seq_have = 0;
++            return;
++        }
 +        if (getenv("RECOMP_SNAP_PRESENTED") && gpu_present_active()) {
 +            gpu_present_capture(path);    /* what the window shows */
 +            return;
@@ -6775,7 +6843,7 @@ index 08bae4b..cf5a352 100644
  static DWORD WINAPI fb_thread(LPVOID unused)
  {
      HWND hwnd;
-@@ -274,18 +694,56 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -274,18 +762,56 @@ static DWORD WINAPI fb_thread(LPVOID unused)
          wc.lpszClassName = "XboxRecompFramebuffer";
          RegisterClassA(&wc);
      }
@@ -6839,7 +6907,7 @@ index 08bae4b..cf5a352 100644
  
      memset(&bi, 0, sizeof(bi));
      bi.bmiHeader.biSize        = sizeof(bi.bmiHeader);
-@@ -299,6 +757,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -299,6 +825,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
  
      fprintf(stderr, "  [FBWIN] framebuffer window open (%ux%u)\n",
              s_fb_width, s_fb_height);
@@ -6850,7 +6918,7 @@ index 08bae4b..cf5a352 100644
  
      while (InterlockedCompareExchange(&s_fb_running, 1, 1)) {
          MSG msg;
-@@ -306,7 +768,40 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -306,7 +836,42 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              TranslateMessage(&msg);
              DispatchMessageA(&msg);
          }
@@ -6877,6 +6945,8 @@ index 08bae4b..cf5a352 100644
 +                LONG k = s_hi_front;
 +                double tw0 = pres_now_ms(), tw1;
 +                fps_overlay_draw(s_hi[k], s_hi_w[k], s_hi_h[k]);
++                if (s_seq_want)
++                    seq_frame(s_hi[k], s_hi_w[k], s_hi_h[k]);
 +                tw1 = pres_now_ms();
 +                s_pres_shown++;
 +                if (!gpu_present_frame_gamma(s_hi[k], s_hi_w[k], s_hi_h[k], 1))
@@ -6892,7 +6962,7 @@ index 08bae4b..cf5a352 100644
              /* A finished frame, published by the flip. Copied into s_rgb so
               * the dump path and GDI see one consistent image even if the
               * next flip lands mid-blit. */
-@@ -314,19 +809,28 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -314,19 +879,28 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              if (s_present[idx])
                  memcpy(s_rgb, s_present[idx],
                         (size_t)s_fb_width * s_fb_height * 4);
@@ -6927,7 +6997,7 @@ index 08bae4b..cf5a352 100644
          {
              /* One dump a few seconds in, so the title has had time to render
               * something rather than catching the first blank frame.
-@@ -357,6 +861,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -357,6 +931,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              if (now - t0 >= 1000) {
                  LONG f = s_flips;
                  wchar_t tb[128];
@@ -6938,7 +7008,7 @@ index 08bae4b..cf5a352 100644
                  _snwprintf(tb, 127, L"%ls | FPS: %.1f | draws: %ld", s_title,
                             t0 ? (f - f0) * 1000.0 / (now - t0) : 0.0,
                             (long)s_frame_draws);
-@@ -365,9 +873,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -365,9 +943,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
                  t0 = now; f0 = f;
              }
          }
@@ -6952,7 +7022,7 @@ index 08bae4b..cf5a352 100644
      ReleaseDC(hwnd, hdc);
      DestroyWindow(hwnd);
      free(s_rgb);
-@@ -390,11 +901,4 @@ void xbox_FramebufferWindowStart(void)
+@@ -390,11 +971,4 @@ void xbox_FramebufferWindowStart(void)
          InterlockedExchange(&s_fb_running, 0);
  }
  
