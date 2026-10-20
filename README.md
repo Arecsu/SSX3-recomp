@@ -109,6 +109,7 @@ The launcher's choices are these environment variables:
 | `RECOMP_FULLSCREEN` | `0` | `1` = start in fullscreen (F11 toggles); Windows |
 | `RECOMP_CRT` | `0` | `1` = CRT TV shader (needs a resolution above 480); tune with `RECOMP_CRT_PARAMS` |
 | `RECOMP_DEBUG_MENU` | `0` | `1` = EA's quick-start menu (Start on the title screen) |
+| `RECOMP_MONEY_CHEAT` | `0` | `1` = for testing: each Home key press gives player 1's rider 200,000 cash (spendable cash only; the career total earned is left alone) |
 | `RECOMP_GAME_DIR` | `game` | the folder with `default.xbe` and `data\` |
 | `RECOMP_ANISO` | `16` | anisotropic filtering (`0` = trilinear); the game's textures also get mip chains (`RECOMP_TEX_MIPS=0` turns those off) |
 | `RECOMP_DRAW_DIST` | `1.5` | view distance in races, times the original (`1` = original, up to `2`) |

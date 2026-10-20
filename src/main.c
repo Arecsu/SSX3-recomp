@@ -893,6 +893,25 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             fprintf(stderr, "[BOOT] %d controllers: %d emulated pads\n", pads, pads);
         }
     }
+#else
+    /* SDL's controllers (toolkit xinput_device.c), opened here on the main
+     * thread before the guest polls them; then the same pad count as above. */
+    {
+        extern void xbox_InputInit(void);
+        extern BOOL xbox_InputIsConnected(DWORD port);
+        DWORD i;
+        int pads = 0;
+        xbox_InputInit();
+        for (i = 0; i < 4; i++)
+            pads += xbox_InputIsConnected(i) ? 1 : 0;
+        fprintf(stderr, "[BOOT] %d controller(s) found\n", pads);
+        if (pads > 1 && !getenv("RECOMP_USB_PADS")) {
+            char n[4];
+            snprintf(n, sizeof n, "%d", pads);
+            _putenv_s("RECOMP_USB_PADS", n);
+            fprintf(stderr, "[BOOT] %d controllers: %d emulated pads\n", pads, pads);
+        }
+    }
 #endif
     /*   RECOMP_GUEST_LOCK: one guest thread runs guest code at a time, as on
      *     the Xbox's single CPU (threads switch at kernel calls). Without it

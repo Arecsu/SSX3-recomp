@@ -62,6 +62,7 @@ static void stats_tick(void)
 extern ptrdiff_t xbox_GetMemoryOffset(void);
 extern void xbox_FramebufferPublishImage(const uint32_t *px, uint32_t w, uint32_t h);
 extern int ssx3_WidescreenNow(void);
+extern int ssx3_InGameMenuUp(void);
 extern float ssx3_Aspect(void);
 extern void ssx3_SetAspect(float a);
 extern int xbox_FramebufferClientSize(int *w, int *h);
@@ -744,11 +745,47 @@ static void primlog(const VkrDrawState *st, uint32_t n, int gpu_vsh)
 
 /* HUD at the screen edges (widescreen, in game; RECOMP_HUD_EDGES, default
  * on; RECOMP_HUD_MARGIN = inset in % of the way to the edge). The game draws
- * its HUD for 4:3; the vertex shaders keep 2D draws in the 4:3 middle. A 2D
- * draw (every vertex w == 1) whose box centre lies in the left third of the
- * guest screen moves with the left edge, right third with the right edge;
- * the middle third (timer, prompts, dialogs) stays centred, and full-width
- * passes keep their stretch. Returns the NDC x offset for the shaders. */
+ * its HUD for 4:3; the vertex shaders keep 2D draws in the 4:3 middle. A HUD
+ * element whose box centre lies in the left third of the guest screen moves
+ * with the left edge, right third with the right edge; the middle third
+ * (timer, trick names) stays centred, and full-width passes keep their
+ * stretch. Only while the HUD is the only screen up: the briefing, pause
+ * menu and dialogs (opening and closing too) stay whole in the middle.
+ *
+ * An element is many draws -- text in batches of glyphs, a panel as body and
+ * end caps -- in no particular order, and the HUD is one immediate-mode draw
+ * function (sub_000AE9E0) with no widget boundaries to hook; the GPU runs
+ * behind the game anyway. So elements are found from geometry: at each flip
+ * the frame's small 2D boxes are joined into groups of touching pieces, and
+ * each group is placed once, by its whole box. A draw in the next frame
+ * takes the shift of the group it falls in, else (a new element, for its
+ * first frame) its own. The groups are rebuilt from raw positions every
+ * frame, never from earlier decisions, so a placement cannot stick or
+ * alternate (deciding per draw tore the music notification and trick names
+ * apart; carrying decisions over made them flicker or stick). Draws wider
+ * than HUD_PIECE_MAX of the screen -- 2D effects across the race, not HUD --
+ * are placed alone and join no group.
+ *
+ * RECOMP_HUD_TRACE=1 logs one frame's decisions a second, =2 every frame. */
+#define HUD_TOUCH_PX  4.0f             /* gap still counted as touching */
+#define HUD_MOTION_PX 24.0f            /* sideways drift allowed against last frame:
+                                          the music notification slides in ~8 px a frame */
+#define HUD_PIECE_MAX 0.45f            /* of the guest width; the notification body is 0.36 */
+#define HUD_MAX_BOXES 512
+
+typedef struct { float x0, x1, y0, y1; } HudBox;
+typedef struct { HudBox b; float shift; } HudGroup;
+
+static HudBox   s_hud_boxes[HUD_MAX_BOXES];    /* this frame's pieces */
+static int      s_hud_nboxes;
+static HudGroup s_hud_groups[HUD_MAX_BOXES];   /* last frame's elements */
+static int      s_hud_ngroups;
+static int      s_hud_trace = -1, s_hud_trace_frame, s_hud_order;
+static double   s_hud_trace_t;
+
+/* The layout runs in widescreen in game; with a menu up its pieces are still
+ * recorded (so the first frame after the menu closes knows its elements) but
+ * nothing moves. */
 static int hud_edges_on(void)
 {
     static int on = -1;
@@ -759,21 +796,19 @@ static int hud_edges_on(void)
     return on && ssx3_WidescreenNow();
 }
 
-static float hud_shift(const Nv2aVshOutput *v, uint32_t n)
+static int hud_near(const HudBox *a, const HudBox *b, float dx)
+{
+    return a->x0 <= b->x1 + dx && a->x1 >= b->x0 - dx
+        && a->y0 <= b->y1 + HUD_TOUCH_PX && a->y1 >= b->y0 - HUD_TOUCH_PX;
+}
+
+static int hud_touch(const HudBox *a, const HudBox *b) { return hud_near(a, b, HUD_TOUCH_PX); }
+
+/* The NDC x offset for a box of the guest screen, by its centre. */
+static float hud_place(const HudBox *b)
 {
     static float margin = -1.0f;
-    float x0 = 1e9f, x1 = -1e9f, sq, cx, gw = s_w ? (float)s_w : 640.0f;
-    uint32_t i;
-    if (!n || !hud_edges_on())
-        return 0.0f;
-    for (i = 0; i < n; i++) {
-        if (v[i].pos[3] != 1.0f)
-            return 0.0f;                /* 3D */
-        if (v[i].pos[0] < x0) x0 = v[i].pos[0];
-        if (v[i].pos[0] > x1) x1 = v[i].pos[0];
-    }
-    if (x1 - x0 > gw * 0.9f)
-        return 0.0f;                    /* full-width pass */
+    float gw = s_w ? (float)s_w : 640.0f, sq, cx;
     if (margin < 0.0f) {
         const char *e = getenv("RECOMP_HUD_MARGIN");
         margin = e && *e ? (float)atof(e) / 100.0f : 0.0f;
@@ -781,12 +816,111 @@ static float hud_shift(const Nv2aVshOutput *v, uint32_t n)
         if (margin > 1.0f) margin = 1.0f;
     }
     sq = 1.0f / (ssx3_Aspect() * 0.75f);   /* the shaders' squeeze2d */
-    cx = (x0 + x1) * 0.5f;
+    cx = (b->x0 + b->x1) * 0.5f;
     if (cx < gw / 3.0f)
         return (sq - 1.0f) * (1.0f - margin);
     if (cx > gw * 2.0f / 3.0f)
         return (1.0f - sq) * (1.0f - margin);
     return 0.0f;
+}
+
+/* At the flip: this frame's pieces joined into elements (union-find over
+ * touching boxes), each placed by its union box, for the next frame. */
+static void hud_build_groups(void)
+{
+    static int parent[HUD_MAX_BOXES];
+    int i, j, n = s_hud_nboxes;
+    for (i = 0; i < n; i++)
+        parent[i] = i;
+    for (i = 0; i < n; i++)
+        for (j = i + 1; j < n; j++)
+            if (hud_touch(&s_hud_boxes[i], &s_hud_boxes[j])) {
+                int a = i, b = j;
+                while (parent[a] != a) a = parent[a] = parent[parent[a]];
+                while (parent[b] != b) b = parent[b] = parent[parent[b]];
+                if (a != b)
+                    parent[b] = a;
+            }
+    /* Roots point to themselves; each becomes a group, its entry relabelled
+     * -1 - group so the walk below stops there. */
+    s_hud_ngroups = 0;
+    for (i = 0; i < n; i++) {
+        if (parent[i] == i) {
+            int g = s_hud_ngroups++;
+            s_hud_groups[g].b = s_hud_boxes[i];
+            parent[i] = -1 - g;
+        }
+    }
+    for (i = 0; i < n; i++) {
+        int r = i, g;
+        if (parent[i] < 0)
+            continue;
+        while (parent[r] >= 0) r = parent[r];
+        g = -1 - parent[r];
+        if (s_hud_boxes[i].x0 < s_hud_groups[g].b.x0) s_hud_groups[g].b.x0 = s_hud_boxes[i].x0;
+        if (s_hud_boxes[i].x1 > s_hud_groups[g].b.x1) s_hud_groups[g].b.x1 = s_hud_boxes[i].x1;
+        if (s_hud_boxes[i].y0 < s_hud_groups[g].b.y0) s_hud_groups[g].b.y0 = s_hud_boxes[i].y0;
+        if (s_hud_boxes[i].y1 > s_hud_groups[g].b.y1) s_hud_groups[g].b.y1 = s_hud_boxes[i].y1;
+    }
+    for (i = 0; i < s_hud_ngroups; i++) {
+        s_hud_groups[i].shift = hud_place(&s_hud_groups[i].b);
+        if (s_hud_trace_frame)
+            fprintf(stderr, "[HUD] group %d box %.0f-%.0f x %.0f-%.0f shift %+.3f\n", i,
+                    s_hud_groups[i].b.x0, s_hud_groups[i].b.x1, s_hud_groups[i].b.y0,
+                    s_hud_groups[i].b.y1, s_hud_groups[i].shift);
+    }
+    s_hud_nboxes = 0;
+}
+
+static float hud_traced(const HudBox *b, uint32_t n, float shift, const char *why)
+{
+    if (s_hud_trace_frame)
+        fprintf(stderr, "[HUD] #%d box %.0f-%.0f x %.0f-%.0f n %u shift %+.3f %s\n",
+                s_hud_order, b->x0, b->x1, b->y0, b->y1, n, shift, why);
+    return shift;
+}
+
+static float hud_shift(const Nv2aVshOutput *v, uint32_t n)
+{
+    HudBox b = {1e9f, -1e9f, 1e9f, -1e9f};
+    float gw = s_w ? (float)s_w : 640.0f;
+    uint32_t i;
+    int g, menu;
+    if (!n || !hud_edges_on())
+        return 0.0f;
+    menu = ssx3_InGameMenuUp();
+    for (i = 0; i < n; i++) {
+        if (v[i].pos[3] != 1.0f)
+            return 0.0f;                /* 3D */
+        if (v[i].pos[0] < b.x0) b.x0 = v[i].pos[0];
+        if (v[i].pos[0] > b.x1) b.x1 = v[i].pos[0];
+        if (v[i].pos[1] < b.y0) b.y0 = v[i].pos[1];
+        if (v[i].pos[1] > b.y1) b.y1 = v[i].pos[1];
+    }
+    s_hud_order++;
+    if (b.x1 - b.x0 > gw * 0.9f)
+        return hud_traced(&b, n, 0.0f, "full width");
+    if (b.x1 - b.x0 > gw * HUD_PIECE_MAX)
+        return hud_traced(&b, n, menu ? 0.0f : hud_place(&b), "wide: alone, by its centre");
+    if (s_hud_nboxes < HUD_MAX_BOXES)
+        s_hud_boxes[s_hud_nboxes++] = b;
+    if (menu)
+        return hud_traced(&b, n, 0.0f, "menu up: recorded, not moved");
+    {
+        int best = -1;
+        float best_gap = 1e9f;
+        for (g = 0; g < s_hud_ngroups; g++) {
+            const HudBox *e = &s_hud_groups[g].b;
+            float gap = b.x0 > e->x1 ? b.x0 - e->x1 : e->x0 > b.x1 ? e->x0 - b.x1 : 0.0f;
+            if (gap < best_gap && hud_near(&b, e, HUD_MOTION_PX)) {
+                best_gap = gap;
+                best = g;
+            }
+        }
+        if (best >= 0)
+            return hud_traced(&b, n, s_hud_groups[best].shift, "in last frame's element");
+    }
+    return hud_traced(&b, n, hud_place(&b), "new: by its own centre");
 }
 
 static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, uint32_t n)
@@ -1018,6 +1152,18 @@ static void be_flip(const Nv2aTarget *t)
 {
     FlipJob j;
     double tf;
+    if (s_hud_trace < 0)
+        s_hud_trace = getenv("RECOMP_HUD_TRACE") ? atoi(getenv("RECOMP_HUD_TRACE")) : 0;
+    hud_build_groups();                 /* this frame's elements, for the next */
+    s_hud_order = 0;
+    if (s_hud_trace_frame)
+        fflush(stderr);
+    s_hud_trace_frame = 0;
+    if (s_hud_trace >= 2 || (s_hud_trace && now_ms() - s_hud_trace_t >= 1000.0)) {
+        s_hud_trace_t = now_ms();
+        s_hud_trace_frame = 1;
+        fprintf(stderr, "[HUD] frame at %.0f ms\n", s_hud_trace_t);
+    }
     ssx3_last_flip_ms = xbox_TickCountMs();
 #ifdef _WIN32
     ssx3_exec_tid = (uint32_t)GetCurrentThreadId();

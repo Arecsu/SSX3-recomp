@@ -9,8 +9,9 @@
  *  - no Fullscreen, FPS counter or Audio output rows: the SDL game window
  *    reads neither RECOMP_FULLSCREEN nor RECOMP_FPS_OVERLAY, and 5.1 output
  *    is XAudio2 only. Their keys in the ini are kept as they are.
- *  - "Auto" resolution and aspect ratio are resolved here from the desktop
- *    the launcher is on; main.c asks the monitor only on Windows.
+ *  - "Auto" resolution is resolved here from the desktop the launcher is on;
+ *    main.c asks the monitor only on Windows. "Auto" aspect ratio is passed
+ *    on as "auto": the renderer follows the game window's shape.
  *  - RECOMP_USB_PADS is set to the number of controllers, as main.c does
  *    from XInput on Windows, so a second controller makes Multi Play.
  *  - the game's output goes to logs/ beside the game folder when the
@@ -55,7 +56,7 @@ static const Choice k_res[] = {
     {"2160p (4K)", "2160"},
 };
 static const Choice k_aspect[] = {
-    {"Auto (your monitor's shape)", "auto"},
+    {"Auto (follows the window)", "auto"},
     {"16:9", "16:9"},
     {"21:9", "21:9"},
     {"32:9", "32:9"},
@@ -171,7 +172,7 @@ static void ini_save(void)
 
 static char s_path[PATH_MAX];
 static int s_res, s_aspect, s_msaa, s_aniso, s_drawdist, s_shadows;
-static int s_crt, s_hdtex, s_hudedges, s_skipintro, s_fastboot, s_debugmenu;
+static int s_crt, s_hdtex, s_hudedges, s_skipintro, s_fastboot, s_debugmenu, s_moneycheat;
 static int s_game_ok;
 static char s_status[512];
 
@@ -293,6 +294,7 @@ static void load_settings(void)
     s_skipintro = ini_int("skip_intro", 1);
     s_fastboot = ini_int("fast_boot", 1);
     s_debugmenu = ini_int("debug_menu", 0);
+    s_moneycheat = ini_int("money_cheat", 0);
     update_status();
 }
 
@@ -311,6 +313,7 @@ static void save_settings(void)
     ini_set_int("skip_intro", s_skipintro);
     ini_set_int("fast_boot", s_fastboot);
     ini_set_int("debug_menu", s_debugmenu);
+    ini_set_int("money_cheat", s_moneycheat);
     ini_save();
 }
 
@@ -534,12 +537,10 @@ static void play(void)
     } else {
         env_set("RECOMP_RES", NULL);
     }
-    if (s_aspect == 0 && have_dm) {
-        snprintf(buf, sizeof buf, "%d:%d", dm.w, dm.h);
-        env_set("RECOMP_WIDESCREEN", buf);
-    } else {
-        env_set("RECOMP_WIDESCREEN", s_aspect > 0 ? pick(k_aspect, N(k_aspect), s_aspect) : "auto");
-    }
+    /* "auto", not the monitor's W:H: a fixed shape stops the renderer
+     * following the window, and a game window that is not the monitor's
+     * shape (a tiled one) then showed bars. */
+    env_set("RECOMP_WIDESCREEN", s_aspect > 0 ? pick(k_aspect, N(k_aspect), s_aspect) : "auto");
     env_set("RECOMP_MSAA", pick(k_msaa, N(k_msaa), s_msaa));
     env_set("RECOMP_ANISO", pick(k_aniso, N(k_aniso), s_aniso));
     env_set("RECOMP_DRAW_DIST", pick(k_drawdist, N(k_drawdist), s_drawdist));
@@ -550,6 +551,7 @@ static void play(void)
     env_set("RECOMP_SKIP_INTRO", s_skipintro ? "1" : "0");
     env_set("RECOMP_FAST_BOOT", s_fastboot ? NULL : "0");
     env_set("RECOMP_DEBUG_MENU", s_debugmenu ? "1" : NULL);
+    env_set("RECOMP_MONEY_CHEAT", s_moneycheat ? "1" : NULL);
     if (!getenv("RECOMP_USB_PADS")) {
         int pads = pad_count();
         snprintf(buf, sizeof buf, "%d", pads < 1 ? 1 : pads > 4 ? 4 : pads);
@@ -921,6 +923,8 @@ static int draw_form(int *want_play)
     y += 24;
     checkbox(L, y, 520,
              "Debug mode: EA's quick-start menu (press Start on the title screen)", &s_debugmenu);
+    y += 24;
+    checkbox(L, y, 520, "Testing: Home key gives player 1 200,000 money", &s_moneycheat);
     y += 34;
 
     heading("Controllers", L, y);

@@ -11,9 +11,9 @@ build-linux/launcher                      # or: the settings window, then Play
 `build-linux/launcher` (src/launcher/launcher_sdl.c, SDL2 + SDL2_ttf +
 fontconfig; skipped by CMake when those are missing) is the Windows launcher's
 counterpart. It has the same settings, the same `launcher.ini` next to it, and
-the same `RECOMP_*` hand-off. "Auto" resolution and aspect ratio come from the
-desktop the launcher is on, and `RECOMP_USB_PADS` from the number of
-controllers. There are no Fullscreen, FPS counter or 5.1 rows, because the
+the same `RECOMP_*` hand-off. "Auto" resolution comes from the desktop the
+launcher is on, "Auto" aspect ratio follows the game window, and
+`RECOMP_USB_PADS` comes from the number of controllers. There are no Fullscreen, FPS counter or 5.1 rows, because the
 Linux game window and audio don't support them yet. The folder picker is zenity
 or kdialog, and you can also type the path. The game starts in the launcher's
 folder, or its parent when `hd-textures/` is there (`build-linux/` in this

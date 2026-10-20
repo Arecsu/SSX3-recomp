@@ -659,6 +659,78 @@ void sub_000CC8F0(void)
 }
 
 /*
+ * Money for testing (RECOMP_MONEY_CHEAT=1, a launcher option): each Home
+ * press adds 200,000 to player 1's cash. Not F10: many keyboards send volume
+ * up from it unless Fn is held, and the desktop takes that.
+ *
+ * Cash is per rider: records of 0xF88 bytes from 0x3474B4, indexed by
+ * slot * 10 + rider, +0 the spendable cash (the lodge shows it, buying
+ * attributes takes from it: sub_0004E570), +4 the career total earned. The
+ * player's slot and rider come from its profile record, as in the game's
+ * own add-cash path sub_0004E120 -> sub_0004E0D0: record = [0x346400 +
+ * player * 4] * 32 + 0x345948, slot = +0x10 & 1 (+0x0C == -1: no profile),
+ * rider = the signed byte at +0x14. Only the spendable cash is raised, so the
+ * career total stays what was earned.
+ *
+ * Checked in the app's per-frame step sub_001AD870 (thiscall, ecx = the app,
+ * left untouched), on the game's main thread, so the write never meets the
+ * game's own buying or earning. It is called from inside the app loop
+ * sub_001AD880 and the runner sub_001ADAC0; a check at sub_001AD880's own
+ * entry ran only once, since that function is the loop.
+ */
+extern void sub_001AD870_gen(void);
+extern int xbox_FramebufferKeyPresses(int vk);
+
+#define MONEY_KEY    0x24                /* VK_HOME */
+#define MONEY_AMOUNT 200000
+
+static void money_add(int amount)
+{
+    uint32_t rec = MEM32(0x00346400u) * 32u + 0x00345948u, cash_va;
+    int slot, rider;
+    int64_t cash;
+    if (MEM32(rec + 0x0C) == 0xFFFFFFFFu) {
+        fprintf(stderr, "[MONEY] no player profile yet: pick a rider first\n");
+        fflush(stderr);
+        return;
+    }
+    slot = (int)(MEM32(rec + 0x10) & 1u);
+    rider = (int)(int8_t)MEM8(rec + 0x14);
+    if (rider < 0 || rider > 9) {
+        fprintf(stderr, "[MONEY] no rider selected (%d)\n", rider);
+        fflush(stderr);
+        return;
+    }
+    cash_va = 0x003474B4u + (uint32_t)(slot * 10 + rider) * 0xF88u;
+    cash = (int64_t)(int32_t)MEM32(cash_va) + amount;
+    if (cash > INT32_MAX)
+        cash = INT32_MAX;
+    MEM32(cash_va) = (uint32_t)(int32_t)cash;
+    fprintf(stderr, "[MONEY] +%d: rider %d (slot %d) now has %d\n", amount, rider, slot,
+            (int)(int32_t)MEM32(cash_va));
+    fflush(stderr);
+}
+
+void sub_001AD870(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RECOMP_MONEY_CHEAT");
+        on = e && *e && *e != '0';
+        if (on) {
+            fprintf(stderr, "[MONEY] armed: Home adds %d to player 1's cash\n", MONEY_AMOUNT);
+            fflush(stderr);
+        }
+    }
+    if (on) {
+        int presses = xbox_FramebufferKeyPresses(MONEY_KEY);
+        while (presses-- > 0)
+            money_add(MONEY_AMOUNT);
+    }
+    sub_001AD870_gen();
+}
+
+/*
  * RECOMP_ACTION_TRACE=1: EA's action-map queries -- sub_001B1460 (bool:
  * is action N active) and sub_001B1410 (float: action N's value), both
  * thiscall (this = map definition) with (input state, action id). Once a
@@ -862,6 +934,31 @@ extern void sub_00202460_gen(void);
 volatile uint32_t g_ssx3_ui_screen_vt, g_ssx3_ui_screen_id, g_ssx3_ui_screen_ptr;
 #define SSX3_HUD_SCREEN_VT 0x00293000u  /* in-game HUD: re-activates all the time */
 
+/* The last screen other than the HUD activated during a race: the briefing
+ * (00297E30), the pause menu (002981D8), the Quit dialog (00297B60) and the
+ * like. Forgotten at the first screen change outside a race, so a screen
+ * freed with the race is never read. */
+static volatile uint32_t s_ingame_menu;
+
+/* Screen states: 4 opening, 5 up, 6 closing (the pause menu goes 4 -> 5 ->
+ * 6 over a few dozen frames; 2 is inactive). */
+static int ssx3_ScreenShown(uint32_t scr)
+{
+    unsigned st = (MEM16(scr + 0x1C) >> 8) & 0x3F;
+    return st >= 4 && st <= 6;
+}
+
+/* An in-game menu or dialog is on screen, opening and closing included. The
+ * renderer keeps 2D in the 4:3 middle then (vkr_backend.c hud_edges_on):
+ * those screens are built from many small draws, and anchoring each by its
+ * own centre tore their text and panels apart between the edges and the
+ * middle. */
+int ssx3_InGameMenuUp(void)
+{
+    uint32_t scr = s_ingame_menu;
+    return scr && ssx3_InGame() && ssx3_ScreenShown(scr);
+}
+
 void sub_00202460(void)
 {
     uint32_t scr = g_ecx;
@@ -888,6 +985,10 @@ void sub_00202460(void)
             fflush(stderr);
         }
     }
+    if (!ssx3_InGame())
+        s_ingame_menu = 0;
+    else if (scr && MEM32(scr) != SSX3_HUD_SCREEN_VT && ssx3_ScreenShown(scr))
+        s_ingame_menu = scr;
     if (scr && ((MEM16(scr + 0x1C) >> 8) & 0x3F) == 5 && MEM32(scr) != SSX3_HUD_SCREEN_VT) {
         uint32_t vt = MEM32(scr), id = MEM32(scr + 0xC);
         g_ssx3_ui_screen_ptr = scr;
