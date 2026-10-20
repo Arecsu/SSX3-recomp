@@ -1,10 +1,19 @@
 # ssx3-recomp
 
-Static recompilation of **SSX 3** (original Xbox, PAL) into a native Windows
-program, built with [xboxrecomp](https://github.com/sp00nznet/xboxrecomp).
-The game's own code runs as native x86-64, and the Xbox GPU is emulated on
-Vulkan. It plays at **60 FPS**, at your monitor's resolution, in **true
-widescreen** (16:9, 21:9 or 32:9).
+Static recompilation of **SSX 3** (original Xbox, PAL) into a native program
+for **Windows and Linux**, built with
+[xboxrecomp](https://github.com/sp00nznet/xboxrecomp). The game's own code
+runs as native code, and the Xbox GPU is emulated on Vulkan. It plays at
+**60 FPS**, at your monitor's resolution, in **true widescreen** (16:9, 21:9
+or 32:9).
+
+| Platform | Status |
+|---|---|
+| **Windows** (x86-64) | Fully supported: the release download, the launcher, everything below. |
+| **Linux** (x86-64) | Boots to a race at 60 FPS on the Vulkan renderer, with its own launcher. Build it yourself (see [Build](#build)). |
+| **Linux on Apple Silicon Macs** (arm64, [Asahi Linux](https://asahilinux.org)) | Boots through the intro to the menus. Gameplay not checked yet. |
+
+Native macOS is not supported. On a Mac, run it under Asahi Linux.
 
 ![Snow Jam in 32:9 at 5120x1440](docs/screenshots/33-widescreen-32x9-snow-jam.png)
 <sub>Snow Jam on a 5120x1440 (32:9) monitor: the game's camera is widened, so nothing is stretched, and the HUD keeps its shape.</sub>
@@ -55,8 +64,10 @@ the scripts below.
 
 Other new things:
 
-- **Windows-only build path.** No WSL is needed: `setup.ps1`, `regen.ps1`
+- **Native Windows build.** No WSL is needed: `setup.ps1`, `regen.ps1`
   and `build.bat`, verified from a fresh clone.
+- **Linux on x86-64.** Device registers are trapped and decoded on x86-64
+  as well as arm64, and the launcher has an SDL2 version.
 - **Test tooling.**
   - The game can drive its own menus (`RECOMP_AUTONAV`), getting from boot
     to a race in about 27 s.
@@ -79,8 +90,14 @@ connected, and press Play. The choices are kept in `launcher.ini`.
 a build environment: unzip, run `launcher.exe`, play.
 
 From a console, `tools\play.bat` does the same with the defaults, which
-follow your monitor. The launcher's choices are these environment
-variables:
+follow your monitor.
+
+On Linux, start **`build-linux/launcher`**. It has the same settings and
+`launcher.ini`, except Fullscreen, the FPS counter and 5.1 audio, which the
+Linux build doesn't have yet. `tools/play.sh` starts the game directly with
+the defaults.
+
+The launcher's choices are these environment variables:
 
 | Setting | Default | |
 |---|---|---|
@@ -89,7 +106,7 @@ variables:
 | `RECOMP_SKIP_INTRO` | `1` | `0` plays the EA/THX/intro movies |
 | `RECOMP_GPU` | Vulkan | `sw` = the software rasteriser (reference/fallback) |
 | `RECOMP_PRESENT_FILTER` | linear | `point` for sharp pixels |
-| `RECOMP_FULLSCREEN` | `0` | `1` = start in fullscreen (F11 toggles) |
+| `RECOMP_FULLSCREEN` | `0` | `1` = start in fullscreen (F11 toggles); Windows |
 | `RECOMP_CRT` | `0` | `1` = CRT TV shader (needs a resolution above 480); tune with `RECOMP_CRT_PARAMS` |
 | `RECOMP_DEBUG_MENU` | `0` | `1` = EA's quick-start menu (Start on the title screen) |
 | `RECOMP_GAME_DIR` | `game` | the folder with `default.xbe` and `data\` |
@@ -102,7 +119,7 @@ variables:
 | `RECOMP_MSAA` | `4` | anti-aliasing: `0` off, `2`, `4`, `8` samples (as far as the GPU goes); cut-out edges (trees, fences) are smoothed too |
 | `RECOMP_HDTEX` | `hd-textures` | the HD texture pack (Bl4ckH4nd's, see below) and its `ssx3_map.txt`; `0` = off |
 | `RECOMP_FPS30` | `0` | `1` = keep the game's own 30 FPS stretches (split screen, Metro-City's tunnel); by default they render at 60 |
-| `RECOMP_FPS_OVERLAY` | `0` | `1` = start with the FPS counter on (F3 toggles it): game FPS, frames shown, slowest frame |
+| `RECOMP_FPS_OVERLAY` | `0` | `1` = start with the FPS counter on (F3 toggles it): game FPS, frames shown, slowest frame; Windows |
 
 **Keyboard.** The game window must have focus. Remap the keys by copying
 `keys.example.ini` to `keys.ini` and editing it.
@@ -115,10 +132,18 @@ variables:
 | Numpad 8/4/2/6 | Left stick | I J K L | Right stick |
 | F11 / Alt+Enter | Fullscreen | F3 | FPS counter |
 
+F11 and F3 work on Windows only.
+
 **Controller.** An Xbox/XInput controller works without setup, rumble
 included; two controllers enable Multi Play. Each run's log is kept in
 `logs\`. A crash also leaves a minidump there (`crash_<time>.dmp`, open it
 in Visual Studio next to `build\ssx3_recomp.pdb`).
+
+On Linux, any controller SDL recognises works: wired over USB, or over
+Bluetooth. The Xbox Wireless Adapter needs the
+[xone](https://github.com/dlundqvist/xone) driver (Arch:
+`yay -S xone-dkms xone-dongle-firmware`). Started from the launcher without
+a terminal, the log goes to `logs/` beside the game folder.
 
 ## Build
 
@@ -145,8 +170,26 @@ scripts/sync-windows.sh --game   # copy to C:\Code\Xbox for the MSVC build
 cmd.exe /c 'C:\Code\Xbox\ssx3-recomp\tools\build.bat'
 ```
 
+**Linux** (x86-64, or arm64 on Asahi). You need GCC or Clang, CMake,
+Ninja, SDL2, SDL2_ttf, fontconfig, the Vulkan headers, glslc, git and
+Python 3.9+ (Arch: `sdl2 sdl2_ttf fontconfig vulkan-headers shaderc cmake
+ninja`).
+
+```bash
+git clone https://github.com/koenhendriks/SSX3-recomp.git ssx3-recomp && cd ssx3-recomp
+# put your rip in game/ : game/default.xbe and game/data/
+scripts/setup.sh                 # toolkit (pinned + patched) in ../xboxrecomp, Python venv
+XBE=game/default.xbe scripts/regen.sh
+cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release
+ninja -C build-linux
+build-linux/launcher
+```
+
+[docs/LINUX.md](docs/LINUX.md) has the details: what the port does,
+its status per platform and what is not ported yet.
+
 The toolkit is pinned at v0.13.1 (`193e299`), with this project's fixes in
-`patches/xboxrecomp-local.patch`. For Linux, see docs/LINUX.md.
+`patches/xboxrecomp-local.patch`.
 
 ## Testing
 
