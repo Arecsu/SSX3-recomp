@@ -30,6 +30,9 @@
  *   Kernel imports: 159
  */
 
+#ifndef _WIN32
+#define _GNU_SOURCE
+#endif
 #ifdef _WIN32
 #include <windows.h>
 #else
