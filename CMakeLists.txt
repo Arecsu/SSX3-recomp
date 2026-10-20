@@ -143,6 +143,21 @@ if(WIN32)
     add_executable(ssx3_launcher WIN32 src/launcher/launcher.c)
     set_target_properties(ssx3_launcher PROPERTIES OUTPUT_NAME launcher)
     target_link_libraries(ssx3_launcher PRIVATE comctl32 ole32 shell32 xinput)
+else()
+    # The same launcher on SDL2 (src/launcher/launcher_sdl.c): text through
+    # SDL2_ttf in the desktop's font (fontconfig). Optional: without them
+    # the game builds as before.
+    find_package(SDL2 QUIET)
+    find_package(SDL2_ttf QUIET)
+    find_package(Fontconfig QUIET)
+    if(TARGET SDL2::SDL2 AND TARGET SDL2_ttf::SDL2_ttf AND TARGET Fontconfig::Fontconfig)
+        add_executable(ssx3_launcher src/launcher/launcher_sdl.c)
+        set_target_properties(ssx3_launcher PROPERTIES OUTPUT_NAME launcher)
+        target_link_libraries(ssx3_launcher PRIVATE SDL2::SDL2 SDL2_ttf::SDL2_ttf
+                              Fontconfig::Fontconfig)
+    else()
+        message(STATUS "launcher: SDL2_ttf or fontconfig not found, not built")
+    endif()
 endif()
 
 # ── Game-specific additions ─────────────────────────────────────

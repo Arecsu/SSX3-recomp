@@ -5,7 +5,19 @@ scripts/setup.sh && scripts/regen.sh      # as on Windows (XBE in disk/SSX3 or .
 ln -s disk/SSX3 game                      # exe opens game/default.xbe from the cwd
 cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release
 ninja -C build-linux && tools/play.sh       # keyboard = player 1, logs in play_std*.txt
+build-linux/launcher                      # or: the settings window, then Play
 ```
+
+`build-linux/launcher` (src/launcher/launcher_sdl.c, SDL2 + SDL2_ttf +
+fontconfig; skipped by CMake when those are missing) is the Windows launcher's
+counterpart. It has the same settings, the same `launcher.ini` next to it, and
+the same `RECOMP_*` hand-off. "Auto" resolution and aspect ratio come from the
+desktop the launcher is on, and `RECOMP_USB_PADS` from the number of
+controllers. There are no Fullscreen, FPS counter or 5.1 rows, because the
+Linux game window and audio don't support them yet. The folder picker is zenity
+or kdialog, and you can also type the path. The game starts in the launcher's
+folder, or its parent when `hd-textures/` is there (`build-linux/` in this
+tree). Without a terminal, its output goes to `logs/` beside the game folder.
 
 Deps: `tools/linux/install_deps.sh` in the toolkit (SDL2, libepoxy, OpenSSL),
 plus the Vulkan headers and glslc for the renderer (Arch: `vulkan-headers`,
