@@ -2372,7 +2372,7 @@ index 1ad4fff..a741d77 100644
  }
  
 diff --git a/src/kernel/kernel_path.c b/src/kernel/kernel_path.c
-index caf6390..af1e0ec 100644
+index caf6390..627dbdf 100644
 --- a/src/kernel/kernel_path.c
 +++ b/src/kernel/kernel_path.c
 @@ -156,6 +156,19 @@ static int resolve_symlink(const char* xbox_path, char* out, size_t out_size)
@@ -2448,10 +2448,32 @@ index caf6390..af1e0ec 100644
  
  /* Strip a single trailing '/' (but never the root '/'). */
  static void strip_trailing_slash(char* s)
-@@ -548,11 +582,133 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
+@@ -519,6 +553,8 @@ static void mkdir_p(const char* path)
+         xbox_log(XBOX_LOG_WARN, XBOX_LOG_PATH, "mkdir %s: %s", tmp, strerror(errno));
+ }
+ 
++static void xbox_create_partition_images(void);
++
+ void xbox_path_init(const char* game_dir, const char* save_dir)
+ {
+     if (game_dir) {
+@@ -548,11 +584,187 @@ void xbox_path_init(const char* game_dir, const char* save_dir)
      strip_trailing_slash(s_game_dir);
      strip_trailing_slash(s_save_dir);
  
++    /* The save-side directories, as on Windows: a title creating a file under
++     * T:, U: or Z: fails when the parent is missing. */
++    {
++        static const char *subs[] = { "TitleData", "UserData", "Cache", "SystemData" };
++        char dir[MAX_PATH];
++        mkdir_p(s_save_dir);
++        for (int i = 0; i < (int)(sizeof(subs) / sizeof(subs[0])); i++) {
++            snprintf(dir, sizeof(dir), "%s/%s", s_save_dir, subs[i]);
++            mkdir_p(dir);
++        }
++        xbox_create_partition_images();
++    }
++
 +    {
 +        const char *env = getenv("RECOMP_SAVE_DIR");
 +        s_title_save_dir[0] = '\0';
@@ -2563,26 +2585,67 @@ index caf6390..af1e0ec 100644
 +    if (!len)
 +        return FALSE;
 +    digit = xbox_path[len];
-+    /* Only the raw disk is an image; the others are directories (rules table). */
-+    if (digit != '0')
++    if (digit < '0' || digit > '9')
 +        return FALSE;
 +    rest = xbox_path + len + 1;
-+    if (*rest == '\\' || *rest == '/')
++    /* With a trailing separator a partition is opened as a directory (XAPI
++     * mounting E:), which the rules table serves; only the bare device name,
++     * the raw volume a format writes to, is the image. */
++    if ((*rest == '\\' || *rest == '/') && digit == '0')
 +        rest++;
 +    if (*rest != '\0')
 +        return FALSE;
 +
 +    mkdir_p(s_save_dir);
 +    snprintf(out, n, "%s/Partition%c.img", s_save_dir, digit);
-+    if (access(out, F_OK) != 0)
++    if (digit == '0' && access(out, F_OK) != 0)
 +        xbox_write_partition_table(out);
 +    return TRUE;
++}
++
++/* The partition devices 1-5 as sparse images sized like the table above, as
++ * on Windows. XAPI formats a cache partition at boot and sizes the volume
++ * from IOCTL_DISK_GET_PARTITION_INFO, which reports the image's size: with
++ * the device mapped to a directory that was 0, the format failed with
++ * ERROR_DISK_FULL and the title quit to the dashboard. */
++static void xbox_create_partition_images(void)
++{
++    static const unsigned long long part_sectors[6] = {
++        0,             /* 0: whole disk, the table only */
++        0x00465400ull, /* 1: E: game and saves          */
++        0x000FA000ull, /* 2: C: system                  */
++        0x00177000ull, /* 3: X: cache                   */
++        0x00177000ull, /* 4: Y: cache                   */
++        0x00177000ull, /* 5: Z: cache                   */
++    };
++    char image[MAX_PATH];
++    struct stat st;
++
++    snprintf(image, sizeof(image), "%s/Partition0.img", s_save_dir);
++    if (access(image, F_OK) != 0)
++        xbox_write_partition_table(image);
++    for (int p = 1; p <= 5; p++) {
++        off_t want = (off_t)(part_sectors[p] * 512ull);
++        int fd;
++
++        snprintf(image, sizeof(image), "%s/Partition%d.img", s_save_dir, p);
++        if (stat(image, &st) == 0 && st.st_size == want)
++            continue;
++        fd = open(image, O_WRONLY | O_CREAT, 0644);
++        if (fd < 0) {
++            xbox_log(XBOX_LOG_WARN, XBOX_LOG_PATH, "%s: %s", image, strerror(errno));
++            continue;
++        }
++        if (ftruncate(fd, want) != 0)
++            xbox_log(XBOX_LOG_WARN, XBOX_LOG_PATH, "%s: %s", image, strerror(errno));
++        close(fd);
++    }
 +}
 +
  BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, DWORD buf_size)
  {
      const char* remainder = NULL;
-@@ -566,6 +722,9 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+@@ -566,6 +778,9 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
      if (!s_initialized)
          xbox_path_init(NULL, NULL);
  
@@ -2592,7 +2655,7 @@ index caf6390..af1e0ec 100644
      {
          char linked[512];
          if (resolve_symlink(xbox_path, linked, sizeof(linked)))
-@@ -577,6 +736,8 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
+@@ -577,6 +792,8 @@ BOOL xbox_translate_path(const char* xbox_path, xbox_host_char* host_path_buf, D
          if (skip) {
              remainder = xbox_path + skip;
              base_dir  = s_rules[i].to_save ? s_save_dir : s_game_dir;
@@ -2601,7 +2664,7 @@ index caf6390..af1e0ec 100644
              sub_dir   = s_rules[i].sub_posix;
              goto translate;
          }
-@@ -616,6 +777,7 @@ translate:
+@@ -616,6 +833,7 @@ translate:
                  host_path_buf[--n] = '\0';
          }
  
