@@ -8,6 +8,11 @@
 *.dmp  filter=lfs diff=lfs merge=lfs -text
 *.xmv  filter=lfs diff=lfs merge=lfs -text
 *.dds  filter=lfs diff=lfs merge=lfs -text
+*.mp4  filter=lfs diff=lfs merge=lfs -text
+*.mkv  filter=lfs diff=lfs merge=lfs -text
+*.webm filter=lfs diff=lfs merge=lfs -text
+*.webp filter=lfs diff=lfs merge=lfs -text
+*.gif  filter=lfs diff=lfs merge=lfs -text
 
 # Windows-side scripts keep CRLF; shell scripts and patches stay LF
 *.bat  text eol=crlf
