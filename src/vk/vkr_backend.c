@@ -761,9 +761,11 @@ static void primlog(const VkrDrawState *st, uint32_t n, int gpu_vsh)
  * each group is placed once, by its whole box. A draw in the next frame
  * takes the shift of the group it falls in, else (a new element, for its
  * first frame) its own. The groups are rebuilt from raw positions every
- * frame, never from earlier decisions, so a placement cannot stick or
- * alternate (deciding per draw tore the music notification and trick names
- * apart; carrying decisions over made them flicker or stick). Draws wider
+ * frame (deciding per draw tore the music notification and trick names
+ * apart); only the placement is handed from an element to the same element
+ * in the next frame, and changes after it has held for HUD_CONFIRM frames
+ * and the box centre is HUD_BAND past a third's line -- pieces joining and
+ * parting otherwise flipped elements between the edge and the middle. Draws wider
  * than HUD_PIECE_MAX of the screen -- 2D effects across the race, not HUD --
  * are placed alone and join no group.
  *
@@ -775,13 +777,21 @@ static void primlog(const VkrDrawState *st, uint32_t n, int gpu_vsh)
 #define HUD_MAX_BOXES 512
 
 typedef struct { float x0, x1, y0, y1; } HudBox;
-typedef struct { HudBox b; float shift; } HudGroup;
+/* shift: the placement in use; pending/pend_n: a different placement and
+ * for how many frames in a row the element's box has asked for it;
+ * changed: the frame the placement last changed, from: what it was before
+ * (the flicker report). */
+typedef struct { HudBox b; float shift, pending, from; int pend_n; unsigned changed; } HudGroup;
+#define HUD_CONFIRM   30               /* frames (0.5 s) a new placement must hold before it is taken:
+                                          a passing trick name merged with the speed readout for 14 */
+#define HUD_FLICKER   90               /* a change undone within this many frames is a flicker */
 
 static HudBox   s_hud_boxes[HUD_MAX_BOXES];    /* this frame's pieces */
 static int      s_hud_nboxes;
 static HudGroup s_hud_groups[HUD_MAX_BOXES];   /* last frame's elements */
 static int      s_hud_ngroups;
 static int      s_hud_trace = -1, s_hud_trace_frame, s_hud_order;
+static int      s_hud_menu;                    /* a menu was up this frame */
 static double   s_hud_trace_t;
 
 /* The layout runs in widescreen in game; with a menu up its pieces are still
@@ -814,8 +824,16 @@ static int hud_touch(const HudBox *a, const HudBox *b)
     float ha = a->y1 - a->y0, hb = b->y1 - b->y0, h = ha < hb ? ha : hb;
     float ov = (a->y1 < b->y1 ? a->y1 : b->y1) - (a->y0 > b->y0 ? a->y0 : b->y0);
     float gap = a->x0 > b->x1 ? a->x0 - b->x1 : b->x0 > a->x1 ? b->x0 - a->x1 : 0.0f;
+    float hmax = ha > hb ? ha : hb;
     if (hud_near(a, b, HUD_TOUCH_PX))
         return 1;
+    /* Text only: both pieces at most a line high (24 px) and of similar
+     * height. Without that, two tall pieces -- the progress meter on the
+     * left, the boost meter on the right, ~300 px each -- got a 450 px
+     * allowance and chained the whole HUD into one element, which then sat
+     * in the middle. */
+    if (hmax > 24.0f || hmax > 1.5f * h)
+        return 0;
     return h > 2.0f && ov >= 0.6f * h && gap <= HUD_LINE_GAP * h;
 }
 
@@ -837,6 +855,23 @@ static float hud_place(const HudBox *b)
     if (cx > gw * 2.0f / 3.0f)
         return (1.0f - sq) * (1.0f - margin);
     return 0.0f;
+}
+
+/* hud_place for an element already placed at `cur`: its centre must pass
+ * a third's line by HUD_BAND of the width before it moves. A text box
+ * whose centre sits near the line (the freestyle tip panel, 53-349 px,
+ * plus a prompt reaching to 388 for ~0.7 s) otherwise crossed it whenever
+ * a piece came or went. */
+#define HUD_BAND 0.05f
+static float hud_place_kept(const HudBox *b, float cur)
+{
+    float gw = s_w ? (float)s_w : 640.0f, band = gw * HUD_BAND;
+    float cx = (b->x0 + b->x1) * 0.5f;
+    if (cur < 0.0f ? cx < gw / 3.0f + band
+        : cur > 0.0f ? cx > gw * 2.0f / 3.0f - band
+        : cx >= gw / 3.0f - band && cx <= gw * 2.0f / 3.0f + band)
+        return cur;
+    return hud_place(b);
 }
 
 /* At the flip: this frame's pieces joined into elements (union-find over
@@ -877,8 +912,94 @@ static void hud_build_groups(void)
         if (s_hud_boxes[i].y0 < s_hud_groups[g].b.y0) s_hud_groups[g].b.y0 = s_hud_boxes[i].y0;
         if (s_hud_boxes[i].y1 > s_hud_groups[g].b.y1) s_hud_groups[g].b.y1 = s_hud_boxes[i].y1;
     }
+    {
+        /* Each element against last frame's: the one at the same place
+         * (overlapping, or centres within HUD_MOTION_PX) hands over its
+         * placement, and the placement changes only after the element's box
+         * has asked for another one HUD_CONFIRM frames in a row. Without
+         * this, an element whose pieces join and part from frame to frame
+         * (text whose width changes, glyphs that come and go) moved its box
+         * centre across a third's line and back: the HUD flickered between
+         * the edge and the middle. A new element is placed at once. */
+        static HudGroup prev[HUD_MAX_BOXES];
+        static int nprev;
+        static unsigned frame, flicker_said;
+        float gw = s_w ? (float)s_w : 640.0f;
+        frame++;
+        /* With a menu up nothing moves, and its panels overlap the HUD's
+         * elements: carried over, their middle placement held the HUD in the
+         * middle for HUD_CONFIRM frames after the briefing or the pause menu
+         * closed, then it jumped to the edges. The first frame after a menu
+         * places every element afresh. */
+        if (s_hud_menu)
+            nprev = 0;
+        for (i = 0; i < s_hud_ngroups; i++) {
+            HudGroup *g = &s_hud_groups[i];
+            float want = hud_place(&g->b), best = 1e9f;
+            int k, m = -1;
+            for (k = 0; k < nprev; k++) {
+                const HudBox *a = &prev[k].b;
+                float dx = (a->x0 + a->x1 - g->b.x0 - g->b.x1) * 0.5f;
+                float dy = (a->y0 + a->y1 - g->b.y0 - g->b.y1) * 0.5f;
+                float d = dx * dx + dy * dy;
+                int over = a->x0 < g->b.x1 && a->x1 > g->b.x0 && a->y0 < g->b.y1 && a->y1 > g->b.y0;
+                if ((over || d <= HUD_MOTION_PX * HUD_MOTION_PX) && d < best) {
+                    best = d;
+                    m = k;
+                }
+            }
+            /* A small part of a wide element (over a third of the screen)
+             * is a new element: the briefing panel fading out over the HUD,
+             * a dialog going away. Inheriting the wide group's middle kept
+             * the leaderboard there for HUD_CONFIRM frames. */
+            if (m >= 0 && prev[m].b.x1 - prev[m].b.x0 > gw / 3.0f
+                && g->b.x1 - g->b.x0 < 0.5f * (prev[m].b.x1 - prev[m].b.x0))
+                m = -1;
+            if (m < 0) {
+                g->shift = want; g->pending = want; g->pend_n = 0;
+                g->changed = frame; g->from = want;
+                continue;
+            }
+            g->shift = prev[m].shift; g->from = prev[m].from; g->changed = prev[m].changed;
+            want = hud_place_kept(&g->b, g->shift);
+            if (want == g->shift) {
+                if (prev[m].pend_n > 0 && flicker_said < 50) {
+                    /* Asked for another placement for a few frames, then back:
+                     * before this rule that was a visible flicker. */
+                    flicker_said++;
+                    fprintf(stderr, "[HUD-FLICKER] held: element %.0f-%.0f x %.0f-%.0f asked %+.3f for %d frame(s), kept %+.3f\n",
+                            g->b.x0, g->b.x1, g->b.y0, g->b.y1, prev[m].pending, prev[m].pend_n, g->shift);
+                }
+                g->pend_n = 0;
+            } else {
+                g->pend_n = prev[m].pending == want ? prev[m].pend_n + 1 : 1;
+                if (g->pend_n >= HUD_CONFIRM) {
+                    if (want == g->from && frame - g->changed < HUD_FLICKER && flicker_said < 50) {
+                        flicker_said++;
+                        fprintf(stderr, "[HUD-FLICKER] element %.0f-%.0f x %.0f-%.0f went %+.3f -> %+.3f -> %+.3f within %u frames\n",
+                                g->b.x0, g->b.x1, g->b.y0, g->b.y1, g->from, g->shift, want,
+                                frame - g->changed);
+                    }
+                    g->from = g->shift; g->shift = want; g->changed = frame; g->pend_n = 0;
+                }
+            }
+            g->pending = want;
+        }
+        memcpy(prev, s_hud_groups, sizeof prev[0] * (size_t)s_hud_ngroups);
+        nprev = s_hud_menu ? 0 : s_hud_ngroups;
+        if (s_hud_menu) {
+            /* The menu's panels joined the HUD under them into wide groups
+             * placed in the middle; the first frame after the menu would
+             * draw the HUD there once. Its pieces go by their own centres. */
+            int k = 0;
+            for (i = 0; i < s_hud_ngroups; i++)
+                if (s_hud_groups[i].b.x1 - s_hud_groups[i].b.x0 <= gw / 3.0f)
+                    s_hud_groups[k++] = s_hud_groups[i];
+            s_hud_ngroups = k;
+        }
+        s_hud_menu = 0;
+    }
     for (i = 0; i < s_hud_ngroups; i++) {
-        s_hud_groups[i].shift = hud_place(&s_hud_groups[i].b);
         if (s_hud_trace_frame)
             fprintf(stderr, "[HUD] group %d box %.0f-%.0f x %.0f-%.0f shift %+.3f\n", i,
                     s_hud_groups[i].b.x0, s_hud_groups[i].b.x1, s_hud_groups[i].b.y0,
@@ -904,6 +1025,7 @@ static float hud_shift(const Nv2aVshOutput *v, uint32_t n)
     if (!n || !hud_edges_on())
         return 0.0f;
     menu = ssx3_InGameMenuUp();
+    s_hud_menu |= menu;
     for (i = 0; i < n; i++) {
         if (v[i].pos[3] != 1.0f)
             return 0.0f;                /* 3D */
