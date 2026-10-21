@@ -1774,8 +1774,9 @@ int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
     pcv[6] = st->point_size * c->scale; pcv[7] = st->point_params ? c->scale : 0.0f;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pcv);
     {
-        float sq[3] = {c->squeeze2d, c->squeeze_all, c->squeeze_all > 0.5f ? 0.0f : st->hud_shift};
-        vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 48, 12, sq);
+        float sq[4] = {c->squeeze2d, c->squeeze_all, c->squeeze_all > 0.5f ? 0.0f : st->hud_shift,
+                       st->keep_edges ? 1.0f : 0.0f};
+        vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 48, 16, sq);
     }
     pcf[0] = st->alpha_func; pcf[1] = st->alpha_ref;
     {
@@ -1892,8 +1893,9 @@ int vkr_draw_vsh(VkrContext *c, const float *in, uint32_t nverts, uint32_t nin,
     pcv[6] = st->point_size * c->scale; pcv[7] = st->point_params ? c->scale : 0.0f;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pcv);
     {
-        float sq[3] = {c->squeeze2d, c->squeeze_all, c->squeeze_all > 0.5f ? 0.0f : st->hud_shift};
-        vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 48, 12, sq);
+        float sq[4] = {c->squeeze2d, c->squeeze_all, c->squeeze_all > 0.5f ? 0.0f : st->hud_shift,
+                       st->keep_edges ? 1.0f : 0.0f};
+        vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 48, 16, sq);
     }
     pcu[0] = vb / 16; pcu[1] = nin ? nin : 1; pcu[2] = po / 16; pcu[3] = co / 16;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_VERTEX_BIT, 32, 16, pcu);

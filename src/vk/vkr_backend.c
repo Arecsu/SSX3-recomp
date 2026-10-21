@@ -63,6 +63,7 @@ static void stats_tick(void)
 extern ptrdiff_t xbox_GetMemoryOffset(void);
 extern void xbox_FramebufferPublishImage(const uint32_t *px, uint32_t w, uint32_t h);
 extern int ssx3_WidescreenNow(void);
+extern int ssx3_InGame(void);
 extern int ssx3_InGameMenuUp(void);
 extern float ssx3_Aspect(void);
 extern void ssx3_SetAspect(float a);
@@ -91,7 +92,7 @@ static int s_dirty;                     /* drawn since the last flip */
  * the result into the surface the title flipped, so the executor never
  * waits for the GPU to finish a frame (it did: ~5 ms a flip, a quarter of
  * its time in a race). The copy lands a few ms after the flip. */
-typedef struct { int slot; uint32_t offset, pitch, x, y, w, h; } FlipJob;
+typedef struct { int slot; uint32_t offset, pitch, x, y, w, h; unsigned frame; } FlipJob;
 static FlipJob s_jobs[4];
 static int s_job_head, s_job_n;
 static pthread_mutex_t s_job_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -102,6 +103,144 @@ static pthread_cond_t s_job_cond = PTHREAD_COND_INITIALIZER;
  * flip thread that reads frames back). */
 volatile uint32_t ssx3_last_flip_ms, ssx3_exec_tid, ssx3_flip_tid;
 extern uint32_t xbox_TickCountMs(void);
+
+/* RECOMP_GLITCH_CATCH=<dir>: finds frames where something shows for that
+ * one frame only -- the frames before and after agree, it differs from
+ * both -- and writes the three (guest size, BMP) into <dir> as
+ * glitch_<frame>_{a,b,c}.bmp, with a [GLITCH] line. On the flip thread,
+ * from the guest-size copy, 4x4 blocks of luminance. */
+static unsigned s_spike_frame, s_spike_said;   /* flips (be_flip); RECOMP_SPIKE_TRACE lines said */
+static int s_gl_on = -1;                       /* RECOMP_GLITCH_CATCH set */
+/* RECOMP_GLITCH_CATCH's draw record: every draw of the last frames
+ * (s_draw_frame numbering) with its screen box -- CPU-path draws only;
+ * GPU-path ones have no box (run with RECOMP_GPU_VSH=0 for all). */
+typedef struct { unsigned frame; uint16_t ord, prim; uint32_t n, tex; float x0, x1, y0, y1, w0, w1; uint8_t off, vsh; } GlDraw;
+#define GL_RING 65536
+static GlDraw s_gl_ring[GL_RING];
+static volatile unsigned s_gl_head, s_draw_frame, s_gl_ord;
+static void gl_record(uint32_t prim, uint32_t n, const Nv2aVshOutput *v, int off, int vsh)
+{
+    GlDraw *d = &s_gl_ring[s_gl_head++ % GL_RING];
+    Nv2aTexInfo ti;
+    uint32_t q;
+    d->frame = s_draw_frame; d->ord = (uint16_t)s_gl_ord++; d->prim = (uint16_t)prim; d->n = n;
+    d->tex = nv2a_exec_tex_info(0, &ti) ? ti.offset : 0;
+    d->off = (uint8_t)off; d->vsh = (uint8_t)vsh;
+    d->x0 = d->y0 = d->w0 = 1e30f; d->x1 = d->y1 = d->w1 = -1e30f;
+    for (q = 0; v && q < n; q++) {
+        const float *p = v[q].pos;
+        if (p[0] < d->x0) d->x0 = p[0];
+        if (p[0] > d->x1) d->x1 = p[0];
+        if (p[1] < d->y0) d->y0 = p[1];
+        if (p[1] > d->y1) d->y1 = p[1];
+        if (p[3] < d->w0) d->w0 = p[3];
+        if (p[3] > d->w1) d->w1 = p[3];
+    }
+}
+static void gl_dump(const char *path, unsigned f0, unsigned f1)
+{
+    FILE *f = fopen(path, "w");
+    unsigned h = s_gl_head, i;
+    if (!f) return;
+    for (i = h > GL_RING ? h - GL_RING : 0; i < h; i++) {
+        const GlDraw *d = &s_gl_ring[i % GL_RING];
+        if (d->frame < f0 || d->frame > f1)
+            continue;
+        fprintf(f, "%u %u %s%s prim %u n %u tex %08X x %.0f..%.0f y %.0f..%.0f w %.4g..%.4g\n",
+                d->frame, d->ord, d->off ? "off" : "main", d->vsh ? " gpu" : "", d->prim, d->n, d->tex,
+                d->x0, d->x1, d->y0, d->y1, d->w0, d->w1);
+    }
+    fclose(f);
+}
+#define GL_BW 160
+#define GL_BH 120
+static void glitch_bmp(const char *path, const uint8_t *px, uint32_t w, uint32_t h)
+{
+    FILE *f = fopen(path, "wb");
+    uint8_t hd[54] = {'B', 'M'};
+    uint32_t y, sz = 54 + w * h * 4;
+    if (!f) return;
+    memcpy(hd + 2, &sz, 4); hd[10] = 54; hd[14] = 40;
+    memcpy(hd + 18, &w, 4); memcpy(hd + 22, &h, 4);
+    hd[26] = 1; hd[28] = 32;
+    fwrite(hd, 1, 54, f);
+    for (y = h; y-- > 0;)
+        fwrite(px + (size_t)y * w * 4, 1, (size_t)w * 4, f);
+    fclose(f);
+}
+static void glitch_catch(const uint8_t *px, uint32_t w, uint32_t h, unsigned dframe)
+{
+    static int on = -1;
+    static const char *dir;
+    static uint8_t lum[3][GL_BH][GL_BW];
+    static uint8_t *img[3];
+    static unsigned frame, said, dfr[3];
+    int x, y, nb = 0, x0 = GL_BW, x1 = -1, y0 = GL_BH, y1 = -1;
+    uint8_t (*A)[GL_BW], (*B)[GL_BW], (*C)[GL_BW];
+    if (on < 0) {
+        dir = getenv("RECOMP_GLITCH_CATCH");
+        on = dir && *dir;
+    }
+    if (!on || w < GL_BW * 4 || h < GL_BH * 4 || said >= 60)
+        return;
+    {
+        int k;
+        for (k = 0; k < 3; k++)
+            if (!img[k] && !(img[k] = (uint8_t *)malloc((size_t)w * h * 4))) { on = 0; return; }
+    }
+    frame++;
+    /* shift: 0 <- 1 <- 2 <- new */
+    memmove(lum[0], lum[1], sizeof lum[0] * 2);
+    { uint8_t *t = img[0]; img[0] = img[1]; img[1] = img[2]; img[2] = t; }
+    dfr[0] = dfr[1]; dfr[1] = dfr[2]; dfr[2] = dframe;
+    memcpy(img[2], px, (size_t)w * h * 4);
+    for (y = 0; y < GL_BH; y++)
+        for (x = 0; x < GL_BW; x++) {
+            uint32_t sum = 0, i, j;
+            for (j = 0; j < 4; j++)
+                for (i = 0; i < 4; i++) {
+                    const uint8_t *q = px + ((size_t)(y * h / GL_BH + j) * w + x * w / GL_BW + i) * 4;
+                    sum += q[0] + 2u * q[1] + q[2];
+                }
+            lum[2][y][x] = (uint8_t)(sum / 64);
+        }
+    if (frame < 3)
+        return;
+    A = lum[0]; B = lum[1]; C = lum[2];
+    {
+        /* the camera moving fast: neighbours disagree everywhere -- skip */
+        uint32_t tot = 0;
+        for (y = 0; y < GL_BH; y++)
+            for (x = 0; x < GL_BW; x++)
+                tot += (uint32_t)abs(A[y][x] - C[y][x]);
+        if (tot > 6u * GL_BW * GL_BH)
+            return;
+    }
+    for (y = 0; y < GL_BH; y++)
+        for (x = 0; x < GL_BW; x++) {
+            int ab = abs(B[y][x] - A[y][x]), cb = abs(B[y][x] - C[y][x]), ac = abs(A[y][x] - C[y][x]);
+            int d = ab < cb ? ab : cb;
+            if (d > 28 && ac < d / 3 && (B[y][x] - A[y][x]) * (B[y][x] - C[y][x]) > 0) {
+                nb++;
+                if (x < x0) x0 = x;
+                if (x > x1) x1 = x;
+                if (y < y0) y0 = y;
+                if (y > y1) y1 = y;
+            }
+        }
+    if (nb >= 24 && ssx3_InGame() && !ssx3_InGameMenuUp()) {
+        char path[512];
+        said++;
+        fprintf(stderr, "[GLITCH] frame %u (now at flip %u): %d blocks, box %d-%d x %d-%d (guest px)\n",
+                frame - 1, s_spike_frame, nb, x0 * 4, x1 * 4 + 4, y0 * 4, y1 * 4 + 4);
+        snprintf(path, sizeof path, "%s/glitch_%05u_a.bmp", dir, frame - 1); glitch_bmp(path, img[0], w, h);
+        snprintf(path, sizeof path, "%s/glitch_%05u_b.bmp", dir, frame - 1); glitch_bmp(path, img[1], w, h);
+        snprintf(path, sizeof path, "%s/glitch_%05u_c.bmp", dir, frame - 1); glitch_bmp(path, img[2], w, h);
+        snprintf(path, sizeof path, "%s/glitch_%05u_draws.txt", dir, frame - 1);
+        gl_dump(path, dfr[0], dfr[2]);
+        fprintf(stderr, "[GLITCH]   draw frames a/b/c = %u/%u/%u\n", dfr[0], dfr[1], dfr[2]);
+    }
+}
 
 static void *flip_thread(void *unused)
 {
@@ -126,6 +265,7 @@ static void *flip_thread(void *unused)
             for (y = 0; y < j.h; y++)
                 memcpy(mem + j.offset + (size_t)(j.y + y) * j.pitch + (size_t)j.x * 4,
                        px + (size_t)y * j.w * 4, (size_t)j.w * 4);
+            glitch_catch(px, j.w, j.h, j.frame);
             /* Higher internal resolution: the window shows the full image. */
             full = vkr_frame_pixels_full(s_vk, j.slot, &fw, &fh);
             if (full)
@@ -764,7 +904,7 @@ static void primlog(const VkrDrawState *st, uint32_t n, int gpu_vsh)
  * frame (deciding per draw tore the music notification and trick names
  * apart); only the placement is handed from an element to the same element
  * in the next frame, and changes after it has held for HUD_CONFIRM frames
- * and the box centre is HUD_BAND past a third's line -- pieces joining and
+ * and (leaving an edge) the box centre is HUD_BAND past a third's line -- pieces joining and
  * parting otherwise flipped elements between the edge and the middle. Draws wider
  * than HUD_PIECE_MAX of the screen -- 2D effects across the race, not HUD --
  * are placed alone and join no group.
@@ -857,19 +997,18 @@ static float hud_place(const HudBox *b)
     return 0.0f;
 }
 
-/* hud_place for an element already placed at `cur`: its centre must pass
- * a third's line by HUD_BAND of the width before it moves. A text box
- * whose centre sits near the line (the freestyle tip panel, 53-349 px,
- * plus a prompt reaching to 388 for ~0.7 s) otherwise crossed it whenever
- * a piece came or went. */
+/* hud_place for an element already at an edge: its centre must pass the
+ * third's line by HUD_BAND of the width before it leaves that edge. A text
+ * box whose centre sits near the line (the freestyle tip panel, 53-349 px,
+ * plus a prompt reaching to 388 for ~0.7 s) otherwise crossed it whenever a
+ * piece came or went. Only the edges hold: held in the middle, the radio
+ * box that slides in from the left stayed there. */
 #define HUD_BAND 0.05f
 static float hud_place_kept(const HudBox *b, float cur)
 {
     float gw = s_w ? (float)s_w : 640.0f, band = gw * HUD_BAND;
     float cx = (b->x0 + b->x1) * 0.5f;
-    if (cur < 0.0f ? cx < gw / 3.0f + band
-        : cur > 0.0f ? cx > gw * 2.0f / 3.0f - band
-        : cx >= gw / 3.0f - band && cx <= gw * 2.0f / 3.0f + band)
+    if ((cur < 0.0f && cx < gw / 3.0f + band) || (cur > 0.0f && cx > gw * 2.0f / 3.0f - band))
         return cur;
     return hud_place(b);
 }
@@ -1076,6 +1215,98 @@ static int draw_is_2d(const float *in, const Nv2aVshProgram *p)
     return o.pos[3] == 1.0f;
 }
 
+/* RECOMP_SPIKE_TRACE=1: logs triangles of GPU-path draws with an edge (in
+ * the program's input position, attribute 0) RECOMP_SPIKE_RATIO (default 20)
+ * times the draw's typical edge, degenerate strip joins left out -- a
+ * vertex taken from elsewhere, the course slab stretched to the vanishing
+ * point for one frame. Their CPU-run screen positions are logged too.
+ * Diagnostic only (slow). */
+static int s_spike = -1;
+static float s_spike_px;
+static int cmp_float(const void *a, const void *b)
+{
+    float x = *(const float *)a, y = *(const float *)b;
+    return x < y ? -1 : x > y;
+}
+static void spike_check(const float *in, uint32_t n, const Nv2aVshProgram *p,
+                        const uint32_t *idx, uint32_t k)
+{
+    static float *e;
+    static uint32_t cap;
+    uint32_t t, nt = k / 3, m, ps;
+    float typ;
+    if (s_spike_said >= 40 || nt < 4 || p->in_slot[0] == 0xFF)
+        return;
+    ps = p->in_slot[0];
+    if (cap < nt) {
+        free(e);
+        cap = nt;
+        e = (float *)malloc(cap * sizeof *e);
+        if (!e) { cap = 0; return; }
+    }
+    for (t = m = 0; t < nt; t++) {
+        const float *q[3];
+        float mx = 0;
+        int j, degen = 0;
+        for (j = 0; j < 3; j++)
+            q[j] = in + 4 * ((size_t)idx[3 * t + j] * p->nin + ps);
+        for (j = 0; j < 3; j++) {
+            const float *u = q[j], *v = q[(j + 1) % 3];
+            float dx = u[0] - v[0], dy = u[1] - v[1], dz = u[2] - v[2];
+            float d = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (d == 0.0f) degen = 1;
+            if (d > mx) mx = d;
+        }
+        e[t] = degen ? -1.0f : mx;
+        if (!degen) m++;
+    }
+    if (m < 4)
+        return;
+    {
+        static float *srt;
+        static uint32_t scap;
+        uint32_t j = 0;
+        if (scap < m) { free(srt); scap = m; srt = (float *)malloc(scap * sizeof *srt); if (!srt) { scap = 0; return; } }
+        for (t = 0; t < nt; t++) if (e[t] >= 0.0f) srt[j++] = e[t];
+        qsort(srt, m, sizeof *srt, cmp_float);
+        typ = srt[m / 2];
+    }
+    if (!(typ > 0.0f))
+        return;
+    for (t = 0; t < nt && s_spike_said < 40; t++) {
+        int j, a;
+        if (!(e[t] > s_spike_px * typ))
+            continue;
+        s_spike_said++;
+        fprintf(stderr, "[SPIKE] frame %u prog %08X n %u tris %u: tri %u edge %g = %.0fx typical %g\n",
+                s_spike_frame, p->hash, n, nt, t, e[t], e[t] / typ, typ);
+        for (j = 0; j < 3; j++) {
+            uint32_t vi = idx[3 * t + j];
+            float v[NV2A_VSH_INPUTS][4];
+            Nv2aVshOutput o;
+            const float *ip = in + 4 * ((size_t)vi * p->nin + ps);
+            memset(v, 0, sizeof v);
+            for (a = 0; a < NV2A_VSH_INPUTS; a++)
+                if (p->in_slot[a] != 0xFF)
+                    memcpy(v[a], in + 4 * ((size_t)vi * p->nin + p->in_slot[a]), 16);
+            memset(&o, 0, sizeof o);
+            nv2a_vsh_run((const float (*)[4])v, &o);
+            fprintf(stderr, "[SPIKE]   v%u in %g %g %g %g -> screen %g %g %g w %g\n", vi,
+                    ip[0], ip[1], ip[2], ip[3], o.pos[0], o.pos[1], o.pos[2], o.pos[3]);
+        }
+    }
+}
+
+static void spike_init(void)
+{
+    if (s_spike < 0) {
+        const char *e = getenv("RECOMP_SPIKE_TRACE");
+        s_spike = e && *e;
+        e = getenv("RECOMP_SPIKE_RATIO");
+        s_spike_px = e && *e ? (float)atof(e) : 20.0f;
+    }
+}
+
 static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, uint32_t n)
 {
     uint32_t *idx, k = 0, topo;
@@ -1105,6 +1336,48 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
         fill_state(t, &st);
         st.topology = topo;
         st.hud_shift = offscreen ? 0.0f : hud_shift(v, n);
+        if (s_gl_on < 0) s_gl_on = getenv("RECOMP_GLITCH_CATCH") != NULL;
+        if (s_gl_on) gl_record(prim, n, v, offscreen, 0);
+        {
+            /* RECOMP_DRAWLOG=<first>-<last>: every CPU-path draw of those
+             * flips (s_spike_frame numbering), with its screen box and w
+             * range -- for finding which draw a one-frame glitch is. */
+            static int on = -1;
+            static unsigned f0, f1, last_f, k;
+            if (on < 0) {
+                const char *e = getenv("RECOMP_DRAWLOG");
+                on = e && sscanf(e, "%u-%u", &f0, &f1) == 2;
+            }
+            if (on && s_spike_frame >= f0 && s_spike_frame <= f1) {
+                float b[8] = {1e30f, -1e30f, 1e30f, -1e30f, 1e30f, -1e30f, 1e30f, -1e30f};
+                uint32_t q;
+                int c;
+                Nv2aTexInfo ti;
+                if (!nv2a_exec_tex_info(0, &ti)) ti.offset = 0;
+                if (last_f != s_spike_frame) { last_f = s_spike_frame; k = 0; }
+                for (q = 0; q < n; q++)
+                    for (c = 0; c < 4; c++) {
+                        if (v[q].pos[c] < b[2 * c]) b[2 * c] = v[q].pos[c];
+                        if (v[q].pos[c] > b[2 * c + 1]) b[2 * c + 1] = v[q].pos[c];
+                    }
+                fprintf(stderr, "[DL] f %u #%u%s prim %u n %u x %.0f..%.0f y %.0f..%.0f z %.3g..%.3g w %.3g..%.3g tex %08X\n",
+                        s_spike_frame, k++, offscreen ? " off" : "", prim, n, b[0], b[1], b[2], b[3],
+                        b[4], b[5], b[6], b[7], ti.offset);
+            }
+        }
+        {
+            /* Only a pass across the whole screen keeps its edge vertices on
+             * the edges of the wide frame. Deciding that per vertex stretched
+             * panels sliding in from off-screen (the radio box, the briefing)
+             * from the screen edge to the 4:3 middle for a frame or two. */
+            float mn = 1e9f, mx = -1e9f, gw = s_w ? (float)s_w : 640.0f;
+            uint32_t q;
+            for (q = 0; q < n; q++) {
+                if (v[q].pos[0] < mn) mn = v[q].pos[0];
+                if (v[q].pos[0] > mx) mx = v[q].pos[0];
+            }
+            st.keep_edges = mx - mn > gw * 0.9f;
+        }
         double t2;
         bind_textures(&st);
         primlog(&st, n, 0);
@@ -1159,6 +1432,9 @@ static int be_draw_vsh(const Nv2aTarget *t, uint32_t prim, const float *in, uint
         memset(&st, 0, sizeof st);
         fill_state(t, &st);
         st.topology = topo;
+        st.keep_edges = 1;              /* 2D here only with the HUD layout off */
+        if (s_gl_on < 0) s_gl_on = getenv("RECOMP_GLITCH_CATCH") != NULL;
+        if (s_gl_on) gl_record(prim, n, NULL, offscreen, 1);
         bind_textures(&st);
         primlog(&st, n, 1);
         {
@@ -1187,6 +1463,9 @@ static int be_draw_vsh(const Nv2aTarget *t, uint32_t prim, const float *in, uint
                 }
             }
         }
+        spike_init();
+        if (s_spike && !offscreen && topo == VKR_TOPO_TRIANGLES)
+            spike_check(in, n, p, idx, k);
         t2 = s_stats ? now_ms() : 0;
         if (!vkr_draw_vsh(s_vk, in, n, p->nin, &p->ins[0][0], p->nins, p->hash, p->consts,
                           idx, k, &st))
@@ -1310,6 +1589,7 @@ static void be_flip(const Nv2aTarget *t)
     if (s_hud_trace < 0)
         s_hud_trace = getenv("RECOMP_HUD_TRACE") ? atoi(getenv("RECOMP_HUD_TRACE")) : 0;
     hud_build_groups();                 /* this frame's elements, for the next */
+    s_spike_frame++;
     s_hud_order = 0;
     if (s_hud_trace_frame)
         fflush(stderr);
@@ -1370,6 +1650,8 @@ static void be_flip(const Nv2aTarget *t)
         return;
     tf = s_stats ? now_ms() : 0;
     j.slot = vkr_flip_submit(s_vk);
+    j.frame = s_draw_frame++;
+    s_gl_ord = 0;
     if (s_stats) { s_t[4] += now_ms() - tf; s_n[2]++; }
     if (j.slot < 0)
         return;

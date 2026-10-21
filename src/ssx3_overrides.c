@@ -972,6 +972,22 @@ static void ingame_menu_check(uint32_t scr)
         s_ingame_menu = 0;
 }
 
+/* Remember an in-game screen other than the HUD once it is shown, forget it
+ * once it is not -- before and after each state change: noted only before,
+ * the change that opened the briefing panel or a dialog went unseen until
+ * the next one, and for those frames the panel was laid out as HUD (its
+ * left half drawn at the screen edge). */
+static void ingame_menu_note(uint32_t scr)
+{
+    if (!ssx3_InGame())
+        s_ingame_menu = 0;
+    else if (scr && MEM32(scr) != SSX3_HUD_SCREEN_VT && ssx3_ScreenShown(scr)) {
+        s_ingame_menu = scr;
+        s_ingame_menu_vt = MEM32(scr);
+    } else
+        ingame_menu_check(scr);
+}
+
 void sub_00202460(void)
 {
     uint32_t scr = g_ecx;
@@ -998,13 +1014,7 @@ void sub_00202460(void)
             fflush(stderr);
         }
     }
-    if (!ssx3_InGame())
-        s_ingame_menu = 0;
-    else if (scr && MEM32(scr) != SSX3_HUD_SCREEN_VT && ssx3_ScreenShown(scr)) {
-        s_ingame_menu = scr;
-        s_ingame_menu_vt = MEM32(scr);
-    } else
-        ingame_menu_check(scr);
+    ingame_menu_note(scr);
     if (scr && ((MEM16(scr + 0x1C) >> 8) & 0x3F) == 5 && MEM32(scr) != SSX3_HUD_SCREEN_VT) {
         uint32_t vt = MEM32(scr), id = MEM32(scr + 0xC);
         g_ssx3_ui_screen_ptr = scr;
@@ -1018,7 +1028,7 @@ void sub_00202460(void)
         }
     }
     sub_00202460_gen();
-    ingame_menu_check(scr);             /* the state as the change left it */
+    ingame_menu_note(scr);              /* the state as the change left it */
 }
 
 void sub_0008C540(void)

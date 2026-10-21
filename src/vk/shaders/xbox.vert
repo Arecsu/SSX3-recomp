@@ -23,6 +23,7 @@ layout(push_constant) uniform PC {
     layout(offset = 48) float squeeze2d;   /* widescreen: x of 2D vertices (w == 1) times this */
     float squeeze_all;  /* 1: every vertex (pillarboxed 4:3 picture) */
     float hud_shift;    /* 2D draws anchored to a screen edge: NDC x offset after the squeeze */
+    float keep_edges;   /* 1: a full-width pass -- its vertices on the screen edges stay there */
 } pc;
 
 layout(location = 0) out vec4 v_d0;
@@ -63,9 +64,17 @@ void main()
      * fades, colour/blur passes), which stay at the edges of the 16:9 frame. */
     if (pc.squeeze_all > 0.5)
         ndc.x *= pc.squeeze2d;
-    else if (w == 1.0 && abs(ndc.x) < 0.999)
+    else if (w == 1.0 && (pc.keep_edges < 0.5 || abs(ndc.x) < 0.999))
         ndc.x = ndc.x * pc.squeeze2d + pc.hud_shift;   /* HUD at the edges (vkr_backend.c) */
-    gl_Position = vec4(ndc * w, in_pos.z * pc.inv_zmax * w, w);
+    /* Back to clip space: the program divided by w with RCC, whose
+     * reciprocal is clamped to 1.884467e19 -- undo that, not 1/w. A vertex
+     * almost exactly on the camera plane (|w| < 5.4e-20: the camera drifting
+     * into the floor at the start gate) otherwise came back near x = y = 0,
+     * the screen centre: the floor stretched to the vanishing point (the
+     * rider) for a frame. Every other vertex gets ndc * w as before. */
+    float rw = w == 0.0 ? 1.884467e19 : 1.0 / w;
+    if (abs(rw) > 1.884467e19) rw = rw < 0.0 ? -1.884467e19 : 1.884467e19;
+    gl_Position = vec4(ndc / rw, in_pos.z * pc.inv_zmax / rw, w);
     /* The NV2A clamps the vertex colours to 0..1 before they are
      * interpolated (xemu does the same): lighting that adds up past 1 must
      * not reach the combiners -- it washed every lit model out. */

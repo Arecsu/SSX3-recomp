@@ -3000,7 +3000,7 @@ index 0000000..2102f59
 +
 +#endif
 diff --git a/src/kernel/nv2a_pb_exec.c b/src/kernel/nv2a_pb_exec.c
-index c65632c..53faecd 100644
+index c65632c..aef67e8 100644
 --- a/src/kernel/nv2a_pb_exec.c
 +++ b/src/kernel/nv2a_pb_exec.c
 @@ -37,10 +37,12 @@
@@ -4519,7 +4519,26 @@ index c65632c..53faecd 100644
      case 0x033C: s_gpu.alpha_func = param; break;
      case 0x0340: s_gpu.alpha_ref = param; break;
      case 0x02A4: s_gpu.fog_enable = param; break;
-@@ -3065,6 +4075,17 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3052,6 +4062,18 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+ 
+         if (!s_gpu.prim)
+             break;
++        if (start + count > 0x10000u) {
++            static unsigned said;
++            if (said++ < 8)
++                fprintf(stderr, "[PB] DRAW_ARRAYS start %u count %u: past the 16-bit index list\n",
++                        start, count);
++        }
++        if (s_gpu.idx_count + count > NV_MAX_INDICES) {
++            static unsigned said;
++            if (said++ < 8)
++                fprintf(stderr, "[PB] batch over %u indices (prim %u): the rest is dropped\n",
++                        NV_MAX_INDICES, s_gpu.prim);
++        }
+         for (i = 0; i < count && s_gpu.idx_count < NV_MAX_INDICES; i++)
+             s_gpu.idx[s_gpu.idx_count++] = (uint16_t)(start + i);
+         break;
+@@ -3065,6 +4087,17 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
          }
          break;
  
@@ -4537,7 +4556,7 @@ index c65632c..53faecd 100644
      case NV097_SET_FLIP_READ:
          if (s_ftrace == 2)
              fprintf(stderr, "[FTRACE] P_READ %u%c", param, 10);
-@@ -3119,6 +4140,13 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3119,6 +4152,13 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
                                                 : s_gpu.color_offset;
              uint32_t pitch = s_gpu.drawn_offset ? s_gpu.drawn_pitch
                                                  : s_gpu.pitch;
@@ -4551,7 +4570,7 @@ index c65632c..53faecd 100644
              if (done) {
                  xbox_FramebufferWindowSet(dma_resolve(done), pitch);
                  xbox_FramebufferWindowPresent(dma_resolve(done), pitch);
-@@ -3178,9 +4206,20 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3178,9 +4218,20 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
      /* Depth. */
      case 0x030C: s_gpu.depth_test = param; break; /* DEPTH_TEST_ENABLE */
      case 0x0354: s_gpu.depth_func = param; break; /* DEPTH_FUNC */
@@ -4572,7 +4591,7 @@ index c65632c..53faecd 100644
  
      default:
          if (method >= 0x0260 && method < 0x0280) {         /* ALPHA_ICW(i) */
-@@ -3220,6 +4259,21 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
+@@ -3220,6 +4271,21 @@ void nv2a_pb_exec_method(uint32_t subch, uint32_t method, uint32_t param)
              nv2a_vsh_constant_component(58, (method - 0x0AF0) / 4, param);
              break;
          }
@@ -4594,7 +4613,7 @@ index c65632c..53faecd 100644
          if (method >= 0x0B00 && method < 0x0B80) {    /* TRANSFORM_PROGRAM(i) */
              nv2a_vsh_program_word(param);
              break;
-@@ -3406,6 +4460,7 @@ static void peek_chain(void)
+@@ -3406,6 +4472,7 @@ static void peek_chain(void)
  
  void nv2a_pb_exec_report(void)
  {
@@ -4602,7 +4621,7 @@ index c65632c..53faecd 100644
      peek_addresses();
      peek_chain();
      if (getenv("RECOMP_FIND_NAN")) {
-@@ -3534,10 +4589,157 @@ void nv2a_pb_exec_report(void)
+@@ -3534,10 +4601,157 @@ void nv2a_pb_exec_report(void)
               * is using. */
              union { uint32_t u; float f; } v;
              v.u = s_unhandled[i].last_param;

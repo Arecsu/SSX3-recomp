@@ -1032,6 +1032,27 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   linear search over every texture ever made), the process opts out of
   Windows power/timer-resolution throttling, and the window thread sleeps
   while its swap chain is occluded.
+- ONE-FRAME SLABS AND WEDGES (fixed 2026-10-21, user's 60 fps video): (1)
+  the floor stretched from the screen edge to the rider (the vanishing
+  point) for a frame at the start gate and in pipes: a vertex almost exactly
+  on the camera plane (|w| < 5.4e-20). The game's epilogue divides with RCC
+  (reciprocal clamped to 1.884467e19); xbox.vert / xbox_vsh.vert rebuilt
+  clip space as ndc * w, which for a clamped reciprocal put the vertex near
+  the screen centre. Now ndc / rcc(w) (identical for every other vertex).
+  Deterministic: Peak 1 Mode 1 Event 2 countdown, frames ~926/978/1022.
+  (2) 2D panels sliding in from off-screen (radio box, briefing) were
+  stretched from the screen edge: the "keep edge vertices on the edges" rule
+  of full-screen passes was per vertex; now per draw (push constant
+  keep_edges, set for draws > 0.9 of the width). (3) the briefing panel's
+  first frames were laid out as HUD (half at the edge): ingame_menu_note
+  runs after the screen state change too. Tools: RECOMP_GLITCH_CATCH=<dir>
+  (vkr_backend.c: frames that differ from both neighbours while those agree,
+  in game; writes glitch_<n>_{a,b,c}.bmp + _draws.txt, the draws of the
+  three frames with screen boxes -- CPU-path draws only, so add
+  RECOMP_GPU_VSH=0 for a full list), RECOMP_SPIKE_TRACE=1 (object-space
+  outlier triangles), RECOMP_DRAWLOG=<a>-<b> (every CPU-path draw; slows the
+  game enough to change what it draws). work\probe\hudrun.ps1 -Extra
+  'K=V;K=V' -Ws 0 runs the freestyle event with extra settings.
 - Untranslated instructions reached (no-ops): `wbinvd`, `out`/`in`, `ldmxcsr`.
 - Upstream candidates: the toolkit fixes in `patches/`; `tools.split`
   ignoring applied names (docs/DECOMP.md says otherwise); template
