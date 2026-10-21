@@ -803,7 +803,21 @@ static int hud_near(const HudBox *a, const HudBox *b, float dx)
         && a->y0 <= b->y1 + HUD_TOUCH_PX && a->y1 >= b->y0 - HUD_TOUCH_PX;
 }
 
-static int hud_touch(const HudBox *a, const HudBox *b) { return hud_near(a, b, HUD_TOUCH_PX); }
+/* One element: touching, or on the same text line with no more than a word
+ * space between them (gap <= HUD_LINE_GAP x the line's height, vertical
+ * overlap >= 60% of the lower box) -- a label and its value drawn apart,
+ * like the "$" and the amount of Conquer the Mountain's money counter, which
+ * sit on both sides of the two-thirds line and were placed apart. */
+#define HUD_LINE_GAP 1.5f
+static int hud_touch(const HudBox *a, const HudBox *b)
+{
+    float ha = a->y1 - a->y0, hb = b->y1 - b->y0, h = ha < hb ? ha : hb;
+    float ov = (a->y1 < b->y1 ? a->y1 : b->y1) - (a->y0 > b->y0 ? a->y0 : b->y0);
+    float gap = a->x0 > b->x1 ? a->x0 - b->x1 : b->x0 > a->x1 ? b->x0 - a->x1 : 0.0f;
+    if (hud_near(a, b, HUD_TOUCH_PX))
+        return 1;
+    return h > 2.0f && ov >= 0.6f * h && gap <= HUD_LINE_GAP * h;
+}
 
 /* The NDC x offset for a box of the guest screen, by its centre. */
 static float hud_place(const HudBox *b)
