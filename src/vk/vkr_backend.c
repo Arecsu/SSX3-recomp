@@ -61,6 +61,7 @@ static void stats_tick(void)
 #include "vkr_hdtex.h"
 
 extern ptrdiff_t xbox_GetMemoryOffset(void);
+extern void *xbox_GuestToHost(uint32_t va);   /* any mapped guest range (also the web build) */
 extern void xbox_FramebufferPublishImage(const uint32_t *px, uint32_t w, uint32_t h);
 extern int ssx3_WidescreenNow(void);
 extern int ssx3_InGame(void);
@@ -259,11 +260,11 @@ static void *flip_thread(void *unused)
         pthread_mutex_unlock(&s_job_lock);
         px = vkr_frame_pixels(s_vk, j.slot);
         if (px) {
-            uint8_t *mem = (uint8_t *)xbox_GetMemoryOffset();
+            uint8_t *surf = (uint8_t *)xbox_GuestToHost(j.offset);
             uint32_t fw, fh;
             const uint8_t *full;
             for (y = 0; y < j.h; y++)
-                memcpy(mem + j.offset + (size_t)(j.y + y) * j.pitch + (size_t)j.x * 4,
+                memcpy(surf + (size_t)(j.y + y) * j.pitch + (size_t)j.x * 4,
                        px + (size_t)y * j.w * 4, (size_t)j.w * 4);
             glitch_catch(px, j.w, j.h, j.frame);
             /* Higher internal resolution: the window shows the full image. */
@@ -665,7 +666,7 @@ static void trace_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *
         if (!((st->u.stage_program >> (k * 5)) & 0x1F))
             continue;
         if (nv2a_exec_tex_info(k, &ti)) {
-            const uint32_t *m = (const uint32_t *)((const uint8_t *)xbox_GetMemoryOffset() + ti.offset);
+            const uint32_t *m = (const uint32_t *)xbox_GuestToHost(ti.offset);
             fprintf(stderr, " t%d:%08X fmt %X %ux%u%s [%08X %08X %08X %08X]", k, ti.offset, ti.format,
                     ti.width, ti.height, st->tex[k] ? "" : " (none)", m[0], m[1], m[2], m[3]);
         }

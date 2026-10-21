@@ -90,3 +90,5 @@ dist/
 
 # tools/hdtex_match.py's signature cache
 hd-textures/.sig_cache.npz
+disk
+build-web/
