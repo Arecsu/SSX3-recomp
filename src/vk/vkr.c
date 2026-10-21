@@ -9,9 +9,13 @@
 #include "xbox_vert_spv.h"
 #include "xbox_frag_spv.h"
 #include "xbox_frag_wdepth_spv.h"
+#include "xbox_frag_tags_spv.h"
+#include "xbox_frag_wdepth_tags_spv.h"
 #include "xbox_vsh_vert_spv.h"
 #include "crt_vert_spv.h"
 #include "crt_frag_spv.h"
+#include "scene_frag_spv.h"
+#include "scene_frag_ms_spv.h"
 #ifdef _WIN32
 #include <windows.h>
 #define strtok_r strtok_s
@@ -37,6 +41,8 @@ static double vkr_now_ms(void)
 
 #define VKR_BUF_BYTES (32u << 20)       /* vertex+index staging per frame */
 #define VKR_FRAMES 2                    /* frames in flight */
+#define VKR_SPEC_WORDS 39               /* xbox.frag SPEC + S0..S37 */
+#define VKR_PIPE_INDEX 8192
 
 struct VkrTex {
     uint64_t key;
@@ -66,6 +72,7 @@ typedef struct {
     VkQueryPool qp;
     uint32_t nq;
     int qreset;
+    uint32_t npass;                 /* render passes begun in the frame */
     struct VkrProfDraw *meta;
 } VkrFrame;
 
@@ -97,9 +104,28 @@ struct VkrContext {
     VkDescriptorSetLayout dsl;
     VkPipelineLayout layout;
     VkShaderModule vs, fs, fs_wdepth, vs_vsh;  /* fs_wdepth: W-buffered draws */
+    VkShaderModule fs_tags[2];                 /* fs, fs_wdepth with rider tags (TAGS) */
+    int dual_src;                              /* dualSrcBlend enabled */
+    int tags;                                  /* rider tags on: main-target draws write theirs to alpha */
 
-    struct PipeEntry { uint32_t key[8]; VkPipeline pipe; } pipes[200];
-    int npipes;
+    /* Pipelines by key: blend/topology/... (8 words) + the fragment
+     * shader's specialization (VKR_SPEC_WORDS, see spec_words). A
+     * specialized one is compiled by the worker (pipe_worker) while draws
+     * use the interpreting one; pipe stays VK_NULL_HANDLE until then. */
+    struct PipeEntry {
+        uint32_t key[8 + VKR_SPEC_WORDS];
+        VkPipeline pipe;                /* render thread */
+        VkPipeline built;               /* the worker's result, under pj_lock */
+        struct PipeEntry *next_job;
+        int pending;                    /* queued or compiling (render thread) */
+    } **pipes;
+    int npipes, cappipes;
+    int pipe_index[VKR_PIPE_INDEX];     /* open addressing: pipes[] index + 1, 0 = empty */
+    int spec, spec_sync;                /* RECOMP_VKR_SPEC (default 1), RECOMP_VKR_SPEC_SYNC */
+    pthread_mutex_t pj_lock;
+    pthread_cond_t pj_cond;
+    struct PipeEntry *pj_head, *pj_tail;
+    int pj_started, pj_quit, pj_done;
     struct SamplerEntry { uint32_t key; VkSampler s; } samplers[16];
     int nsamplers;
 
@@ -166,6 +192,7 @@ struct VkrContext {
     VkImageView resolved_view;
     VkFormat depth_fmt;             /* D32_SFLOAT_S8_UINT (or D24S8; D32 = no stencil) */
     int has_stencil;
+    VkImageView depth_sview;        /* depth only, for sampling (the scene pass) */
     int recording, in_pass;
     int color_valid;
 
@@ -181,6 +208,7 @@ struct VkrContext {
     /* RECOMP_VKR_GPUPROF=<ms> */
     double prof_thr, ts_period;
     unsigned prof_said;
+    int prof_frame;                 /* RECOMP_VKR_GPUPROF_FRAME=1: frame start/end only */
     float vsh_consts[192][4];
 
     /* RECOMP_CRT=1: CRT post-process of the full-resolution image (crt.frag).
@@ -197,6 +225,22 @@ struct VkrContext {
     VkDeviceMemory crt_in_mem, crt_out_mem;
     VkImageView crt_in_view, crt_out_view;
     uint32_t crt_levels;
+
+    /* The scene pass (scene.frag): RECOMP_MBLUR, on frames with a camera
+     * (vkr_scene_set). sc_in: a copy of the frame for it to read. */
+    int scene;
+    float sc_p[9];                  /* mblur | near mindist edge cap speed s0 s1 reach */
+    VkrScene cam;
+    int cam_valid;
+    VkDescriptorSetLayout sc_dsl;
+    VkPipelineLayout sc_layout;
+    VkShaderModule sc_fs;
+    VkPipeline sc_pipe;
+    int scene_done;                 /* ran this frame (before the HUD, vkr_scene_run) */
+    VkSampler sc_near, sc_lin;
+    VkImage sc_in;
+    VkDeviceMemory sc_in_mem;
+    VkImageView sc_in_view;
 };
 
 static VkImageAspectFlags ds_aspect(const VkrContext *c)
@@ -398,6 +442,14 @@ static VkBlendFactor blend_factor(uint32_t f)
     }
 }
 
+/* Rider tags: the alpha the game blends with is the second source's */
+static VkBlendFactor src1_factor(VkBlendFactor f)
+{
+    return f == VK_BLEND_FACTOR_SRC_ALPHA ? VK_BLEND_FACTOR_SRC1_ALPHA
+         : f == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA ? VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA
+         : f;
+}
+
 static VkBlendOp blend_op(uint32_t e)
 {
     switch (e) {
@@ -419,14 +471,27 @@ static int make_layout(VkrContext *c)
     };
     VkDescriptorSetLayoutCreateInfo di = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     VkPushConstantRange pcr[2] = {{VK_SHADER_STAGE_VERTEX_BIT, 0, 64},
-                                  {VK_SHADER_STAGE_FRAGMENT_BIT, 64, 16}};
+                                  {VK_SHADER_STAGE_FRAGMENT_BIT, 64, 20}};
     VkPipelineLayoutCreateInfo li = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
 
     c->vs = shader(c, xbox_vert_spv, xbox_vert_spv_len);
+    {
+        /* RECOMP_VKR_SPEC=0: one fragment pipeline per blend state that
+         * interprets the combiners (spec_words) */
+        const char *e = getenv("RECOMP_VKR_SPEC");
+        c->spec = !(e && *e == '0');
+        /* RECOMP_VKR_SPEC_SYNC=1: compile them on the spot (the draw waits) */
+        c->spec_sync = getenv("RECOMP_VKR_SPEC_SYNC") != NULL;
+    }
     c->fs = shader(c, xbox_frag_spv, xbox_frag_spv_len);
     c->fs_wdepth = shader(c, xbox_frag_wdepth_spv, xbox_frag_wdepth_spv_len);
     c->vs_vsh = shader(c, xbox_vsh_vert_spv, xbox_vsh_vert_spv_len);
     if (!c->vs || !c->fs || !c->fs_wdepth || !c->vs_vsh) { fprintf(stderr, "[VKR] shader module failed\n"); return 0; }
+    if (c->dual_src) {
+        c->fs_tags[0] = shader(c, xbox_frag_tags_spv, xbox_frag_tags_spv_len);
+        c->fs_tags[1] = shader(c, xbox_frag_wdepth_tags_spv, xbox_frag_wdepth_tags_spv_len);
+        if (!c->fs_tags[0] || !c->fs_tags[1]) c->dual_src = 0;
+    }
     di.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT;
     di.bindingCount = 3; di.pBindings = b;
     CK(vkCreateDescriptorSetLayout(c->dev, &di, NULL, &c->dsl));
@@ -524,10 +589,150 @@ static int make_crt(VkrContext *c)
     return 1;
 }
 
-/* Pipeline for one blend/write-mask combination (depth state is dynamic). */
-static VkPipeline get_pipeline(VkrContext *c, const VkrDrawState *st, int gpu_vsh)
+/* The scene pass's knobs: RECOMP_MBLUR=<strength, 1 = the full
+ * frame-to-frame motion, 0 = off>; RECOMP_SCENE_PARAMS=name=value,...: near
+ * (motion blur starts, world units, 0) mindist (nearer = HUD models, 120)
+ * edge (extra blur towards the screen edges: x (1 + edge) in the corners, 1)
+ * cap (longest blur, pixels at 1080 lines, 160) speed (radial speed blur at
+ * full speed: this fraction of the distance from the focus of expansion,
+ * 0.05) s0 s1 (camera speed where it starts / is full, world units per
+ * frame: 15 / 45, ~30 / ~100 km/h at 60 Hz) reach (the speed blur is full up
+ * to this distance and falls off as reach / distance beyond it, to 15% on
+ * the backdrop: 2500). World units are SSX 3's (cm). */
+static void scene_config(VkrContext *c)
 {
-    uint32_t key[8];
+    static const char *const names[8] = {"near", "mindist", "edge", "cap", "speed", "s0", "s1", "reach"};
+    const char *e = getenv("RECOMP_MBLUR");
+    char buf[512], *tok, *save = NULL;
+    int i;
+    c->sc_p[0] = e && *e ? (float)atof(e) : 0.0f;
+    c->sc_p[1] = 0.0f; c->sc_p[2] = 120.0f; c->sc_p[3] = 1.0f; c->sc_p[4] = 160.0f;
+    c->sc_p[5] = 0.05f; c->sc_p[6] = 15.0f; c->sc_p[7] = 45.0f; c->sc_p[8] = 2500.0f;
+    e = getenv("RECOMP_SCENE_PARAMS");
+    if (e) {
+        snprintf(buf, sizeof buf, "%s", e);
+        for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+            char *eq = strchr(tok, '=');
+            if (!eq) continue;
+            *eq = 0;
+            for (i = 0; i < 8; i++)
+                if (!strcmp(tok, names[i]))
+                    c->sc_p[1 + i] = (float)atof(eq + 1);
+        }
+    }
+    c->scene = c->sc_p[0] > 0.0f;
+}
+
+/* scene.frag as a fullscreen triangle (crt.vert) into the colour target. */
+static int make_scene(VkrContext *c)
+{
+    VkDescriptorSetLayoutBinding b[3] = {
+        {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+        {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+        {4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+    };
+    VkDescriptorSetLayoutCreateInfo di = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    VkPipelineLayoutCreateInfo li = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    VkSamplerCreateInfo si = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    VkPipelineShaderStageCreateInfo stg[2] = {
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, 0, 0, VK_SHADER_STAGE_VERTEX_BIT, 0, "main", 0},
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, 0, 0, VK_SHADER_STAGE_FRAGMENT_BIT, 0, "main", 0},
+    };
+    VkPipelineVertexInputStateCreateInfo vin = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    VkPipelineViewportStateCreateInfo vp = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    VkPipelineRasterizationStateCreateInfo rs = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    VkPipelineColorBlendAttachmentState cba = {0};
+    VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dy = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    VkFormat cf = VK_FORMAT_B8G8R8A8_UNORM;
+    VkPipelineRenderingCreateInfo ri = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    VkGraphicsPipelineCreateInfo pi = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    VkShaderModule vs = shader(c, crt_vert_spv, crt_vert_spv_len);
+
+    c->sc_fs = c->samples != VK_SAMPLE_COUNT_1_BIT
+              ? shader(c, scene_frag_ms_spv, scene_frag_ms_spv_len)   /* MSAA depth */
+              : shader(c, scene_frag_spv, scene_frag_spv_len);
+    if (!vs || !c->sc_fs) { fprintf(stderr, "[VKR] scene shader modules failed\n"); return 0; }
+    si.magFilter = si.minFilter = VK_FILTER_NEAREST;
+    si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    CK(vkCreateSampler(c->dev, &si, NULL, &c->sc_near));
+    si.magFilter = si.minFilter = VK_FILTER_LINEAR;
+    CK(vkCreateSampler(c->dev, &si, NULL, &c->sc_lin));
+    di.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT;
+    di.bindingCount = 3; di.pBindings = b;
+    CK(vkCreateDescriptorSetLayout(c->dev, &di, NULL, &c->sc_dsl));
+    li.setLayoutCount = 1; li.pSetLayouts = &c->sc_dsl;
+    CK(vkCreatePipelineLayout(c->dev, &li, NULL, &c->sc_layout));
+    stg[0].module = vs; stg[1].module = c->sc_fs;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    vp.viewportCount = 1; vp.scissorCount = 1;
+    rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
+    rs.lineWidth = 1.0f;
+    ms.rasterizationSamples = c->samples;   /* draws into the (MSAA) colour target */
+    cba.colorWriteMask = 0xF;
+    cb.attachmentCount = 1; cb.pAttachments = &cba;
+    dy.dynamicStateCount = 2; dy.pDynamicStates = dyn;
+    ri.colorAttachmentCount = 1; ri.pColorAttachmentFormats = &cf;
+    pi.pNext = &ri; pi.stageCount = 2; pi.pStages = stg;
+    pi.pVertexInputState = &vin; pi.pInputAssemblyState = &ia; pi.pViewportState = &vp;
+    pi.pRasterizationState = &rs; pi.pMultisampleState = &ms;
+    pi.pColorBlendState = &cb; pi.pDynamicState = &dy; pi.layout = c->sc_layout;
+    CK(vkCreateGraphicsPipelines(c->dev, VK_NULL_HANDLE, 1, &pi, NULL, &c->sc_pipe));
+    vkDestroyShaderModule(c->dev, vs, NULL);
+    fprintf(stderr, "[VKR] scene pass on: mblur %.2f (near %.0f, mindist %.0f, edge %.2f, cap %.0f,"
+            " speed %.3f from %.0f to %.0f, reach %.0f)\n", c->sc_p[0], c->sc_p[1], c->sc_p[2], c->sc_p[3],
+            c->sc_p[4], c->sc_p[5], c->sc_p[6], c->sc_p[7], c->sc_p[8]);
+    return 1;
+}
+
+void vkr_scene_set(VkrContext *c, const VkrScene *s)
+{
+    c->cam = *s;
+    c->cam_valid = 1;
+}
+
+/* The fragment shader's specialization constants (xbox.frag SPEC, S0..S37):
+ * the combiner words that shape the program, so the compiler folds the
+ * interpreter away. Words the shader does not read for this state are 0, so
+ * they do not make extra pipelines. All 0 = the interpreter (RECOMP_VKR_SPEC=0). */
+static void spec_words(const VkrContext *c, const VkrDrawState *st, uint32_t *w)
+{
+    const VkrUniforms *u = &st->u;
+    uint32_t n = u->control & 255u, s;
+    memset(w, 0, VKR_SPEC_WORDS * sizeof *w);
+    if (!c->spec)
+        return;
+    w[0] = 1;
+    w[38] = st->alpha_func;
+    if (!u->rc_seen) {
+        w[36] = u->stage_program & 31u;
+        return;
+    }
+    if (n > 8) n = 8;
+    for (s = 0; s < n; s++) {
+        w[1 + s] = u->color_icw[s];  w[9 + s] = u->alpha_icw[s];
+        w[17 + s] = u->color_ocw[s]; w[25 + s] = u->alpha_ocw[s];
+    }
+    w[33] = u->final0; w[34] = u->final1;
+    w[35] = u->control; w[36] = u->stage_program; w[37] = u->rc_seen;
+}
+
+static uint32_t pipe_hash(const uint32_t *key)
+{
+    uint32_t h = 2166136261u, i;
+    for (i = 0; i < 8 + VKR_SPEC_WORDS; i++)
+        h = (h ^ key[i]) * 16777619u;
+    return h;
+}
+
+/* The pipeline for a key (get_pipeline). */
+static VkPipeline create_pipeline(VkrContext *c, const uint32_t *key)
+{
+    VkSpecializationMapEntry sme[VKR_SPEC_WORDS];
+    VkSpecializationInfo spi;
     VkPipelineShaderStageCreateInfo stg[2] = {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, 0, 0, VK_SHADER_STAGE_VERTEX_BIT, 0, "main", 0},
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, 0, 0, VK_SHADER_STAGE_FRAGMENT_BIT, 0, "main", 0},
@@ -553,23 +758,20 @@ static VkPipeline get_pipeline(VkrContext *c, const VkrDrawState *st, int gpu_vs
     VkPipelineRenderingCreateInfo ri = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     VkGraphicsPipelineCreateInfo pi = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     VkPipeline pipe;
-    int i;
+    int blend = (int)key[0], gpu_vsh = (int)key[5], w_buffer = (int)(key[7] & 1u), i;
+    uint32_t topology = key[6], write_mask = key[4];
 
-    key[0] = (uint32_t)st->blend_enable; key[1] = st->blend_src; key[2] = st->blend_dst;
-    key[3] = st->blend_eq; key[4] = st->write_mask;
-    if (!st->blend_enable) key[1] = key[2] = key[3] = 0;
-    key[5] = (uint32_t)gpu_vsh;
-    key[6] = st->topology;
-    key[7] = (uint32_t)(st->w_buffer != 0) | (uint32_t)c->samples << 4;  /* + MSAA vs offscreen */
-    for (i = 0; i < c->npipes; i++)
-        if (!memcmp(c->pipes[i].key, key, sizeof key))
-            return c->pipes[i].pipe;
-    if (c->npipes == (int)(sizeof c->pipes / sizeof c->pipes[0])) {
-        fprintf(stderr, "[VKR] pipeline cache full\n");
-        return VK_NULL_HANDLE;
+    stg[0].module = gpu_vsh ? c->vs_vsh : c->vs; stg[1].module = w_buffer ? c->fs_wdepth : c->fs;
+    if (key[7] & 16u)
+        stg[1].module = c->fs_tags[w_buffer];
+    for (i = 0; i < VKR_SPEC_WORDS; i++) {
+        sme[i].constantID = (uint32_t)i;
+        sme[i].offset = (uint32_t)(i * 4);
+        sme[i].size = 4;
     }
-
-    stg[0].module = gpu_vsh ? c->vs_vsh : c->vs; stg[1].module = st->w_buffer ? c->fs_wdepth : c->fs;
+    spi.mapEntryCount = VKR_SPEC_WORDS; spi.pMapEntries = sme;
+    spi.dataSize = VKR_SPEC_WORDS * sizeof key[0]; spi.pData = key + 8;
+    stg[1].pSpecializationInfo = &spi;
     for (i = 0; i < 8; i++) {
         at[i].location = (uint32_t)i; at[i].binding = 0;
         at[i].format = VK_FORMAT_R32G32B32A32_SFLOAT;
@@ -579,21 +781,39 @@ static VkPipeline get_pipeline(VkrContext *c, const VkrDrawState *st, int gpu_vs
         vin.vertexBindingDescriptionCount = 1; vin.pVertexBindingDescriptions = &bind;
         vin.vertexAttributeDescriptionCount = 8; vin.pVertexAttributeDescriptions = at;
     }
-    ia.topology = st->topology == VKR_TOPO_LINES  ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST
-                : st->topology == VKR_TOPO_POINTS ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+    ia.topology = topology == VKR_TOPO_LINES  ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST
+                : topology == VKR_TOPO_POINTS ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
                 : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     vp.viewportCount = 1; vp.scissorCount = 1;
     rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
     rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rs.lineWidth = c->wide_lines ? (c->scale < c->max_line ? c->scale : c->max_line) : 1.0f;
-    ms.rasterizationSamples = c->samples;
+    ms.rasterizationSamples = (VkSampleCountFlagBits)(key[7] >> 8 ? key[7] >> 8 : 1);  /* MSAA (get_pipeline) */
     ds.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-    cba.colorWriteMask = st->write_mask & 0xF;
-    if (st->blend_enable) {
+    cba.colorWriteMask = write_mask & 0xF;
+    if (key[7] & 16u) {
+        /* rider tags: colour blends with the real alpha (second source),
+         * alpha takes the tag; a draw that writes no colour leaves both alone */
         cba.blendEnable = VK_TRUE;
-        cba.srcColorBlendFactor = cba.srcAlphaBlendFactor = blend_factor(st->blend_src);
-        cba.dstColorBlendFactor = cba.dstAlphaBlendFactor = blend_factor(st->blend_dst);
-        cba.colorBlendOp = cba.alphaBlendOp = blend_op(st->blend_eq);
+        if (blend) {
+            cba.srcColorBlendFactor = src1_factor(blend_factor(key[1]));
+            cba.dstColorBlendFactor = src1_factor(blend_factor(key[2]));
+            cba.colorBlendOp = blend_op(key[3]);
+        } else {
+            cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            cba.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+            cba.colorBlendOp = VK_BLEND_OP_ADD;
+        }
+        cba.srcAlphaBlendFactor = (key[7] & 32u) ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ZERO;
+        cba.dstAlphaBlendFactor = (key[7] & 32u) ? VK_BLEND_FACTOR_ZERO : VK_BLEND_FACTOR_ONE;
+        cba.alphaBlendOp = VK_BLEND_OP_ADD;
+        if (cba.colorWriteMask & 7u)
+            cba.colorWriteMask |= VK_COLOR_COMPONENT_A_BIT;
+    } else if (blend) {
+        cba.blendEnable = VK_TRUE;
+        cba.srcColorBlendFactor = cba.srcAlphaBlendFactor = blend_factor(key[1]);
+        cba.dstColorBlendFactor = cba.dstAlphaBlendFactor = blend_factor(key[2]);
+        cba.colorBlendOp = cba.alphaBlendOp = blend_op(key[3]);
     }
     cb.attachmentCount = 1; cb.pAttachments = &cba;
     dy.dynamicStateCount = (uint32_t)(sizeof dyn / sizeof dyn[0]); dy.pDynamicStates = dyn;
@@ -611,13 +831,135 @@ static VkPipeline get_pipeline(VkrContext *c, const VkrDrawState *st, int gpu_vs
             fprintf(stderr, "[VKR] pipeline creation failed\n");
             return VK_NULL_HANDLE;
         }
-        fprintf(stderr, "[VKR] pipeline %d: %.1f ms (blend %u %u/%u eq %u mask %X vsh %u topo %u wdepth %u)\n",
-                c->npipes, vkr_now_ms() - t0,
-                key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7]);
+        fprintf(stderr, "[VKR] pipeline: %.1f ms (blend %u %u/%u eq %u mask %X vsh %u topo %u wdepth %u"
+                " rc %u stages %u)\n", vkr_now_ms() - t0,
+                key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7],
+                key[8], key[8 + 35] & 255u);
     }
-    memcpy(c->pipes[c->npipes].key, key, sizeof key);
-    c->pipes[c->npipes++].pipe = pipe;
     return pipe;
+}
+
+/* Compiles specialized pipelines in the background: one took ~90 ms on
+ * Honeykrisp (once; Mesa's disk cache has it after that). */
+static void *pipe_worker(void *arg)
+{
+    VkrContext *c = (VkrContext *)arg;
+    pthread_mutex_lock(&c->pj_lock);
+    for (;;) {
+        struct PipeEntry *e;
+        VkPipeline p;
+        while (!c->pj_head && !c->pj_quit)
+            pthread_cond_wait(&c->pj_cond, &c->pj_lock);
+        if (c->pj_quit)
+            break;
+        e = c->pj_head;
+        c->pj_head = e->next_job;
+        if (!c->pj_head)
+            c->pj_tail = NULL;
+        pthread_mutex_unlock(&c->pj_lock);
+        p = create_pipeline(c, e->key);
+        pthread_mutex_lock(&c->pj_lock);
+        e->built = p;
+        e->next_job = e;                /* done, even if it failed */
+    }
+    c->pj_done = 1;
+    pthread_cond_broadcast(&c->pj_cond);
+    pthread_mutex_unlock(&c->pj_lock);
+    return NULL;
+}
+
+/* The entry for a key, made (and its pipeline created or queued) on a miss. */
+static struct PipeEntry *pipe_entry(VkrContext *c, const uint32_t *key)
+{
+    struct PipeEntry *e;
+    uint32_t slot;
+    for (slot = pipe_hash(key) % VKR_PIPE_INDEX; c->pipe_index[slot]; slot = (slot + 1) % VKR_PIPE_INDEX)
+        if (!memcmp(c->pipes[c->pipe_index[slot] - 1]->key, key, sizeof e->key))
+            return c->pipes[c->pipe_index[slot] - 1];
+    if (c->npipes >= VKR_PIPE_INDEX / 2) {
+        fprintf(stderr, "[VKR] pipeline cache full\n");
+        return NULL;
+    }
+    if (c->npipes == c->cappipes) {
+        struct PipeEntry **np;
+        int cap = c->cappipes ? c->cappipes * 2 : 256;
+        if (!(np = (struct PipeEntry **)realloc(c->pipes, (size_t)cap * sizeof *np)))
+            return NULL;
+        c->pipes = np;
+        c->cappipes = cap;
+    }
+    if (!(e = (struct PipeEntry *)calloc(1, sizeof *e)))
+        return NULL;
+    memcpy(e->key, key, sizeof e->key);
+    if (!key[8] || c->spec_sync) {
+        e->pipe = create_pipeline(c, key);
+    } else {
+        if (!c->pj_started) {
+            pthread_t th;
+            pthread_mutex_init(&c->pj_lock, NULL);
+            pthread_cond_init(&c->pj_cond, NULL);
+            if (pthread_create(&th, NULL, pipe_worker, c) != 0) {
+                c->spec_sync = 1;
+                e->pipe = create_pipeline(c, key);
+                goto add;
+            }
+            pthread_detach(th);
+            c->pj_started = 1;
+        }
+        pthread_mutex_lock(&c->pj_lock);
+        if (c->pj_tail)
+            c->pj_tail->next_job = e;
+        else
+            c->pj_head = e;
+        c->pj_tail = e;
+        e->pending = 1;
+        pthread_cond_signal(&c->pj_cond);
+        pthread_mutex_unlock(&c->pj_lock);
+    }
+add:
+    c->pipes[c->npipes] = e;
+    c->pipe_index[slot] = ++c->npipes;
+    return e;
+}
+
+/* Pipeline for one blend/write-mask/combiner combination (depth state is
+ * dynamic): the specialized one once it is compiled, until then (or if it
+ * failed) the interpreting one. */
+static VkPipeline get_pipeline(VkrContext *c, const VkrDrawState *st, int gpu_vsh)
+{
+    uint32_t key[8 + VKR_SPEC_WORDS];
+    struct PipeEntry *e;
+    VkPipeline p;
+
+    key[0] = (uint32_t)st->blend_enable; key[1] = st->blend_src; key[2] = st->blend_dst;
+    key[3] = st->blend_eq; key[4] = st->write_mask;
+    if (!st->blend_enable) key[1] = key[2] = key[3] = 0;
+    key[5] = (uint32_t)gpu_vsh;
+    key[6] = st->topology;
+    key[7] = (uint32_t)(st->w_buffer != 0) | (uint32_t)c->samples << 8;  /* + MSAA vs offscreen */
+    if (c->tags) {
+        /* tagged: the tag goes to alpha where the draw writes depth, the
+         * alpha underneath stays where it does not */
+        key[7] |= 16u;
+        if (st->depth_test && st->depth_write)
+            key[7] |= 32u;
+    }
+    spec_words(c, st, key + 8);
+    if (!(e = pipe_entry(c, key)))
+        return VK_NULL_HANDLE;
+    if (e->pending) {
+        pthread_mutex_lock(&c->pj_lock);
+        if (e->next_job == e) {
+            e->pipe = e->built;
+            e->pending = 0;
+        }
+        pthread_mutex_unlock(&c->pj_lock);
+    }
+    if ((p = e->pipe) || !key[8])
+        return p;
+    memset(key + 8, 0, VKR_SPEC_WORDS * sizeof key[0]);
+    e = pipe_entry(c, key);
+    return e ? e->pipe : VK_NULL_HANDLE;
 }
 
 static VkSampler get_sampler(VkrContext *c, uint32_t au, uint32_t av, int linear)
@@ -728,6 +1070,11 @@ VkrContext *vkr_create(void)
         static VkPhysicalDeviceFeatures en;
         vkGetPhysicalDeviceFeatures(c->phys, &pf);
         vkGetPhysicalDeviceProperties(c->phys, &pp);
+        if (pf.dualSrcBlend) {          /* RECOMP_MBLUR rider tags */
+            en.dualSrcBlend = VK_TRUE;
+            di.pEnabledFeatures = &en;
+            c->dual_src = 1;
+        }
         if (pf.wideLines) {             /* lines as wide as the scale */
             en.wideLines = VK_TRUE;
             c->wide_lines = 1;
@@ -785,6 +1132,7 @@ VkrContext *vkr_create(void)
             VkQueryPoolCreateInfo qpi = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
             qpi.queryType = VK_QUERY_TYPE_TIMESTAMP; qpi.queryCount = VKR_PROF_MAX;
             c->prof_thr = atof(e);
+            c->prof_frame = getenv("RECOMP_VKR_GPUPROF_FRAME") != NULL;
             c->ts_period = pp.limits.timestampPeriod;
             for (f = 0; f < VKR_FRAMES; f++) {
                 if (vkCreateQueryPool(c->dev, &qpi, NULL, &c->fr[f].qp) != VK_SUCCESS
@@ -841,6 +1189,17 @@ VkrContext *vkr_create(void)
     crt_config(c);
     if (c->crt && !make_crt(c))
         c->crt = 0;
+    scene_config(c);
+    if (c->scene && !make_scene(c))
+        c->scene = 0;
+    /* Rider tags: the motion blur leaves riders sharp by them;
+     * RECOMP_MBLUR_TAGS=0 off (then only the near distance does) */
+    {
+        const char *e = getenv("RECOMP_MBLUR_TAGS");
+        c->tags = c->scene && c->dual_src && !(e && *e == '0');
+        if (c->scene)
+            fprintf(stderr, "[VKR] rider tags %s\n", c->tags ? "on" : c->dual_src ? "off" : "off (no dualSrcBlend)");
+    }
     return c;
 fail:
     fprintf(stderr, "[VKR] init failed\n");
@@ -856,6 +1215,7 @@ static void free_target(VkrContext *c)
     vkDeviceWaitIdle(c->dev);
     vkDestroyImageView(c->dev, c->color_view, NULL);
     vkDestroyImageView(c->dev, c->depth_view, NULL);
+    vkDestroyImageView(c->dev, c->depth_sview, NULL);
     vkDestroyImage(c->dev, c->color, NULL);
     vkDestroyImage(c->dev, c->depth, NULL);
     vkFreeMemory(c->dev, c->color_mem, NULL);
@@ -889,6 +1249,12 @@ static void free_target(VkrContext *c)
         vkDestroyImage(c->dev, c->resolved, NULL);
         vkFreeMemory(c->dev, c->resolved_mem, NULL);
         c->resolved = VK_NULL_HANDLE;
+    }
+    if (c->sc_in) {
+        vkDestroyImageView(c->dev, c->sc_in_view, NULL);
+        vkDestroyImage(c->dev, c->sc_in, NULL);
+        vkFreeMemory(c->dev, c->sc_in_mem, NULL);
+        c->sc_in = VK_NULL_HANDLE;
     }
     c->color = c->depth = VK_NULL_HANDLE;
 }
@@ -979,8 +1345,20 @@ void vkr_destroy(VkrContext *c)
     free_target(c);
     vkDeviceWaitIdle(c->dev);
     tex_free_all(c);
-    for (int i = 0; i < c->npipes; i++)
-        vkDestroyPipeline(c->dev, c->pipes[i].pipe, NULL);
+    if (c->pj_started) {
+        pthread_mutex_lock(&c->pj_lock);
+        c->pj_quit = 1;
+        pthread_cond_broadcast(&c->pj_cond);
+        while (!c->pj_done)
+            pthread_cond_wait(&c->pj_cond, &c->pj_lock);
+        pthread_mutex_unlock(&c->pj_lock);
+    }
+    for (int i = 0; i < c->npipes; i++) {
+        if (c->pipes[i]->pipe)
+            vkDestroyPipeline(c->dev, c->pipes[i]->pipe, NULL);
+        free(c->pipes[i]);
+    }
+    free(c->pipes);
     for (int i = 0; i < c->nsamplers; i++)
         vkDestroySampler(c->dev, c->samplers[i].s, NULL);
     vkDestroyShaderModule(c->dev, c->vs, NULL);
@@ -995,6 +1373,14 @@ void vkr_destroy(VkrContext *c)
     if (c->crt_dsl) vkDestroyDescriptorSetLayout(c->dev, c->crt_dsl, NULL);
     if (c->crt_vs) vkDestroyShaderModule(c->dev, c->crt_vs, NULL);
     if (c->crt_fs) vkDestroyShaderModule(c->dev, c->crt_fs, NULL);
+    for (int i = 0; i < 2; i++)
+        if (c->fs_tags[i]) vkDestroyShaderModule(c->dev, c->fs_tags[i], NULL);
+    if (c->sc_pipe) vkDestroyPipeline(c->dev, c->sc_pipe, NULL);
+    if (c->sc_layout) vkDestroyPipelineLayout(c->dev, c->sc_layout, NULL);
+    if (c->sc_dsl) vkDestroyDescriptorSetLayout(c->dev, c->sc_dsl, NULL);
+    if (c->sc_near) vkDestroySampler(c->dev, c->sc_near, NULL);
+    if (c->sc_lin) vkDestroySampler(c->dev, c->sc_lin, NULL);
+    if (c->sc_fs) vkDestroyShaderModule(c->dev, c->sc_fs, NULL);
     for (int i = 0; i < VKR_FRAMES; i++) {
         vkDestroyBuffer(c->dev, c->fr[i].buf, NULL);
         vkFreeMemory(c->dev, c->fr[i].buf_mem, NULL);
@@ -1046,15 +1432,31 @@ int vkr_set_target(VkrContext *c, uint32_t w, uint32_t h, float zmax)
                        VK_IMAGE_ASPECT_COLOR_BIT, &c->color, &c->color_mem, &c->color_view,
                        c->sw, c->sh, 1, c->samples))
         return 0;
-    if (!make_image_ms(c, c->depth_fmt, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                       ds_aspect(c), &c->depth, &c->depth_mem, &c->depth_view,
-                       c->sw, c->sh, 1, c->samples))
+    if (!make_image_ms(c, c->depth_fmt, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                       | VK_IMAGE_USAGE_SAMPLED_BIT, ds_aspect(c), &c->depth, &c->depth_mem,
+                       &c->depth_view, c->sw, c->sh, 1, c->samples))
         return 0;
+    {
+        /* the scene pass samples depth: a depth-only view (a depth+stencil
+         * view cannot be sampled); multisampled with MSAA (scene_ms.frag) */
+        VkImageViewCreateInfo vi = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vi.image = c->depth;
+        vi.viewType = VK_IMAGE_VIEW_TYPE_2D; vi.format = c->depth_fmt;
+        vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        vi.subresourceRange.levelCount = 1; vi.subresourceRange.layerCount = 1;
+        CK(vkCreateImageView(c->dev, &vi, NULL, &c->depth_sview));
+    }
     if (c->samples != VK_SAMPLE_COUNT_1_BIT
         && !make_image(c, VK_FORMAT_B8G8R8A8_UNORM,
                        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT, &c->resolved, &c->resolved_mem,
                        &c->resolved_view, c->sw, c->sh))
+        return 0;
+    if (c->scene
+        && !make_image(c, VK_FORMAT_B8G8R8A8_UNORM,
+                       VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT, &c->sc_in, &c->sc_in_mem, &c->sc_in_view,
+                       c->sw, c->sh))
         return 0;
     if ((c->scale != 1.0f || c->scale_x != 1.0f)
         && !make_image(c, VK_FORMAT_B8G8R8A8_UNORM,
@@ -1104,7 +1506,7 @@ static void prof_mark(VkrContext *c, const VkrDrawState *st, uint32_t nidx, int 
 {
     VkrFrame *fr = &c->fr[c->cur];
     VkrProfDraw *m;
-    if (c->prof_thr <= 0 || !fr->qreset || fr->nq >= VKR_PROF_MAX)
+    if (c->prof_thr <= 0 || !fr->qreset || fr->nq >= VKR_PROF_MAX || (st && c->prof_frame))
         return;
     m = &fr->meta[fr->nq];
     memset(m, 0, sizeof *m);
@@ -1139,12 +1541,14 @@ static void prof_report(VkrContext *c, int slot)
     {
         /* every 120 frames: the GPU frame time's average and maximum */
         static double sum, mx;
-        static unsigned nf;
+        static unsigned nf, passes;
         sum += total; nf++;
+        passes += fr->npass;
         if (total > mx) mx = total;
         if (nf == 120) {
-            fprintf(stderr, "[GPUPROF] 120 frames: GPU avg %.2f ms, max %.2f ms\n", sum / nf, mx);
-            sum = mx = 0; nf = 0;
+            fprintf(stderr, "[GPUPROF] 120 frames: GPU avg %.2f ms, max %.2f ms, %.1f passes\n",
+                    sum / nf, mx, (double)passes / nf);
+            sum = mx = 0; nf = passes = 0;
         }
     }
     if (total < c->prof_thr || c->prof_said >= 60)
@@ -1194,6 +1598,7 @@ static int begin_cmd(VkrContext *c)
         vkCmdResetQueryPool(c->cmd, c->fr[c->cur].qp, 0, VKR_PROF_MAX);
         c->fr[c->cur].qreset = 1;
         c->fr[c->cur].nq = 0;
+        c->fr[c->cur].npass = 0;
         prof_mark(c, NULL, 0, -1);
     }
     barrier(c, c->color, VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1219,6 +1624,7 @@ static void begin_pass(VkrContext *c)
     VkViewport vp = {0, 0, (float)c->sw, (float)c->sh, 0.0f, 1.0f};
     VkRect2D sc = {{0, 0}, {c->sw, c->sh}};   /* render area: the whole target */
     if (c->in_pass) return;
+    c->fr[c->cur].npass++;
     ca.imageView = c->color_view; ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     ca.loadOp = c->color_valid ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
     ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -1287,6 +1693,8 @@ void vkr_clear(VkrContext *c, const float rgba[4], int clear_depth, float depth)
     begin_pass(c);
     ca[0].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; ca[0].colorAttachment = 0;
     memcpy(ca[0].clearValue.color.float32, rgba, 16);
+    if (c->tags)
+        ca[0].clearValue.color.float32[3] = 0.0f;   /* the rider tag: none */
     if (clear_depth) {
         ca[1].aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT; ca[1].colorAttachment = 0;
         ca[1].clearValue.depthStencil.depth = depth; ca[1].clearValue.depthStencil.stencil = 0;
@@ -1738,7 +2146,7 @@ int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
     VkDeviceSize off;
     VkPipeline pipe;
     float pcv[8];
-    uint32_t pcf[4];
+    uint32_t pcf[5];
     VkDescriptorImageInfo di[4];
     VkDescriptorBufferInfo bi;
     VkWriteDescriptorSet w[2];
@@ -1788,7 +2196,8 @@ int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
     /* bit 0: point sprite; bits 8+: MSAA samples (alpha-test coverage) */
     pcf[3] = (uint32_t)(st->topology == VKR_TOPO_POINTS && st->point_sprite)
            | (uint32_t)c->samples << 8;
-    vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 64, 16, pcf);
+    pcf[4] = (uint32_t)st->rider;
+    vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 64, 20, pcf);
 
     for (k = 0; k < 4; k++) {
         VkrTex *t = st->tex[k] ? st->tex[k] : c->white;
@@ -1832,7 +2241,7 @@ int vkr_draw_vsh(VkrContext *c, const float *in, uint32_t nverts, uint32_t nin,
     uint32_t in_bytes = nverts * (nin ? nin : 1) * 16, prog_bytes = nins * 32;
     VkPipeline pipe;
     float pcv[8];
-    uint32_t pcu[4], pcf[4];
+    uint32_t pcu[4], pcf[5];
     VkDescriptorImageInfo di[4];
     VkDescriptorBufferInfo bi, sb;
     VkWriteDescriptorSet w[3];
@@ -1907,7 +2316,8 @@ int vkr_draw_vsh(VkrContext *c, const float *in, uint32_t nverts, uint32_t nin,
     /* bit 0: point sprite; bits 8+: MSAA samples (alpha-test coverage) */
     pcf[3] = (uint32_t)(st->topology == VKR_TOPO_POINTS && st->point_sprite)
            | (uint32_t)c->samples << 8;
-    vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 64, 16, pcf);
+    pcf[4] = (uint32_t)st->rider;
+    vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 64, 20, pcf);
 
     for (k = 0; k < 4; k++) {
         VkrTex *t = st->tex[k] ? st->tex[k] : c->white;
@@ -2061,6 +2471,128 @@ static void crt_pass(VkrContext *c, VkImage src)
             VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
 }
 
+/* RECOMP_MBLUR: scene.frag into c->color, on a frame with a camera; it reads
+ * a copy of the frame (sc_in) and the depth. c->color in COLOR_ATTACHMENT
+ * and depth in DEPTH_ATTACHMENT before and after. */
+static void scene_pass(VkrContext *c)
+{
+    static const uint32_t bind[3] = {0, 1, 4};   /* img, dep, S */
+    VkDescriptorImageInfo ii[2];
+    VkDescriptorBufferInfo bi;
+    VkWriteDescriptorSet wr[3];
+    VkImageCopy ic = {0};
+    VkRenderingAttachmentInfo ca = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    VkRenderingInfo ri = {VK_STRUCTURE_TYPE_RENDERING_INFO};
+    VkViewport vp = {0, 0, (float)c->sw, (float)c->sh, 0.0f, 1.0f};
+    VkRect2D sc = {{0, 0}, {c->sw, c->sh}};
+    float u[68];
+    uint32_t off = (c->buf_used + 255) & ~255u, k;
+    if (off + sizeof u > VKR_BUF_BYTES)
+        return;
+    memcpy(u, c->cam.inv_m, 64);
+    memcpy(u + 16, c->cam.prev_m, 64);
+    u[32] = c->sc_p[0]; u[33] = c->sc_p[1]; u[34] = c->sc_p[2]; u[35] = c->tags ? 1.0f : 0.0f;
+    u[36] = (float)c->w; u[37] = (float)c->h; u[38] = 1.0f / c->scale_x; u[39] = 1.0f / c->scale;
+    u[40] = c->zmax; u[41] = (float)c->sw; u[42] = (float)c->sh;
+    u[43] = (float)((long long)vkr_now_ms() % 100000) * 1e-3f;
+    u[44] = c->sc_p[3]; u[45] = c->sc_p[4]; u[46] = u[47] = 0.0f;
+    {
+        /* speed blur: none below s0, full from s1 (smoothstep) */
+        float t = c->sc_p[7] > c->sc_p[6] ? (c->cam.speed - c->sc_p[6]) / (c->sc_p[7] - c->sc_p[6]) : 0.0f;
+        t = t < 0.0f ? 0.0f : t > 1.0f ? 1.0f : t;
+        u[48] = c->cam.foe[0]; u[49] = c->cam.foe[1];
+        u[50] = c->cam.speed > 0.0f ? c->sc_p[5] * t * t * (3.0f - 2.0f * t) : 0.0f;
+        u[51] = c->sc_p[8];
+    }
+    for (k = 0; k < 8; k++) {           /* the riders' own motion (tags 1..7) */
+        u[52 + 2 * k] = c->cam.rider_v[k][0];
+        u[53 + 2 * k] = c->cam.rider_v[k][1];
+    }
+    memcpy(c->buf_map + off, u, sizeof u);
+    c->buf_used = off + (uint32_t)sizeof u;
+
+    /* the frame so far, copied for the pass to read */
+    barrier(c, c->color, VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    barrier(c, c->sc_in, VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    ic.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; ic.srcSubresource.layerCount = 1;
+    ic.dstSubresource = ic.srcSubresource;
+    ic.extent.width = c->sw; ic.extent.height = c->sh; ic.extent.depth = 1;
+    if (c->samples != VK_SAMPLE_COUNT_1_BIT) {
+        /* MSAA: the pass reads the resolved frame (a multisampled image
+         * cannot be copied into a plain one) */
+        VkImageResolve rv = {0};
+        rv.srcSubresource = ic.srcSubresource; rv.dstSubresource = ic.dstSubresource;
+        rv.extent = ic.extent;
+        vkCmdResolveImage(c->cmd, c->color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                          c->sc_in, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &rv);
+    } else
+        vkCmdCopyImage(c->cmd, c->color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       c->sc_in, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+    barrier(c, c->sc_in, VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    barrier(c, c->color, VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    barrier(c, c->depth, ds_aspect(c),
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+    ii[0].sampler = c->sc_lin; ii[0].imageView = c->sc_in_view;
+    ii[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    ii[1].sampler = c->sc_near; ii[1].imageView = c->depth_sview;
+    ii[1].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    bi.buffer = c->buf; bi.offset = off; bi.range = sizeof u;
+    memset(wr, 0, sizeof wr);
+    for (k = 0; k < 3; k++) {
+        wr[k].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        wr[k].dstBinding = bind[k]; wr[k].descriptorCount = 1;
+        wr[k].descriptorType = k < 2 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+                                     : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        if (k < 2) wr[k].pImageInfo = &ii[k]; else wr[k].pBufferInfo = &bi;
+    }
+    ca.imageView = c->color_view; ca.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    ca.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; ca.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    ri.renderArea = sc; ri.layerCount = 1;
+    ri.colorAttachmentCount = 1; ri.pColorAttachments = &ca;
+    vkCmdBeginRendering(c->cmd, &ri);
+    vkCmdSetViewport(c->cmd, 0, 1, &vp);
+    vkCmdSetScissor(c->cmd, 0, 1, &sc);
+    vkCmdBindPipeline(c->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, c->sc_pipe);
+    vkCmdPushDescriptorSet(c->cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, c->sc_layout, 0, 3, wr);
+    vkCmdDraw(c->cmd, 3, 1, 0, 0);
+    vkCmdEndRendering(c->cmd);
+
+    barrier(c, c->depth, ds_aspect(c),
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+}
+
+/* Before the first 2D draw after the world (vkr_backend.c): the scene pass
+ * on what is drawn so far, so the HUD is drawn on top of it untouched.
+ * Once per frame; a frame that never gets here has it at the flip. */
+void vkr_scene_run(VkrContext *c)
+{
+    if (!c->scene || !c->cam_valid || c->cam.off || c->scene_done || !c->sc_in || !c->recording)
+        return;
+    if (c->cur_off >= 0)
+        return;                          /* drawing a shadow map: the frame comes later */
+    end_pass(c);
+    scene_pass(c);
+    c->scene_done = 1;
+}
+
 int vkr_flip_submit(VkrContext *c)
 {
     VkBufferImageCopy cp = {0};
@@ -2082,6 +2614,10 @@ int vkr_flip_submit(VkrContext *c)
         }
     }
     end_pass(c);
+    if (c->scene && c->cam_valid && !c->cam.off && c->sc_in && !c->scene_done)
+        scene_pass(c);
+    c->scene_done = 0;
+    c->cam_valid = 0;
     barrier(c, c->color, VK_IMAGE_ASPECT_COLOR_BIT,
             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,

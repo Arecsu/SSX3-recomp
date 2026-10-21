@@ -213,12 +213,12 @@ void sub_001AD720(void)
             uint32_t bits = MEM32(app + 0x28);
             memcpy(&orig, &bits, 4);
             memcpy(&bits, &fast, 4);
-            MEM32(app + 0x28) = bits;
+            ST32(app + 0x28, bits);
             boosted = 1;
         } else if (!want && boosted) {
             uint32_t bits;
             memcpy(&bits, &orig, 4);
-            MEM32(app + 0x28) = bits;
+            ST32(app + 0x28, bits);
             boosted = 0;
         }
     }
@@ -251,7 +251,7 @@ void sub_001EAB40(void)
         memcpy(&zf, &bits, 4);
         zf *= mul;
         memcpy(&bits, &zf, 4);
-        MEM32(g_esp + 12) = bits;
+        ST32(g_esp + 12, bits);
     }
     sub_001EAB40_gen();
 }
@@ -282,8 +282,8 @@ static void list_add(uint32_t self, uint32_t count_off, uint32_t cap, uint32_t o
 {
     uint32_t n = MEM32(self + count_off);
     if (n < cap) {
-        MEM32(self + count_off + 4 + n * 4) = obj;
-        MEM32(self + count_off) = n + 1;
+        ST32(self + count_off + 4 + n * 4, obj);
+        ST32(self + count_off, n + 1);
     } else {
         static unsigned said;
         if (said++ < 4)
@@ -461,6 +461,8 @@ void sub_000D3740(void)
     }
 }
 
+extern float ssx3_CamFovScale(void);
+
 void sub_0024EA13(void)
 {
     {
@@ -483,6 +485,15 @@ void sub_0024EA13(void)
                     GetTickCount(), f[0], f[0] * 57.29578f, f[1], f[2], f[3], ssx3_InGame(),
                     MEM32(g_esp));
         }
+    }
+    float fk = ssx3_CamFovScale();
+    if (fk != 1.0f && ssx3_InGame()) {   /* the race camera's speed FOV (camera_mode.c) */
+        uint32_t bits = MEM32(g_esp + 8);
+        float fovy;
+        memcpy(&fovy, &bits, 4);
+        fovy = 2.0f * atanf(tanf(fovy * 0.5f) * fk);
+        memcpy(&bits, &fovy, 4);
+        ST32(g_esp + 8, bits);
     }
     if (ssx3_WidescreenNow()) {
         uint32_t bits = MEM32(g_esp + 12);
@@ -629,6 +640,8 @@ void sub_000E1B90(void)
  * change of the game's choice is logged as [FPS30].
  */
 extern void sub_000CC8F0_gen(void);
+extern void ssx3_CamPreUpdate(void);
+extern void ssx3_CamPostUpdate(uint32_t state);
 
 void sub_000CC8F0(void)
 {
@@ -639,7 +652,9 @@ void sub_000CC8F0(void)
         const char *e = getenv("RECOMP_FPS30");
         keep = e && *e && *e != '0';
     }
+    ssx3_CamPreUpdate();                  /* the modern race camera: camera_mode.c */
     sub_000CC8F0_gen();
+    ssx3_CamPostUpdate(self);
     app = MEM32(0x003A930Cu);
     if (app < 0x10000u)
         return;
@@ -705,7 +720,7 @@ static void money_add(int amount)
     cash = (int64_t)(int32_t)MEM32(cash_va) + amount;
     if (cash > INT32_MAX)
         cash = INT32_MAX;
-    MEM32(cash_va) = (uint32_t)(int32_t)cash;
+    ST32(cash_va, (uint32_t)(int32_t)cash);
     fprintf(stderr, "[MONEY] +%d: rider %d (slot %d) now has %d\n", amount, rider, slot,
             (int)(int32_t)MEM32(cash_va));
     fflush(stderr);

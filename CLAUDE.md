@@ -982,6 +982,62 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   RECOMP_GPU_VSH=0 + RECOMP_VKR_TRACE_BRIEF=<ms after the briefing> +
   RECOMP_VKR_TRACE_EVERY (per-draw boxes with depth range), RECOMP_VKR_CLEARLOG=1,
   work\probe\trails.ps1 (race start, N short brakes, shots).
+- COMBINER SPECIALIZATION (2026-10-18, Linux/Asahi M2 Max: race 37-55 FPS
+  at 1728x1080, GPU-bound): xbox.frag interpreted the register combiners
+  per pixel (R[16] indexed by uniform words) -- ~80% of the GPU time on
+  Honeykrisp (12 ms/frame vs 2.4 ms with a trivial shader; a switch-based
+  register file instead of the array was far worse, 145 ms). Now the
+  combiner words, stage count and alpha func are specialization constants
+  (xbox.frag SPEC + S0..S37, vkr.c spec_words; stages unrolled by hand) and
+  part of the pipeline key (hash-indexed). A new specialized pipeline takes
+  ~90 ms to compile cold on Honeykrisp, so a worker thread builds it
+  (pipe_worker) while draws use the interpreting pipeline; Mesa's disk cache
+  has it after the first time. Race: GPU 12 -> 2.2 ms/frame, steady 60 FPS.
+  RECOMP_VKR_SPEC=0 = interpreter only, RECOMP_VKR_SPEC_SYNC=1 = compile
+  on the spot. RECOMP_VKR_GPUPROF_FRAME=1: frame start/end timestamps only
+  (per-draw timestamps split the render pass on a tiler and inflate the
+  numbers); the 120-frame line also prints render passes per frame (~3).
+  Linux snapshots (RECOMP_SNAP_TRIGGER) now write the full-resolution frame
+  the window shows (it wrote a stale 640x480 one).
+  Video: RECOMP_RECORD=<file.mkv> (vkr_backend.c record_frame) pipes every
+  full-resolution frame, gamma applied, to ffmpeg as 60 FPS H.264;
+  RECOMP_RECORD_INGAME=1 starts at the first in-game frame.
+  OPEN: intermittent abort at boot, `malloc(): unaligned tcache chunk
+  detected` in the SDL window thread's SDL_CreateTexture (fb_thread, first
+  full-resolution frame), ~3 in 35 boots, with RECOMP_VKR_SPEC on and off;
+  a core from before this work exists too (coredumpctl list ssx3_recomp).
+  Heap corrupted earlier by something else; suspect around the target
+  resize at boot (vkr_set_target / flip_thread reading c->sw x c->sh).
+- MODERN RACE CAMERA (2026-10-18, off by default; launcher checkbox or
+  RECOMP_CAM=1):
+  src/camera_mode.c around the in-game update (sub_000CC8F0 wrapper): the
+  game's camera values are restored before each update and the chase
+  camera ([[state+0x84]+4], vtable 0x28630C) is rewritten after it --
+  spring-filtered eye offset (height slower) and view, look-ahead and roll
+  from the travel direction's turn rate, shake on landings (impact from
+  the vertical speed before Air -> Ground) and at speed; wider fov with
+  speed through the sub_0024EA13 wrapper (ssx3_CamFovScale). The eye is kept
+  out of the terrain with the world collision query (sub_001BD340 on a set
+  built by sub_001C0310 for the segment's box, as on the fps-mode branch). Knobs
+  RECOMP_CAM_SMOOTH/_FOV/_ROLL/_SHAKE, RECOMP_CAM_TRACE.
+- MOTION BLUR (2026-10-17, off by default; launcher checkbox or
+  RECOMP_MBLUR=<strength>): scene pass before the HUD (src/vk/shaders/
+  scene.frag) -- camera blur by reprojection plus radial speed streaks from
+  the heading, scaled by camera speed and distance; McGuire 2012 depth
+  weights; rider and board draws (E9FDBED0, 5D983485) are matched to a rider
+  slot by their first vertex, unprojected through the fitted camera, within
+  3 m of ssx3_RiderPos (rider manager slots: 0 player 1, vtable 0x00282B08;
+  1-5 computer riders, 0x00282520) and tagged in alpha (tag / 255: 255
+  player 1, kept sharp; 1..7 another rider). Other riders blur by their own
+  motion on screen (scene_flip: position through this frame's camera minus
+  last frame's through last frame's; none across a >5 m jump or near the eye
+  plane), so one riding alongside stays sharp and one passing streaks
+  ([MBLUR-RIDERS] with RECOMP_MBLUR_TRACE; RECOMP_MBLUR_RIDERS=1: all
+  riders sharp). Camera fitted from the terrain program each frame (scene_camera,
+  +-h steps: a unit step jittered). Knobs: RECOMP_SCENE_PARAMS (speed, s0,
+  s1, reach, edge, cap, near, mindist). Test: RECOMP_AUTONAV=race +
+  RECOMP_MBLUR_TEST=<dir> (blur/ref PPM pairs, [MBLUR-TEST] speed and
+  reprojection; _PLAN=brake=,shots=); RECOMP_MBLUR_TRACE, _PROGS. ~1 ms GPU.
 - LAUNCHER (2026-10-16): build\launcher.exe (src/launcher/launcher.c,
   plain Win32, CMake target ssx3_launcher) -- game folder picker that reads
   default.xbe's certificate (title id 4541003C = SSX 3 PAL, title name) and
@@ -1049,7 +1105,8 @@ All env defaults are set in `src/main.c` only when unset, so a run can override 
   (vkr_backend.c: frames that differ from both neighbours while those agree,
   in game; writes glitch_<n>_{a,b,c}.bmp + _draws.txt, the draws of the
   three frames with screen boxes -- CPU-path draws only, so add
-  RECOMP_GPU_VSH=0 for a full list), RECOMP_SPIKE_TRACE=1 (object-space
+  RECOMP_GPU_VSH=0 for a full list), RECOMP_GLITCH_FROM=<frame> skips the frames before (the race-start
+  spotlights fill the 60-capture budget), RECOMP_SPIKE_TRACE=1 (object-space
   outlier triangles), RECOMP_DRAWLOG=<a>-<b> (every CPU-path draw; slows the
   game enough to change what it draws). work\probe\hudrun.ps1 -Extra
   'K=V;K=V' -Ws 0 runs the freestyle event with extra settings.

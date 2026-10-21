@@ -942,7 +942,7 @@ index caef326..6d5d794 100644
      find_package(SDL2 REQUIRED)
      target_link_libraries(xbox_input PUBLIC platform SDL2::SDL2)
 diff --git a/src/input/xinput_device.c b/src/input/xinput_device.c
-index a91edbe..a46d8e4 100644
+index a91edbe..ae120d6 100644
 --- a/src/input/xinput_device.c
 +++ b/src/input/xinput_device.c
 @@ -13,6 +13,135 @@
@@ -1230,7 +1230,7 @@ index a91edbe..a46d8e4 100644
  
      xi_vib.wLeftMotorSpeed = pVibration->wLeftMotorSpeed;
      xi_vib.wRightMotorSpeed = pVibration->wRightMotorSpeed;
-@@ -251,16 +405,149 @@ DWORD xbox_InputGetCapabilities(DWORD dwPort, DWORD dwFlags, XBOX_INPUT_CAPABILI
+@@ -251,42 +405,236 @@ DWORD xbox_InputGetCapabilities(DWORD dwPort, DWORD dwFlags, XBOX_INPUT_CAPABILI
  /* ====================  SDL2 GameController backend  ===================== */
  /* ======================================================================== */
  
@@ -1366,22 +1366,41 @@ index a91edbe..a46d8e4 100644
 +    return off;
 +}
 +
-+/* Open up to XBOX_MAX_CONTROLLERS attached game controllers, in device order,
-+ * into the slots that are free; a pad that went away is closed first. */
++/* Open attached game controllers into free slots (up to
++ * XBOX_MAX_CONTROLLERS); a pad that went away frees its slot. */
  static void open_controllers(void)
  {
-     int slot = 0;
-+    for (int p = 0; p < XBOX_MAX_CONTROLLERS; p++) {
-+        if (g_pads[p] && !SDL_GameControllerGetAttached(g_pads[p])) {
-+            SDL_GameControllerClose(g_pads[p]);
-+            g_pads[p] = NULL;
-+            g_controller_connected[p] = FALSE;
+-    int slot = 0;
+-    for (int i = 0; i < SDL_NumJoysticks() && slot < XBOX_MAX_CONTROLLERS; i++) {
++    for (int slot = 0; slot < XBOX_MAX_CONTROLLERS; slot++)
++        if (g_pads[slot] && !SDL_GameControllerGetAttached(g_pads[slot])) {
++            SDL_GameControllerClose(g_pads[slot]);
++            g_pads[slot] = NULL;
++            g_controller_connected[slot] = FALSE;
 +        }
-+    }
-     for (int i = 0; i < SDL_NumJoysticks() && slot < XBOX_MAX_CONTROLLERS; i++) {
++    for (int i = 0; i < SDL_NumJoysticks(); i++) {
++        SDL_JoystickID id = SDL_JoystickGetDeviceInstanceID(i);
++        int slot, open = 0;
          if (!SDL_IsGameController(i))
              continue;
-@@ -272,8 +559,13 @@ static void open_controllers(void)
+-        if (!g_pads[slot]) {
+-            g_pads[slot] = SDL_GameControllerOpen(i);
+-            g_controller_connected[slot] = (g_pads[slot] != NULL);
+-        }
+-        slot++;
++        for (slot = 0; slot < XBOX_MAX_CONTROLLERS; slot++)
++            if (g_pads[slot] && SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(g_pads[slot])) == id)
++                open = 1;
++        if (open)
++            continue;
++        for (slot = 0; slot < XBOX_MAX_CONTROLLERS && g_pads[slot]; slot++)
++            ;
++        if (slot == XBOX_MAX_CONTROLLERS)
++            break;
++        g_pads[slot] = SDL_GameControllerOpen(i);
++        g_controller_connected[slot] = (g_pads[slot] != NULL);
++        if (g_pads[slot])
++            fprintf(stderr, "[INPUT] controller %d: %s\n", slot, SDL_GameControllerName(g_pads[slot]));
      }
  }
  
@@ -1395,8 +1414,38 @@ index a91edbe..a46d8e4 100644
      if (!SDL_WasInit(SDL_INIT_GAMECONTROLLER))
          SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER);
      open_controllers();
-@@ -285,8 +577,30 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+ }
+ 
++/* Set up on first use (nothing else calls xbox_InputInit on POSIX), then
++ * look for newly attached pads once a second while a slot is free. */
++static void input_poll_devices(void)
++{
++    static int inited;
++    static Uint32 next_scan;
++    int slot;
++    if (!inited) {
++        inited = 1;
++        xbox_InputInit();
++        next_scan = SDL_GetTicks() + 1000;
++        return;
++    }
++    if ((Sint32)(SDL_GetTicks() - next_scan) < 0)
++        return;
++    next_scan = SDL_GetTicks() + 1000;
++    for (slot = 0; slot < XBOX_MAX_CONTROLLERS; slot++)
++        if (!g_pads[slot] || !SDL_GameControllerGetAttached(g_pads[slot])) {
++            SDL_GameControllerUpdate();     /* lets SDL notice new devices */
++            open_controllers();
++            break;
++        }
++}
++
+ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+ {
+     if (dwPort >= XBOX_MAX_CONTROLLERS || !pState)
          return ERROR_DEVICE_NOT_CONNECTED;
++    if (dwPort == 0)
++        input_poll_devices();
  
      SDL_GameController *c = g_pads[dwPort];
 +    if ((!c || !SDL_GameControllerGetAttached(c)) && !host_pads_off()) {
@@ -1426,7 +1475,7 @@ index a91edbe..a46d8e4 100644
          return ERROR_DEVICE_NOT_CONNECTED;
      }
  
-@@ -335,6 +649,8 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
+@@ -335,6 +683,8 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
      pState->Gamepad.sThumbRY =
          (SHORT)(-1 - SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_RIGHTY));
  
@@ -8608,10 +8657,10 @@ index 08bae4b..6c1bcb6 100644
  #endif
 diff --git a/src/video/fb_present_sdl.c b/src/video/fb_present_sdl.c
 new file mode 100644
-index 0000000..cb0043d
+index 0000000..266bdcf
 --- /dev/null
 +++ b/src/video/fb_present_sdl.c
-@@ -0,0 +1,479 @@
+@@ -0,0 +1,482 @@
 +/**
 + * POSIX counterpart of fb_present.c: show the guest framebuffer in an SDL2
 + * window. Same contract (RECOMP_FB_WINDOW, flip-time copy, BMP dump, snap
@@ -8887,9 +8936,11 @@ index 0000000..cb0043d
 +}
 +
 +/* RECOMP_SNAP_TRIGGER=<file>: when it appears, dump the shown frame to the BMP
-+ * path it contains and delete it. */
-+static void snap_trigger_poll(void)
++ * path it contains and delete it. hi: the GPU backend's full-resolution frame
++ * when that is what the window shows (s_rgb is not updated then). */
++static void snap_trigger_poll(const uint32_t *hi, uint32_t hi_w, uint32_t hi_h)
 +{
++    (void)hi; (void)hi_w; (void)hi_h;   /* the published frame (s_hi) is used */
 +    static int checked;
 +    static const char *trig;
 +    FILE *f;
@@ -9028,6 +9079,7 @@ index 0000000..cb0043d
 +                SDL_RenderClear(ren);
 +                SDL_RenderCopy(ren, hi_tex, NULL, NULL);
 +                SDL_RenderPresent(ren);
++                snap_trigger_poll(hi_rgb, hi_w, hi_h);
 +                goto shown;
 +            }
 +        } else {
@@ -9055,6 +9107,7 @@ index 0000000..cb0043d
 +        SDL_RenderClear(ren);
 +        SDL_RenderCopy(ren, tex, NULL, NULL);
 +        SDL_RenderPresent(ren);
++        snap_trigger_poll(NULL, 0, 0);
 +shown:
 +        {
 +            double now = now_ms();
@@ -9067,7 +9120,6 @@ index 0000000..cb0043d
 +                t0 = now; f0 = f;
 +            }
 +        }
-+        snap_trigger_poll();
 +    }
 +    if (hi_tex) SDL_DestroyTexture(hi_tex);
 +    free(hi_rgb);
