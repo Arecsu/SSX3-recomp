@@ -2284,3 +2284,97 @@ void *ssx3_lookup_trace(uint32_t va)
     }
     return NULL;
 }
+
+/*
+ * The collision gather (2026-10-22, a crash in a Metro City race): a query
+ * object holds three lists of nearby objects -- +0x08 count / +0x0C entries
+ * (64), +0x10C / +0x110 (64), +0x210 / +0x214 (512). The gathers (e.g.
+ * sub_001C0310) pass a descriptor of {entries, count pointer, capacity, arg}
+ * per list; the appenders sub_001BD0C0 (list 0), sub_001BD170 (list 1, this =
+ * descriptor + 0x10) and sub_001BD300 (list 2 itself, entries at
+ * descriptor + 0x20) never check the capacity. A gather that leaves a list
+ * out marks its count 0xFFFFFFFF. The query sub_001BDAE0 walks list 2 and
+ * crashed on an entry 0xFFC00000 (a float NaN, not a pointer): either list 1
+ * overflowed into list 2's count (+0x210 is right after list 1's 64
+ * entries), or list 2 was never gathered. Logged here ([GATHER]) and list
+ * 2's walk is bounded to its 512 entries (an ungathered list counts as 0).
+ */
+extern void sub_001BD0C0_gen(void);
+extern void sub_001BD170_gen(void);
+extern void sub_001BDAE0_gen(void);
+
+static void gather_check(uint32_t desc, const char *which)
+{
+    uint32_t cnt_ptr = MEM32(desc + 4), cap = MEM32(desc + 8), n;
+    static unsigned said;
+    if (cnt_ptr < 0x10000u)
+        return;
+    n = MEM32(cnt_ptr);
+    if (n > cap && n != 0xFFFFFFFFu && said < 20) {
+        said++;
+        fprintf(stderr, "[GATHER] %s list overflow: %u entries, room for %u (count at %08X, caller %08X)\n",
+                which, n, cap, cnt_ptr, MEM32(g_esp));
+    }
+}
+
+void sub_001BD0C0(void)
+{
+    uint32_t desc = g_ecx;
+    sub_001BD0C0_gen();
+    gather_check(desc, "0");
+}
+
+void sub_001BD170(void)
+{
+    uint32_t desc = g_ecx;
+    sub_001BD170_gen();
+    gather_check(desc, "1");
+}
+
+/* List 2 (sub_001BD300: this = the descriptor, arg = an octree node): lists
+ * 0 and 1 through their appenders, then the node's objects ([node+0x28],
+ * linked through +0) into list 2 -- in C, with list 2's capacity
+ * (descriptor + 0x28, 512) checked: what does not fit is skipped instead of
+ * written past the list. */
+void sub_001BD300(void)
+{
+    uint32_t desc = g_ecx, node = MEM32(g_esp + 4), o;
+    uint32_t cap = MEM32(desc + 0x28);
+    PUSH32(g_esp, node);
+    g_ecx = desc;
+    PUSH32(g_esp, 0x001BD30Eu);       /* a return address inside the original */
+    sub_001BD0C0();                   /* ret 4 */
+    PUSH32(g_esp, node);
+    g_ecx = desc + 0x10;
+    PUSH32(g_esp, 0x001BD317u);
+    sub_001BD170();                   /* ret 4 */
+    for (o = MEM32(node + 0x28); o; o = MEM32(o)) {
+        uint32_t cnt = MEM32(desc + 0x24), n = MEM32(cnt);
+        if (cap && cap <= 0x10000u && n >= cap) {
+            static unsigned said;
+            if (said++ < 20)
+                fprintf(stderr, "[GATHER] list 2 full (%u): further objects skipped (caller %08X)\n",
+                        cap, MEM32(g_esp));
+            break;
+        }
+        ST32(MEM32(desc + 0x20) + n * 4, o);
+        ST32(cnt, n + 1);
+    }
+    g_esp += 8;                       /* ret 4 */
+}
+
+void sub_001BDAE0(void)
+{
+    uint32_t self = g_ecx, n = self >= 0x10000u ? MEM32(self + 0x210) : 0;
+    if (n > 0x200u) {
+        static unsigned said;
+        if (said++ < 20)
+            fprintf(stderr, "[GATHER] query on list 2 with count %08X (%s), caller %08X: bounded\n", n,
+                    n == 0xFFFFFFFFu ? "never gathered" : "overflowed", MEM32(g_esp));
+        ST32(self + 0x210, n == 0xFFFFFFFFu ? 0u : 0x200u);
+        sub_001BDAE0_gen();
+        ST32(self + 0x210, n);
+        return;
+    }
+    sub_001BDAE0_gen();
+}
