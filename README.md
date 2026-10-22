@@ -1,5 +1,7 @@
 # ssx3-recomp
 
+[![Listed on PlayPorted](https://playported.com/badge.svg)](https://playported.com/ports/434-ssx-3/)
+
 Static recompilation of **SSX 3** (original Xbox, PAL) into a native program
 for **Windows and Linux**, built with
 [xboxrecomp](https://github.com/sp00nznet/xboxrecomp). The game's own code
