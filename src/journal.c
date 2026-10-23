@@ -19,6 +19,16 @@ extern char **environ;
 #endif
 #endif
 
+static int _stricmp_portable(const char *a, const char *b)
+{
+    for (; *a && *b; a++, b++) {
+        int x = (*a >= 'A' && *a <= 'Z') ? *a + 32 : *a, y = (*b >= 'A' && *b <= 'Z') ? *b + 32 : *b;
+        if (x != y)
+            return x - y;
+    }
+    return (unsigned char)*a - (unsigned char)*b;
+}
+
 static void cpu_name(char *out, size_t n)
 {
     unsigned r[12] = {0};
@@ -200,8 +210,64 @@ static void env_lines(void)
 #endif
 }
 
+/* B7: saves and loads, from the title's file opens (toolkit hook
+ * xbox_file_hook, kernel_file.c). A save is Data.ssx in a save folder,
+ * UDATA\\4541003c\\<save id>\\ (with SaveMeta.xbx and SaveImage.xbx):
+ * written = saved, read = loaded. The same event for the same save within
+ * 3 s is one line (a save writes in pieces). */
+#ifdef _WIN32
+#define NTSTATUS_T long
+#else
+#define NTSTATUS_T int32_t
+#endif
+extern void (*volatile xbox_file_hook)(const char *xbox_path, int write, NTSTATUS_T status);
+
+static double s_save_t = -100.0;
+static char s_save_last[96];
+
+static void file_hook(const char *path, int write, NTSTATUS_T status)
+{
+    const char *u, *name, *p;
+    char id[48], key[96];
+    size_t n;
+    double t;
+    if (!path)
+        return;
+    name = strrchr(path, '\\');
+    name = name ? name + 1 : path;
+    if (_stricmp_portable(name, "Data.ssx"))
+        return;
+    /* the save folder, when the path has it (the game opens the file
+     * relative to the save folder's handle, then the path is the name) */
+    id[0] = 0;
+    if ((u = strstr(path, "UDATA")) != NULL && name > u + 1) {
+        for (p = name - 1; p > u && p[-1] != '\\'; p--)
+            ;
+        n = (size_t)(name - 1 - p);
+        if (n >= sizeof id) n = sizeof id - 1;
+        memcpy(id, p, n);
+        id[n] = 0;
+    }
+    if (status < 0) {
+        if (write)
+            log_msg(LOG_WARN, "SAVE", "saving failed (status %08lX)", (unsigned long)status);
+        return;                       /* a read that fails: looking for a save */
+    }
+    snprintf(key, sizeof key, "%c%s", write ? 'w' : 'r', id);
+    t = log_uptime();
+    if (!strcmp(key, s_save_last) && t - s_save_t < 3.0)
+        return;
+    snprintf(s_save_last, sizeof s_save_last, "%s", key);
+    s_save_t = t;
+    /* the game also reads the save before it overwrites it, so a read is
+     * a load only when no "game saved" follows */
+    log_msg(LOG_INFO, "SAVE", "%s%s%s%s", write ? "game saved" : "save data read", id[0] ? " (save " : "",
+            id, id[0] ? ")" : "");
+}
+
 void journal_session_header(const uint8_t *xbe, size_t xbe_size, const char *game_dir)
 {
+    xbox_file_hook = file_hook;
     log_msg(LOG_INFO, "SYSTEM", "SSX 3 recomp, build %s%s%s (compiled %s %s)", SSX3_BUILD_COMMIT,
             SSX3_BUILD_DATE[0] ? " of " : "", SSX3_BUILD_DATE, __DATE__, __TIME__);
     system_line();

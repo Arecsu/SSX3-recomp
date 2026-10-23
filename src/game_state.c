@@ -49,6 +49,35 @@ static const struct { uint32_t vt; const char *name; } k_states[] = {
     { 0, NULL }
 };
 
+/* B5: the event being played. The game keeps its number at 0x346440 (set
+ * when an event is chosen; the word at 0x346448 holds its kind): 0-4 the
+ * races, 5-7 slopestyle, 8-10 big air, 11-13 super pipe (one per peak),
+ * 14-16 the peak runs (Happiness, Ruthless, The Throne). Found by dumping
+ * .data at each event's briefing (docs/LOGGING.md); names from
+ * data/be/rwrdxbx.dat and the briefing panels. */
+#define EVENT_ID_VA   0x00346440u
+static const struct { int peak; const char *kind, *name; } k_events[17] = {
+    {1, "Race", "Snow Jam"}, {1, "Race", "Metro City"},
+    {2, "Race", "Ruthless Ridge"}, {2, "Race", "Intimidator"}, {3, "Race", "Gravitude"},
+    {1, "Slopestyle", "R&B"}, {2, "Slopestyle", "The Style Mile"}, {3, "Slopestyle", "Kick Doubt"},
+    {1, "Big Air", "Crows Nest"}, {2, "Big Air", "Launch Time"}, {3, "Big Air", "Much 2 Much"},
+    {1, "Super Pipe", "The Junction"}, {2, "Super Pipe", "Schizophrenia"},
+    {3, "Super Pipe", "Perpendiculous"},
+    {1, "Peak run", "Happiness"}, {2, "Peak run", "Ruthless"}, {3, "Peak run", "The Throne"},
+};
+
+static void event_note(void)
+{
+    uint32_t id = MEM32(EVENT_ID_VA);
+    if (id < 17)
+        log_msg(LOG_INFO, "PLAY", "event: Peak %d, %s, %s", k_events[id].peak, k_events[id].kind,
+                k_events[id].name);
+    else if (id == 17)
+        log_msg(LOG_INFO, "PLAY", "free ride (no event)");
+    else
+        log_msg(LOG_INFO, "PLAY", "in game without a known event (number %u)", id);
+}
+
 /* The session story's words for them (journal, INFO [PLAY]). */
 static const char *state_words(uint32_t vt)
 {
@@ -163,6 +192,8 @@ static DWORD WINAPI game_state_thread(LPVOID unused)
                 log_msg(LOG_INFO, "PLAY", "%s", state_words(vt));
             vt_since = now;
             vt_prev = vt;
+            if (vt == 0x00299D7Cu)        /* in game: which event */
+                event_note();
         }
         if (vt != last_vt || next != last_next || sub != last_sub) {
             if (vt != last_vt || sub != last_sub)

@@ -2953,9 +2953,27 @@ index c65ba43..79cb9fb 100644
          old_protect,
          &old_protect
 diff --git a/src/kernel/kernel_file.c b/src/kernel/kernel_file.c
-index 42135e0..feec58a 100644
+index 42135e0..73cfde7 100644
 --- a/src/kernel/kernel_file.c
 +++ b/src/kernel/kernel_file.c
+@@ -135,7 +135,7 @@ static BOOL translate_obj_path(PXBOX_OBJECT_ATTRIBUTES ObjectAttributes,
+     return xbox_translate_path(xbox_path, win_path, buf_size);
+ }
+ 
+-NTSTATUS __stdcall xbox_NtCreateFile(
++static NTSTATUS __stdcall nt_create_file(
+     PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
+     PXBOX_OBJECT_ATTRIBUTES ObjectAttributes, PXBOX_IO_STATUS_BLOCK IoStatusBlock,
+     PLARGE_INTEGER AllocationSize, ULONG FileAttributes, ULONG ShareAccess,
+@@ -805,7 +805,7 @@ static NTSTATUS errno_to_status(int e)
+     }
+ }
+ 
+-NTSTATUS __stdcall xbox_NtCreateFile(
++static NTSTATUS __stdcall nt_create_file(
+     PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
+     PXBOX_OBJECT_ATTRIBUTES ObjectAttributes, PXBOX_IO_STATUS_BLOCK IoStatusBlock,
+     PLARGE_INTEGER AllocationSize, ULONG FileAttributes, ULONG ShareAccess,
 @@ -824,7 +824,12 @@ NTSTATUS __stdcall xbox_NtCreateFile(
      }
  
@@ -2978,6 +2996,35 @@ index 42135e0..feec58a 100644
          if (IoStatusBlock) {
              IoStatusBlock->Status = STATUS_OBJECT_NAME_NOT_FOUND;
              IoStatusBlock->Information = 0;
+@@ -1340,3 +1346,28 @@ NTSTATUS __stdcall xbox_NtQuerySymbolicLinkObject(
+         *ReturnedLength = (ULONG)strlen(target);
+     return STATUS_SUCCESS;
+ }
++
++/* A title's file opens, for the game's own logging (save/load journal):
++ * the Xbox path, whether it was opened for writing, and the result. Set by
++ * the game; NULL = none. */
++void (*volatile xbox_file_hook)(const char *xbox_path, int write, NTSTATUS status);
++
++NTSTATUS __stdcall xbox_NtCreateFile(
++    PHANDLE FileHandle, ACCESS_MASK DesiredAccess,
++    PXBOX_OBJECT_ATTRIBUTES ObjectAttributes, PXBOX_IO_STATUS_BLOCK IoStatusBlock,
++    PLARGE_INTEGER AllocationSize, ULONG FileAttributes, ULONG ShareAccess,
++    ULONG CreateDisposition, ULONG CreateOptions)
++{
++    NTSTATUS st = nt_create_file(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock,
++                                 AllocationSize, FileAttributes, ShareAccess, CreateDisposition,
++                                 CreateOptions);
++    void (*hook)(const char *, int, NTSTATUS) = xbox_file_hook;
++    if (hook && ObjectAttributes && !(CreateOptions & XBOX_FILE_DIRECTORY_FILE)) {
++        const char *path = get_xbox_path(ObjectAttributes);
++        /* GENERIC_WRITE, FILE_WRITE_DATA, FILE_APPEND_DATA */
++        int write = (DesiredAccess & (0x40000000u | 0x2u | 0x4u)) != 0;
++        if (path)
++            hook(path, write, st);
++    }
++    return st;
++}
 diff --git a/src/kernel/kernel_hal.c b/src/kernel/kernel_hal.c
 index 1ad4fff..7ba275f 100644
 --- a/src/kernel/kernel_hal.c

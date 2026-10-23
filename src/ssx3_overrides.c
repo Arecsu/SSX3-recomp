@@ -755,31 +755,69 @@ extern int xbox_FramebufferKeyPresses(int vk);
 #define MONEY_KEY    0x24                /* VK_HOME */
 #define MONEY_AMOUNT 200000
 
-static void money_add(int amount)
+/* Player 1's cash record (0 when there is no profile or rider yet). */
+static uint32_t player_cash_va(int *rider_out)
 {
-    uint32_t rec = MEM32(0x00346400u) * 32u + 0x00345948u, cash_va;
+    uint32_t rec = MEM32(0x00346400u) * 32u + 0x00345948u;
     int slot, rider;
-    int64_t cash;
-    if (MEM32(rec + 0x0C) == 0xFFFFFFFFu) {
-        fprintf(stderr, "[MONEY] no player profile yet: pick a rider first\n");
-        fflush(stderr);
-        return;
-    }
+    if (MEM32(rec + 0x0C) == 0xFFFFFFFFu)
+        return 0;
     slot = (int)(MEM32(rec + 0x10) & 1u);
     rider = (int)(int8_t)MEM8(rec + 0x14);
-    if (rider < 0 || rider > 9) {
-        fprintf(stderr, "[MONEY] no rider selected (%d)\n", rider);
-        fflush(stderr);
+    if (rider < 0 || rider > 9)
+        return 0;
+    if (rider_out)
+        *rider_out = rider;
+    return 0x003474B4u + (uint32_t)(slot * 10 + rider) * 0xF88u;
+}
+
+static int s_money_key_pending;          /* the next change is the money key's */
+
+static void money_add(int amount)
+{
+    uint32_t cash_va = player_cash_va(NULL);
+    int64_t cash;
+    if (!cash_va) {
+        log_msg(LOG_INFO, "PLAY", "money key: no player profile or rider yet, nothing added");
         return;
     }
-    cash_va = 0x003474B4u + (uint32_t)(slot * 10 + rider) * 0xF88u;
     cash = (int64_t)(int32_t)MEM32(cash_va) + amount;
     if (cash > INT32_MAX)
         cash = INT32_MAX;
     ST32(cash_va, (uint32_t)(int32_t)cash);
-    fprintf(stderr, "[MONEY] +%d: rider %d (slot %d) now has %d\n", amount, rider, slot,
-            (int)(int32_t)MEM32(cash_va));
-    fflush(stderr);
+    s_money_key_pending = 1;
+}
+
+/* B8: player 1's cash, once a frame -- every change with the screen it
+ * happened on (a drop in the lodge is a purchase). A different rider or
+ * profile only moves the baseline. */
+static const char *screen_name_now(void);
+static void money_watch(void)
+{
+    static uint32_t last_va;
+    static int32_t last;
+    int rider = -1;
+    uint32_t va = player_cash_va(&rider);
+    int32_t now;
+    if (!va) {
+        last_va = 0;
+        return;
+    }
+    now = (int32_t)MEM32(va);
+    if (va != last_va) {
+        last_va = va;
+        last = now;
+        return;
+    }
+    if (now == last)
+        return;
+    if (s_money_key_pending)
+        log_msg(LOG_INFO, "PLAY", "money key: %+d, now %d", now - last, now);
+    else
+        log_msg(LOG_INFO, "PLAY", "%s %d (money %d -> %d, %s)", now < last ? "spent" : "got",
+                now < last ? last - now : now - last, last, now, screen_name_now());
+    s_money_key_pending = 0;
+    last = now;
 }
 
 void sub_001AD870(void)
@@ -789,8 +827,7 @@ void sub_001AD870(void)
         const char *e = getenv("RECOMP_MONEY_CHEAT");
         on = e && *e && *e != '0';
         if (on) {
-            fprintf(stderr, "[MONEY] armed: Home adds %d to player 1's cash\n", MONEY_AMOUNT);
-            fflush(stderr);
+            log_msg(LOG_INFO, "SETTINGS", "money key armed: Home adds %d to player 1's cash", MONEY_AMOUNT);
         }
     }
     if (on) {
@@ -799,6 +836,7 @@ void sub_001AD870(void)
             money_add(MONEY_AMOUNT);
     }
     sub_001AD870_gen();
+    money_watch();
 }
 
 /*
@@ -1079,6 +1117,11 @@ static void ingame_menu_note(uint32_t scr)
 static const char *screen_name(uint32_t vt, uint32_t id, int in_menus)
 {
     switch (vt) {
+    case 0x0028EFC0u: return "title screen";
+    case 0x00293AC0u: return "Buy Attributes";
+    case 0x00289530u: return "dialog";
+    case 0x002884C0u: return "name keyboard";
+    case 0x00288F08u: return "message box";
     case 0x00297E30u: return "race briefing";
     case 0x00297F68u: return "one-on-one briefing";
     case 0x00297E98u: return "freestyle briefing";
@@ -1094,7 +1137,6 @@ static const char *screen_name(uint32_t vt, uint32_t id, int in_menus)
     if (!in_menus)
         return NULL;                    /* in game the id means nothing */
     switch (id) {
-    case 0:  return "title screen";
     case 1:  return "checking hard disk";
     case 2:  return "main menu";
     case 9:  return "Select Character";
@@ -1110,7 +1152,8 @@ static const char *screen_name(uint32_t vt, uint32_t id, int in_menus)
     case 30: return "Options: HUD";
     case 31: return "Options: Controller";
     case 32: return "Options: Save / Load";
-    case 35: return "Load game";
+    case 35: return "save / load game";
+    case 41: return "Buy Attributes";
     case 36: return "Credits";
     case 39: return "lodge";
     default: return NULL;
@@ -1146,6 +1189,27 @@ static void main_menu_left(uint32_t mm)
         }
     }
     log_msg(LOG_DEBUG, "PLAY", "main menu closed: its list not found");
+}
+
+/* The active screen in words, for other log lines ("on the lodge"). */
+static const char *screen_name_now(void)
+{
+    static char buf[48];
+    uint32_t app = MEM32(0x003A930Cu), st = app >= 0x10000u ? MEM32(app + 4) : 0;
+    int in_menus = st >= 0x10000u && MEM32(st) == 0x00289618u;
+    const char *nm;
+    if (!g_ssx3_ui_screen_vt)
+        return "no screen yet";
+    if (!in_menus && st >= 0x10000u && MEM32(st) == 0x00299D7Cu
+        && (!s_ingame_menu || !ssx3_InGameMenuUp()))
+        return "in game";
+    nm = screen_name(g_ssx3_ui_screen_vt, g_ssx3_ui_screen_id, in_menus);
+    if (nm) {
+        snprintf(buf, sizeof buf, "on %s", nm);
+        return buf;
+    }
+    snprintf(buf, sizeof buf, "on screen %08X", g_ssx3_ui_screen_vt);
+    return buf;
 }
 
 static void screen_note(uint32_t scr)
