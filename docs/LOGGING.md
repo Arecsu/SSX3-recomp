@@ -43,7 +43,7 @@ detail that led up to it.
 - [x] **A3** Noise: `[STATE]` sub-state flips (60% of a session log) and
       the boot-time `[KERNEL]`/`[CS]`/`[HEAP]`/`[PATH]` detail graded to
       DEBUG/TRACE; check a 20-minute session at `info` stays short.
-- [ ] **A4** Log files: keep the last 20 sessions in `logs\` (delete
+- [x] **A4** Log files: keep the last 20 sessions in `logs\` (delete
       older, crash dumps too), name stays `ssx3_<date-time>_stderr.txt`;
       a `latest.txt` copy/pointer for "send me your log".
 - [ ] **A5** Launcher: "Log detail" dropdown (Errors only / Warnings /
@@ -120,3 +120,4 @@ detail that led up to it.
 - 2026-10-24: A1 -- src/log.c/.h (levels, log_msg, RECOMP_LOG_LEVEL, timestamped lines); main.c's first line uses it.
 - 2026-10-24: A2 -- the pump moved to src/log.c (Windows and POSIX), grades lines by tag, timestamps them, keeps a 2000-line flight recorder written out before ERROR/CRITICAL, collapses repeats. A scripted race at info: 6 lines plus the flight recorder; RECOMP_TEST_CRASH: the crash block CRITICAL with its lead-up. Found on the way: `[VKR] upload buffer full` ~900 times while a race loads in scripted runs (none in the user's session) -- draws dropped; to look into separately.
 - 2026-10-24: A3 -- the user's 20-minute session log (3,482 lines) graded with the table: 0 lines at info (everything was STATE sub-flips, kernel, file and renderer detail). [BLOCK-RESCUE] down to DEBUG, a full [DRAWDIST] list up to WARN.
+- 2026-10-24: A4 -- logs\ keeps the last 20 session logs and 10 crash dumps, latest.txt names the current one, crash dumps go to the session's logs folder (they went to build\logs). Found: started from the launcher (no console) the pump never ran -- it checked GetStdHandle, which stays empty when stderr is freopen'ed; now the CRT's stderr handle. Played sessions had synchronous log writes until now.

@@ -54,6 +54,44 @@
 
 /* xboxrecomp runtime headers */
 #include <xbox/xboxrecomp.h>
+
+#ifdef _WIN32
+/* The session's logs folder: logs\ beside the game folder when the game
+ * writes its own log (started from the launcher or a double-click), else
+ * logs\ in the working directory. Crash dumps go there too. */
+static char s_logs_dir[MAX_PATH] = "logs";
+
+static int cmp_name(const void *a, const void *b)
+{
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+/* Keep the newest `keep` files matching pattern in s_logs_dir (the names
+ * carry the date and time, so name order is age order). */
+static void logs_prune(const char *pattern, int keep)
+{
+    WIN32_FIND_DATAA fd;
+    char path[MAX_PATH], *names[512];
+    int n = 0, i;
+    HANDLE h;
+    snprintf(path, sizeof path, "%s\\%s", s_logs_dir, pattern);
+    if ((h = FindFirstFileA(path, &fd)) == INVALID_HANDLE_VALUE)
+        return;
+    do {
+        if (n < 512 && (names[n] = _strdup(fd.cFileName)) != NULL)
+            n++;
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    qsort(names, (size_t)n, sizeof names[0], cmp_name);
+    for (i = 0; i < n; i++) {
+        if (i < n - keep) {
+            snprintf(path, sizeof path, "%s\\%s", s_logs_dir, names[i]);
+            DeleteFileA(path);
+        }
+        free(names[i]);
+    }
+}
+#endif
 #ifdef SSX3_VULKAN
 #include "vkr_backend.h"
 #endif
@@ -192,10 +230,10 @@ static void write_crash_dump(EXCEPTION_POINTERS *ep)
     MINIDUMP_EXCEPTION_INFORMATION mei;
     if ((e && *e == '0') || InterlockedExchange(&done, 1))
         return;
-    CreateDirectoryA("logs", NULL);
+    CreateDirectoryA(s_logs_dir, NULL);
     GetLocalTime(&st);
-    snprintf(path, sizeof path, "logs\\crash_%04u%02u%02u-%02u%02u%02u.dmp", st.wYear, st.wMonth,
-             st.wDay, st.wHour, st.wMinute, st.wSecond);
+    snprintf(path, sizeof path, "%s\\crash_%04u%02u%02u-%02u%02u%02u.dmp", s_logs_dir, st.wYear,
+             st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
     f = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (f == INVALID_HANDLE_VALUE)
         return;
@@ -980,12 +1018,26 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                     *slash = 0;
                 snprintf(logp, sizeof logp, "%s\\logs", base);
                 CreateDirectoryA(logp, NULL);
+                snprintf(s_logs_dir, sizeof s_logs_dir, "%s", logp);
+                /* the last 20 sessions and 10 crash dumps (with this one) */
+                logs_prune("ssx3_*_stderr.txt", 19);
+                logs_prune("crash_*.dmp", 9);
                 GetLocalTime(&st);
                 snprintf(logp + strlen(logp), sizeof logp - strlen(logp),
                          "\\ssx3_%04u%02u%02u-%02u%02u%02u_stderr.txt", st.wYear, st.wMonth,
                          st.wDay, st.wHour, st.wMinute, st.wSecond);
                 if (freopen(logp, "w", stderr))
                     setvbuf(stderr, NULL, _IONBF, 0);
+                {
+                    /* latest.txt: which file is this session's ("send me your log") */
+                    char lp[700];
+                    FILE *lf;
+                    snprintf(lp, sizeof lp, "%s\\latest.txt", s_logs_dir);
+                    if ((lf = fopen(lp, "w")) != NULL) {
+                        fprintf(lf, "%s\n", strrchr(logp, '\\') + 1);
+                        fclose(lf);
+                    }
+                }
                 freopen("NUL", "w", stdout);
             }
         }

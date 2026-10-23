@@ -397,7 +397,11 @@ int log_pump_start(void)
         return 0;
 #ifdef _WIN32
     {
-        HANDLE outh = GetStdHandle(STD_ERROR_HANDLE), dup, rd, wr, th;
+        /* the C runtime's stderr, not GetStdHandle: started from the
+         * launcher (a GUI program, no console) the session file is opened
+         * with freopen and the process's standard handle stays empty -- the
+         * pump never ran in played sessions, only in scripted ones */
+        HANDLE outh = (HANDLE)_get_osfhandle(_fileno(stderr)), dup, rd, wr, th;
         int fd;
         if (!outh || outh == INVALID_HANDLE_VALUE || GetFileType(outh) != FILE_TYPE_DISK)
             return 0;
