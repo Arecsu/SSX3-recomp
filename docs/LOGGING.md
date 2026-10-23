@@ -52,7 +52,7 @@ detail that led up to it.
       file selected.
 
 ### B. The session story (`INFO [PLAY]` unless noted)
-- [ ] **B1** Session header (`[SYSTEM]`, `[SETTINGS]`): build version (git
+- [x] **B1** Session header (`[SYSTEM]`, `[SETTINGS]`): build version (git
       commit + date), Windows/Linux version, CPU, RAM, GPU name, driver
       and Vulkan version, monitor size and refresh, window/fullscreen,
       game folder and the XBE's title id/version, every launcher setting
@@ -122,3 +122,4 @@ detail that led up to it.
 - 2026-10-24: A3 -- the user's 20-minute session log (3,482 lines) graded with the table: 0 lines at info (everything was STATE sub-flips, kernel, file and renderer detail). [BLOCK-RESCUE] down to DEBUG, a full [DRAWDIST] list up to WARN.
 - 2026-10-24: A4 -- logs\ keeps the last 20 session logs and 10 crash dumps, latest.txt names the current one, crash dumps go to the session's logs folder (they went to build\logs). Found: started from the launcher (no console) the pump never ran -- it checked GetStdHandle, which stays empty when stderr is freopen'ed; now the CRT's stderr handle. Played sessions had synchronous log writes until now.
 - 2026-10-24: A5 -- "Log detail" in both launchers (Errors only / Warnings and errors / Normal / Detailed / Everything, default Normal), saved as log_level, sets RECOMP_LOG_LEVEL; "Open logs" opens the folder with this session's file selected (latest.txt). The SDL launcher change is not compiled here (no SDL headers in WSL).
+- 2026-10-24: B1 -- src/journal.c: build (commit + date: cmake/build_info.cmake, from git or the BUILD_INFO sync-windows.sh writes), OS, CPU, RAM, monitor, the XBE's name/title id/version, the settings in words (two lines), every RECOMP_* at DEBUG; the GPU line ([VKR] device, now with the driver version) at INFO. Controllers at start: with C4.

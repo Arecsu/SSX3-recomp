@@ -1040,8 +1040,16 @@ VkrContext *vkr_create(void)
     {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(c->phys, &p);
-        fprintf(stderr, "[VKR] device: %s (Vulkan %u.%u)\n", p.deviceName,
-                VK_VERSION_MAJOR(p.apiVersion), VK_VERSION_MINOR(p.apiVersion));
+        /* NVIDIA packs the driver version 10.8.8.6 bits, others like Vulkan */
+        if (p.vendorID == 0x10DE)
+            fprintf(stderr, "[VKR] device: %s (Vulkan %u.%u, driver %u.%u)\n", p.deviceName,
+                    VK_VERSION_MAJOR(p.apiVersion), VK_VERSION_MINOR(p.apiVersion),
+                    p.driverVersion >> 22, (p.driverVersion >> 14) & 0xFF);
+        else
+            fprintf(stderr, "[VKR] device: %s (Vulkan %u.%u, driver %u.%u.%u, vendor %04X)\n", p.deviceName,
+                    VK_VERSION_MAJOR(p.apiVersion), VK_VERSION_MINOR(p.apiVersion),
+                    VK_VERSION_MAJOR(p.driverVersion), VK_VERSION_MINOR(p.driverVersion),
+                    VK_VERSION_PATCH(p.driverVersion), p.vendorID);
     }
     vkGetPhysicalDeviceMemoryProperties(c->phys, &c->mem);
     vkGetPhysicalDeviceQueueFamilyProperties(c->phys, &nq, NULL);

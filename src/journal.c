@@ -1,0 +1,211 @@
+/* The session story in the log: see journal.h and docs/LOGGING.md. */
+#include "journal.h"
+#include "log.h"
+#include "build_info.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <intrin.h>
+#else
+#include <unistd.h>
+#include <sys/utsname.h>
+extern char **environ;
+#if defined(__x86_64__) || defined(__i386__)
+#include <cpuid.h>
+#endif
+#endif
+
+static void cpu_name(char *out, size_t n)
+{
+    unsigned r[12] = {0};
+    int ok = 0;
+#if defined(_WIN32)
+    int i, regs[4];
+    __cpuid(regs, (int)0x80000000);
+    if ((unsigned)regs[0] >= 0x80000004u) {
+        for (i = 0; i < 3; i++) {
+            __cpuid(regs, (int)(0x80000002u + (unsigned)i));
+            memcpy(&r[i * 4], regs, 16);
+        }
+        ok = 1;
+    }
+#elif defined(__x86_64__) || defined(__i386__)
+    unsigned i, a, b, c, d;
+    if (__get_cpuid(0x80000000u, &a, &b, &c, &d) && a >= 0x80000004u) {
+        for (i = 0; i < 3; i++) {
+            __get_cpuid(0x80000002u + i, &r[i * 4], &r[i * 4 + 1], &r[i * 4 + 2], &r[i * 4 + 3]);
+        }
+        ok = 1;
+    }
+#endif
+    if (ok) {
+        const char *p = (const char *)r;
+        size_t k;
+        while (*p == ' ') p++;
+        snprintf(out, n, "%.48s", p);
+        for (k = strlen(out); k && out[k - 1] == ' '; k--)
+            out[k - 1] = 0;
+    } else {
+#ifndef _WIN32
+        /* ARM Linux (Asahi): /proc/cpuinfo has no brand string; the machine */
+        FILE *f = fopen("/proc/device-tree/model", "r");
+        if (f) {
+            size_t k = fread(out, 1, n - 1, f);
+            out[k] = 0;
+            fclose(f);
+            return;
+        }
+#endif
+        snprintf(out, n, "unknown CPU");
+    }
+}
+
+static void system_line(void)
+{
+    char cpu[64], os[128];
+    double ram_gb = 0.0;
+#ifdef _WIN32
+    MEMORYSTATUSEX ms;
+    DEVMODEA dm;
+    typedef LONG (WINAPI *RtlGetVersion_t)(OSVERSIONINFOW *);
+    RtlGetVersion_t rgv = (RtlGetVersion_t)(void *)GetProcAddress(GetModuleHandleA("ntdll.dll"),
+                                                                  "RtlGetVersion");
+    OSVERSIONINFOW vi;
+    memset(&vi, 0, sizeof vi);
+    vi.dwOSVersionInfoSize = sizeof vi;
+    if (rgv && rgv(&vi) == 0)
+        snprintf(os, sizeof os, "Windows %s (%lu.%lu build %lu)",
+                 vi.dwMajorVersion == 10 && vi.dwBuildNumber >= 22000 ? "11" : vi.dwMajorVersion == 10 ? "10" : "",
+                 vi.dwMajorVersion, vi.dwMinorVersion, vi.dwBuildNumber);
+    else
+        snprintf(os, sizeof os, "Windows");
+    ms.dwLength = sizeof ms;
+    if (GlobalMemoryStatusEx(&ms))
+        ram_gb = (double)ms.ullTotalPhys / (1024.0 * 1024.0 * 1024.0);
+    memset(&dm, 0, sizeof dm);
+    dm.dmSize = sizeof dm;
+    cpu_name(cpu, sizeof cpu);
+    log_msg(LOG_INFO, "SYSTEM", "%s, %s, %.1f GB RAM", os, cpu, ram_gb);
+    if (EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm))
+        log_msg(LOG_INFO, "SYSTEM", "main monitor %lux%lu at %lu Hz, %d monitor(s)",
+                dm.dmPelsWidth, dm.dmPelsHeight, dm.dmDisplayFrequency, GetSystemMetrics(SM_CMONITORS));
+#else
+    struct utsname u;
+    long pages = sysconf(_SC_PHYS_PAGES), psz = sysconf(_SC_PAGE_SIZE);
+    if (uname(&u) == 0)
+        snprintf(os, sizeof os, "%s %s %s", u.sysname, u.release, u.machine);
+    else
+        snprintf(os, sizeof os, "POSIX");
+    if (pages > 0 && psz > 0)
+        ram_gb = (double)pages * (double)psz / (1024.0 * 1024.0 * 1024.0);
+    cpu_name(cpu, sizeof cpu);
+    log_msg(LOG_INFO, "SYSTEM", "%s, %s, %.1f GB RAM", os, cpu, ram_gb);
+#endif
+}
+
+/* The XBE certificate: title id, name (UTF-16) and version. */
+static void xbe_line(const uint8_t *xbe, size_t size, const char *game_dir)
+{
+    uint32_t base, cert, off, id, ver;
+    char name[41];
+    int i;
+    if (!xbe || size < 0x200 || memcmp(xbe, "XBEH", 4)) {
+        log_msg(LOG_WARN, "SYSTEM", "game folder %s: default.xbe has no XBE header", game_dir);
+        return;
+    }
+    memcpy(&base, xbe + 0x104, 4);
+    memcpy(&cert, xbe + 0x118, 4);
+    off = cert - base;
+    if (off + 0xB0 > size) {
+        log_msg(LOG_WARN, "SYSTEM", "game folder %s: XBE certificate out of range", game_dir);
+        return;
+    }
+    memcpy(&id, xbe + off + 8, 4);
+    memcpy(&ver, xbe + off + 0xAC, 4);
+    for (i = 0; i < 40; i++) {
+        uint16_t c;
+        memcpy(&c, xbe + off + 0xC + i * 2, 2);
+        name[i] = c && c < 128 ? (char)c : (c ? '?' : 0);
+        if (!c) break;
+    }
+    name[40] = 0;
+    log_msg(LOG_INFO, "SYSTEM", "game: \"%s\", title id %08X, version %u, %zu bytes, folder %s",
+            name, id, ver, size, game_dir);
+    if (id != 0x4541003Cu)
+        log_msg(LOG_WARN, "SYSTEM", "this is not SSX 3 PAL (4541003C): expect trouble");
+}
+
+/* The launcher's choices, by name, from the RECOMP_* settings in effect. */
+static const char *env_or(const char *name, const char *dflt)
+{
+    const char *v = getenv(name);
+    return v && *v ? v : dflt;
+}
+
+static int env_on(const char *name, int dflt)
+{
+    const char *v = getenv(name);
+    if (!v || !*v)
+        return dflt;
+    return !(v[0] == '0' && !v[1]);
+}
+
+static void settings_lines(void)
+{
+    char buf[1024];
+    size_t n = 0;
+    const char *hd = getenv("RECOMP_HDTEX");
+#define ADD(...) do { n += (size_t)snprintf(buf + n, n < sizeof buf ? sizeof buf - n : 0, __VA_ARGS__); } while (0)
+    ADD("resolution %s, aspect %s, MSAA %sx, anisotropic %sx, draw distance %sx, shadows %sx,",
+        env_or("RECOMP_RES", "auto"), env_or("RECOMP_ASPECT", env_or("RECOMP_WIDESCREEN", "auto")),
+        env_or("RECOMP_MSAA", "4"), env_or("RECOMP_ANISO", "16"), env_or("RECOMP_DRAW_DIST", "1.5"),
+        env_or("RECOMP_SHADOW_RES", "4"));
+    ADD(" audio %s channels, %s, HD textures %s, HUD at the edges %s",
+        env_or("RECOMP_AUDIO_CHANNELS", "2"), env_on("RECOMP_FULLSCREEN", 0) ? "fullscreen" : "windowed",
+        hd && hd[0] == '0' && !hd[1] ? "off" : "on", env_on("RECOMP_HUD_EDGES", 1) ? "on" : "off");
+    log_msg(LOG_INFO, "SETTINGS", "%s", buf);
+    n = 0;
+    ADD("CRT %s, FPS counter %s, motion blur %s, modern camera %s, skip intro %s, fast boot %s,",
+        env_on("RECOMP_CRT", 0) ? "on" : "off", env_on("RECOMP_FPS_OVERLAY", 0) ? "on" : "off",
+        env_on("RECOMP_MBLUR", 0) ? env_or("RECOMP_MBLUR", "") : "off",
+        env_on("RECOMP_CAM", 0) ? "on" : "off", env_on("RECOMP_SKIP_INTRO", 1) ? "on" : "off",
+        env_on("RECOMP_FAST_BOOT", 1) ? "on" : "off");
+    ADD(" debug menu %s, money key %s, log level %s",
+        env_on("RECOMP_DEBUG_MENU", 0) ? "on" : "off", env_on("RECOMP_MONEY_CHEAT", 0) ? "on" : "off",
+        log_level_name(log_level()));
+    log_msg(LOG_INFO, "SETTINGS", "%s", buf);
+#undef ADD
+}
+
+/* Every RECOMP_* in effect, at DEBUG: the raw form for bug hunts. */
+static void env_lines(void)
+{
+#ifdef _WIN32
+    char *block = GetEnvironmentStringsA(), *p;
+    if (!block)
+        return;
+    for (p = block; *p; p += strlen(p) + 1)
+        if (!strncmp(p, "RECOMP_", 7))
+            log_msg(LOG_DEBUG, "SETTINGS", "%s", p);
+    FreeEnvironmentStringsA(block);
+#else
+    char **e;
+    for (e = environ; e && *e; e++)
+        if (!strncmp(*e, "RECOMP_", 7))
+            log_msg(LOG_DEBUG, "SETTINGS", "%s", *e);
+#endif
+}
+
+void journal_session_header(const uint8_t *xbe, size_t xbe_size, const char *game_dir)
+{
+    log_msg(LOG_INFO, "SYSTEM", "SSX 3 recomp, build %s%s%s (compiled %s %s)", SSX3_BUILD_COMMIT,
+            SSX3_BUILD_DATE[0] ? " of " : "", SSX3_BUILD_DATE, __DATE__, __TIME__);
+    system_line();
+    xbe_line(xbe, xbe_size, game_dir);
+    settings_lines();
+    env_lines();
+}

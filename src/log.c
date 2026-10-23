@@ -159,6 +159,7 @@ static volatile int s_pump_waiting, s_pump_reads;
 
 static const struct { const char *tag; int level; } k_tags[] = {
     {"[CRASH]", LOG_CRITICAL},
+    {"[VKR] device:", LOG_INFO}, {"[VKR] MSAA", LOG_INFO}, {"[VKR] window", LOG_INFO},
     {"[ICALL] Failed", LOG_ERROR}, {"[VKR] upload buffer full", LOG_ERROR},
     {"[VKR] pipeline creation failed", LOG_ERROR},
     {"[GATHER]", LOG_WARN}, {"[BLOCK-STUCK]", LOG_WARN}, {"[DRAWDIST]", LOG_DEBUG}, {"[BLOCK-RESCUE]", LOG_DEBUG},  /* a lost GPU wake recovered: routine */

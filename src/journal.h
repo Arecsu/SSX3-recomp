@@ -1,0 +1,22 @@
+/* The session story in the log (docs/LOGGING.md, section B): INFO lines a
+ * person can read after a play session -- the build and machine, the
+ * settings, and what the player did. */
+#ifndef SSX3_JOURNAL_H
+#define SSX3_JOURNAL_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* B1: build, system, game files and settings; once default.xbe is loaded
+ * and the RECOMP_* defaults are in place. */
+void journal_session_header(const uint8_t *xbe, size_t xbe_size, const char *game_dir);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

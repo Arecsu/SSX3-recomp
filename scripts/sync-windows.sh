@@ -22,6 +22,10 @@ rsync -rc --itemize-changes --exclude .git --exclude .venv --exclude 'tools/*/ou
     "$PARENT/xboxrecomp/" "$DEST/xboxrecomp/" | grep -v '^\.d' || true
 rsync -rc --itemize-changes --exclude .git --exclude decomp --exclude '*.log' \
     "$HERE/" "$DEST/ssx3-recomp/" | grep -v '^\.d' || true
+# the build's version for the session log (cmake/build_info.cmake): the
+# Windows copy has no .git
+{ git -C "$HERE" describe --always --dirty --abbrev=7; git -C "$HERE" log -1 --format=%cs; } \
+    > "$DEST/ssx3-recomp/BUILD_INFO" 2>/dev/null || true
 if [ "${1:-}" = --game ]; then
     rsync -a "$PARENT/SSX3/" "$DEST/ssx3-recomp/game/"
 fi

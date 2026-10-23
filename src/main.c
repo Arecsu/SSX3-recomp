@@ -35,6 +35,7 @@
 #endif
 #ifdef _WIN32
 #include "log.h"
+#include "journal.h"
 #include <windows.h>
 #else
 #include "platform/win32_compat.h"
@@ -1046,14 +1047,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             extern void (*volatile xbox_before_exit)(void);
             xbox_before_exit = log_drain;
         }
-        log_msg(LOG_INFO, "SYSTEM", "SSX 3 recomp started, log level %s, game folder %s",
-                log_level_name(log_level()), s_game_dir);
+
     }
     if (!load_xbe(s_game_xbe, &xbe_data, &xbe_size)) {
         MessageBoxA(NULL, "default.xbe could not be read.", "SSX 3", MB_ICONERROR);
         return 1;
     }
     printf("XBE loaded: %zu bytes\n", xbe_size);
+    journal_session_header(xbe_data, xbe_size, s_game_dir);
 
     /* Step 2: Initialize Xbox memory layout */
     printf("Initializing Xbox memory layout...\n");

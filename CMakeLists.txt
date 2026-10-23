@@ -63,6 +63,7 @@ file(GLOB RECOMP_GEN_SOURCES CONFIGURE_DEPENDS "src/recomp/gen/*.c")
 set(GAME_SOURCES
     src/main.c
     src/log.c
+    src/journal.c
     src/recomp_manual.c
     src/ssx3_overrides.c
     src/thread_dump.c
@@ -87,6 +88,15 @@ if(WIN32)
 else()
     add_executable(${PROJECT_NAME} ${GAME_SOURCES} ${RECOMP_GEN_SOURCES})
 endif()
+
+# The build's version for the session log (src/journal.c)
+add_custom_target(ssx3_build_info
+    COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${CMAKE_BINARY_DIR}/build_info.h
+            -P ${CMAKE_SOURCE_DIR}/cmake/build_info.cmake
+    BYPRODUCTS ${CMAKE_BINARY_DIR}/build_info.h
+    VERBATIM)
+add_dependencies(${PROJECT_NAME} ssx3_build_info)
+target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_BINARY_DIR})
 
 # Link against the xboxrecomp umbrella target (all 6 runtime libraries)
 target_link_libraries(${PROJECT_NAME} PRIVATE xboxrecomp)
