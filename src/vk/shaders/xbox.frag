@@ -14,6 +14,7 @@ layout(location = 3) in vec4 v_tex0;
 layout(location = 4) in vec4 v_tex1;
 layout(location = 5) in vec4 v_tex2;
 layout(location = 6) in vec4 v_tex3;
+layout(location = 7) in float v_gx;
 
 layout(location = 0) out vec4 out_color;
 #ifdef TAGS
@@ -41,6 +42,7 @@ layout(push_constant) uniform PC {
     uint alpha_ref;                       /* 0..255 */
     float w_scale;                        /* W-buffering: depth = w * this; 0 = off */
     uint point_sprite;                    /* bit 0: stage 3 coordinates = gl_PointCoord (xemu psh.c);
+                                           * bit 1: clip to the guest screen (2D, widescreen);
                                            * bits 8+: MSAA samples per pixel */
     uint tag;                             /* rider tag (TAGS): 255 player 1, 1..7 another rider */
 } pc;
@@ -282,6 +284,12 @@ void main()
      * writes gl_SampleMask anywhere leaves it undefined wherever it does not
      * (random coverage -- noise all over the frame). */
     gl_SampleMask[0] = -1;
+    /* Widescreen shows more than the Xbox's 4:3 screen: 2D the game parks
+     * just off its edge (the B icon of the MCOMM Transport screen, panels
+     * waiting to slide in) stays hidden, as on a TV. In guest coordinates,
+     * so HUD elements moved to the wide frame's edges are kept. */
+    if ((pc.point_sprite & 2u) != 0u && (v_gx < 0.0 || v_gx > 1.0))
+        discard;
     uint n = min(control() & 255u, 8u), flags = control() >> 8;
     vec4 col;
 

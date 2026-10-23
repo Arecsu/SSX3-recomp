@@ -1051,6 +1051,13 @@ static float hud_place(const HudBox *b)
     }
     sq = 1.0f / (ssx3_Aspect() * 0.75f);   /* the shaders' squeeze2d */
     cx = (b->x0 + b->x1) * 0.5f;
+    /* A box that starts at an edge (within 15%) and does not reach the
+     * other belongs to that edge, whatever its width: the radio box with a
+     * long song title (53-380) has its centre in the middle third. */
+    if (b->x0 < gw * 0.15f && b->x1 <= gw * 0.85f)
+        cx = 0.0f;
+    else if (b->x1 > gw * 0.85f && b->x0 >= gw * 0.15f)
+        cx = gw;
     if (cx < gw / 3.0f)
         return (sq - 1.0f) * (1.0f - margin);
     if (cx > gw * 2.0f / 3.0f)
@@ -1069,7 +1076,8 @@ static float hud_place_kept(const HudBox *b, float cur)
 {
     float gw = s_w ? (float)s_w : 640.0f, band = gw * HUD_BAND;
     float cx = (b->x0 + b->x1) * 0.5f;
-    if ((cur < 0.0f && cx < gw / 3.0f + band) || (cur > 0.0f && cx > gw * 2.0f / 3.0f - band))
+    if ((cur < 0.0f && (cx < gw / 3.0f + band || b->x0 < gw * 0.15f))
+        || (cur > 0.0f && (cx > gw * 2.0f / 3.0f - band || b->x1 > gw * 0.85f)))
         return cur;
     return hud_place(b);
 }
@@ -1882,6 +1890,7 @@ static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, u
                 if (v[q].pos[0] > mx) mx = v[q].pos[0];
             }
             st.keep_edges = mx - mn > gw * 0.9f;
+            st.clip2d = !offscreen && !st.keep_edges && n && v[0].pos[3] == 1.0f && ssx3_WidescreenNow();
         }
         double t2;
         bind_textures(&st);

@@ -33,6 +33,7 @@ layout(location = 3) out vec4 v_tex0;
 layout(location = 4) out vec4 v_tex1;
 layout(location = 5) out vec4 v_tex2;
 layout(location = 6) out vec4 v_tex3;
+layout(location = 7) out float v_gx;   /* guest x, 0..1 (xbox.frag 2D clip) */
 
 float fog_factor(float d)
 {
@@ -209,6 +210,7 @@ void main()
     v_d0 = clamp(O[3], 0.0, 1.0); v_d1 = clamp(O[4], 0.0, 1.0);
     v_fog = vec4(fog_factor(O[5].x), 0.0, 0.0, 0.0);
     v_tex0 = O[9]; v_tex1 = O[10]; v_tex2 = O[11]; v_tex3 = O[12];
+    v_gx = pos.x * pc.inv_size.x;
     /* The NV2A's point size tops out at 64 pixels (SET_POINT_SIZE is 6.3
      * fixed point; Xbox D3D's MaxPointSize is 64): a particle program whose
      * oPts grows near the camera -- the trick-multiplier pickup sparkle --

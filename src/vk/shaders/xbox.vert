@@ -33,6 +33,7 @@ layout(location = 3) out vec4 v_tex0;
 layout(location = 4) out vec4 v_tex1;
 layout(location = 5) out vec4 v_tex2;
 layout(location = 6) out vec4 v_tex3;
+layout(location = 7) out float v_gx;   /* guest x, 0..1 across the guest screen (2D clip) */
 
 /* The fixed-function fog unit from the program's oFog.x (xemu vsh.c);
  * fog off reads as factor 1. */
@@ -81,5 +82,6 @@ void main()
     v_d0 = clamp(in_d0, 0.0, 1.0); v_d1 = clamp(in_d1, 0.0, 1.0);
     v_fog = vec4(fog_factor(in_fog.x), 0.0, 0.0, 0.0);
     v_tex0 = in_tex0; v_tex1 = in_tex1; v_tex2 = in_tex2; v_tex3 = in_tex3;
+    v_gx = in_pos.x * pc.inv_size.x;
     gl_PointSize = pc.point_size;
 }

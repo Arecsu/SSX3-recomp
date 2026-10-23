@@ -50,6 +50,7 @@ typedef struct {
     int      point_sprite;          /* stage 3 coordinates = gl_PointCoord */
     float    hud_shift;             /* NDC x offset of 2D vertices (HUD anchored to an edge) */
     int      keep_edges;            /* 2D vertices on the screen edges stay there (full-width passes) */
+    int      clip2d;                /* discard outside the guest screen (2D, widescreen) */
     /* Stencil (NV2A STENCIL_*; func GL enum 0x200..0x207, ops GL enums) */
     int      stencil_test;
     uint32_t stencil_func, stencil_ref, stencil_read_mask, stencil_write_mask;

@@ -2195,7 +2195,7 @@ int vkr_draw(VkrContext *c, const VkrVertex *v, uint32_t nverts,
     }
     /* bit 0: point sprite; bits 8+: MSAA samples (alpha-test coverage) */
     pcf[3] = (uint32_t)(st->topology == VKR_TOPO_POINTS && st->point_sprite)
-           | (uint32_t)c->samples << 8;
+           | (uint32_t)(st->clip2d != 0) << 1 | (uint32_t)c->samples << 8;
     pcf[4] = (uint32_t)st->rider;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 64, 20, pcf);
 
@@ -2315,7 +2315,7 @@ int vkr_draw_vsh(VkrContext *c, const float *in, uint32_t nverts, uint32_t nin,
     }
     /* bit 0: point sprite; bits 8+: MSAA samples (alpha-test coverage) */
     pcf[3] = (uint32_t)(st->topology == VKR_TOPO_POINTS && st->point_sprite)
-           | (uint32_t)c->samples << 8;
+           | (uint32_t)(st->clip2d != 0) << 1 | (uint32_t)c->samples << 8;
     pcf[4] = (uint32_t)st->rider;
     vkCmdPushConstants(c->cmd, c->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 64, 20, pcf);
 
