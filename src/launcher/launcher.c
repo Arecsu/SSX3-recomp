@@ -34,7 +34,7 @@ enum {
     ID_PATH = 100, ID_BROWSE, ID_STATUS,
     ID_RES, ID_ASPECT, ID_MSAA, ID_ANISO, ID_DRAWDIST, ID_SHADOWS, ID_AUDIO, ID_HUDEDGES, ID_FULLSCREEN, ID_CRT,
     ID_MBLUR, ID_CAM, ID_FPS, ID_HDTEX,
-    ID_SKIPINTRO, ID_FASTBOOT, ID_DEBUGMENU, ID_MONEY,
+    ID_SKIPINTRO, ID_FASTBOOT, ID_DEBUGMENU, ID_MONEY, ID_LOGLEVEL,
     ID_PAD0, ID_PAD1, ID_PAD2, ID_PAD3, ID_KEYS,
     ID_LOGS, ID_PLAY,
     ID_TIMER = 1
@@ -74,6 +74,13 @@ static const struct { const char *label, *value; } k_shadows[] = {
 static const struct { const char *label, *value; } k_audio[] = {
     {"Stereo", "2"},
     {"5.1 surround", "6"},
+};
+static const struct { const char *label, *value; } k_loglevel[] = {
+    {"Errors only", "error"},
+    {"Warnings and errors", "warn"},
+    {"Normal (what you did, and problems)", "info"},
+    {"Detailed (for bug reports)", "debug"},
+    {"Everything (large logs)", "trace"},
 };
 static const struct { const char *label, *value; } k_msaa[] = {
     {"Off", "0"},
@@ -305,6 +312,7 @@ static void load_settings(void)
     CheckDlgButton(s_wnd, ID_FASTBOOT, ini_int("fast_boot", 1));
     CheckDlgButton(s_wnd, ID_DEBUGMENU, ini_int("debug_menu", 0));
     CheckDlgButton(s_wnd, ID_MONEY, ini_int("money_cheat", 0));
+    SendDlgItemMessageA(s_wnd, ID_LOGLEVEL, CB_SETCURSEL, ini_int("log_level", 2), 0);
     update_status();
 }
 
@@ -331,6 +339,7 @@ static void save_settings(void)
     ini_set_int("fast_boot", IsDlgButtonChecked(s_wnd, ID_FASTBOOT) == BST_CHECKED);
     ini_set_int("debug_menu", IsDlgButtonChecked(s_wnd, ID_DEBUGMENU) == BST_CHECKED);
     ini_set_int("money_cheat", IsDlgButtonChecked(s_wnd, ID_MONEY) == BST_CHECKED);
+    ini_set_int("log_level", (int)SendDlgItemMessageA(s_wnd, ID_LOGLEVEL, CB_GETCURSEL, 0, 0));
 }
 
 /* ---- launch -------------------------------------------------------------- */
@@ -387,6 +396,11 @@ static void play(void)
     SetEnvironmentVariableA("RECOMP_FAST_BOOT", IsDlgButtonChecked(s_wnd, ID_FASTBOOT) ? NULL : "0");
     SetEnvironmentVariableA("RECOMP_DEBUG_MENU", IsDlgButtonChecked(s_wnd, ID_DEBUGMENU) ? "1" : NULL);
     SetEnvironmentVariableA("RECOMP_MONEY_CHEAT", IsDlgButtonChecked(s_wnd, ID_MONEY) ? "1" : NULL);
+    {
+        int ll = (int)SendDlgItemMessageA(s_wnd, ID_LOGLEVEL, CB_GETCURSEL, 0, 0);
+        SetEnvironmentVariableA("RECOMP_LOG_LEVEL", ll >= 0 && ll < (int)(sizeof k_loglevel / sizeof k_loglevel[0])
+                                                    ? k_loglevel[ll].value : NULL);
+    }
 
     ZeroMemory(&si, sizeof si);
     si.cb = sizeof si;
@@ -416,6 +430,24 @@ static void open_logs(void)
         MessageBoxA(s_wnd, "No logs yet: they appear after the game has run once.", "SSX 3",
                     MB_ICONINFORMATION);
         return;
+    }
+    {
+        /* the folder with this session's file selected (logs\latest.txt) */
+        char lp[MAX_PATH + 16], name[MAX_PATH], arg[2 * MAX_PATH];
+        FILE *f;
+        size_t n = 0;
+        snprintf(lp, sizeof lp, "%s\\latest.txt", logs);
+        if ((f = fopen(lp, "r")) != NULL) {
+            if (fgets(name, sizeof name, f))
+                n = strcspn(name, "\r\n");
+            fclose(f);
+        }
+        if (n) {
+            name[n] = 0;
+            snprintf(arg, sizeof arg, "/select,\"%s\\%s\"", logs, name);
+            if ((INT_PTR)ShellExecuteA(s_wnd, "open", "explorer.exe", arg, NULL, SW_SHOWNORMAL) > 32)
+                return;
+        }
     }
     ShellExecuteA(s_wnd, "open", logs, NULL, NULL, SW_SHOWNORMAL);
 }
@@ -530,7 +562,13 @@ static void build(void)
     y += 24;
     add("BUTTON", "Testing: Home key gives player 1 200,000 money", BS_AUTOCHECKBOX | WS_TABSTOP,
         ID_MONEY, 20, y, 480, 22, s_font);
-    y += 34;
+    y += 28;
+    add("STATIC", "Log detail", 0, -1, 20, y + 4, 115, 20, s_font);
+    cb = add("COMBOBOX", "", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, ID_LOGLEVEL, 140, y, 260, 200, s_font);
+    for (i = 0; i < (int)(sizeof k_loglevel / sizeof k_loglevel[0]); i++)
+        SendMessageA(cb, CB_ADDSTRING, 0, (LPARAM)k_loglevel[i].label);
+    SendMessageA(cb, CB_SETCURSEL, 2, 0);
+    y += 38;
 
     add("STATIC", "Controllers", 0, -1, 20, y, 400, 18, s_bold);
     y += 22;

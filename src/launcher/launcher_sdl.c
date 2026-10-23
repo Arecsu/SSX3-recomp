@@ -73,6 +73,13 @@ static const Choice k_drawdist[] = {
     {"Far (1.5x)", "1.5"},
     {"Maximum (2x)", "2"},
 };
+static const Choice k_loglevel[] = {
+    {"Errors only", "error"},
+    {"Warnings and errors", "warn"},
+    {"Normal (what you did, and problems)", "info"},
+    {"Detailed (for bug reports)", "debug"},
+    {"Everything (large logs)", "trace"},
+};
 static const Choice k_shadows[] = {
     {"Original (128x128)", "1"},
     {"High (512x512)", "4"},
@@ -173,6 +180,7 @@ static void ini_save(void)
 static char s_path[PATH_MAX];
 static int s_res, s_aspect, s_msaa, s_aniso, s_drawdist, s_shadows;
 static int s_crt, s_hdtex, s_hudedges, s_skipintro, s_fastboot, s_debugmenu, s_moneycheat;
+static int s_loglevel = 2;
 static int s_game_ok;
 static char s_status[512];
 
@@ -295,6 +303,7 @@ static void load_settings(void)
     s_fastboot = ini_int("fast_boot", 1);
     s_debugmenu = ini_int("debug_menu", 0);
     s_moneycheat = ini_int("money_cheat", 0);
+    s_loglevel = ini_int("log_level", 2);
     update_status();
 }
 
@@ -314,6 +323,7 @@ static void save_settings(void)
     ini_set_int("fast_boot", s_fastboot);
     ini_set_int("debug_menu", s_debugmenu);
     ini_set_int("money_cheat", s_moneycheat);
+    ini_set_int("log_level", s_loglevel);
     ini_save();
 }
 
@@ -552,6 +562,7 @@ static void play(void)
     env_set("RECOMP_FAST_BOOT", s_fastboot ? NULL : "0");
     env_set("RECOMP_DEBUG_MENU", s_debugmenu ? "1" : NULL);
     env_set("RECOMP_MONEY_CHEAT", s_moneycheat ? "1" : NULL);
+    env_set("RECOMP_LOG_LEVEL", pick(k_loglevel, N(k_loglevel), s_loglevel));
     if (!getenv("RECOMP_USB_PADS")) {
         int pads = pad_count();
         snprintf(buf, sizeof buf, "%d", pads < 1 ? 1 : pads > 4 ? 4 : pads);
@@ -724,7 +735,7 @@ static void check_mark(int x, int y, int size, SDL_Color c)
 /* ---- widgets: immediate mode --------------------------------------------- */
 
 enum {
-    W_NONE, W_PATH, W_RES, W_ASPECT, W_MSAA, W_ANISO, W_DRAWDIST, W_SHADOWS
+    W_NONE, W_PATH, W_RES, W_ASPECT, W_MSAA, W_ANISO, W_DRAWDIST, W_SHADOWS, W_LOGLEVEL
 };
 
 static int s_mx = -1, s_my = -1, s_click;       /* logical mouse, one click per frame */
@@ -925,7 +936,10 @@ static int draw_form(int *want_play)
              "Debug mode: EA's quick-start menu (press Start on the title screen)", &s_debugmenu);
     y += 24;
     checkbox(L, y, 520, "Testing: Home key gives player 1 200,000 money", &s_moneycheat);
-    y += 34;
+    y += 28;
+    row_label("Log detail", L, y, RH);
+    combo(W_LOGLEVEL, CX, y, CW, RH, k_loglevel, N(k_loglevel), &s_loglevel);
+    y += RH + 12;
 
     heading("Controllers", L, y);
     y += 24;
