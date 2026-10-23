@@ -22,6 +22,7 @@
  * RECOMP_GAME_STATE=0 disables it.
  */
 #ifdef _WIN32
+#include "log.h"
 #include <windows.h>
 #else
 #include "platform/win32_compat.h"
@@ -43,8 +44,27 @@ static const struct { uint32_t vt; const char *name; } k_states[] = {
     { 0x0029AD48u, "event_enter" },  /* brief transition into an event */
     { 0x0029B0DCu, "loading" },      /* race loading screens */
     { 0x00299D7Cu, "ingame" },       /* briefing, race, results, replay */
+    { 0x0028825Cu, "debugmenu" },    /* EA's quick-start menu (RECOMP_DEBUG_MENU) */
+    { 0x0029B0F8u, "to_frontend" },  /* leaving an event for the menus / a lodge */
     { 0, NULL }
 };
+
+/* The session story's words for them (journal, INFO [PLAY]). */
+static const char *state_words(uint32_t vt)
+{
+    switch (vt) {
+    case 0x0029AD1Cu: return "starting up";
+    case 0x0029ACD8u: return "intro movies";
+    case 0x00289618u: return "menus";
+    case 0x0029AD48u: return "entering an event";
+    case 0x0029B0DCu: return "loading";
+    case 0x00299D7Cu: return "in game";
+    case 0x0028825Cu: return "debug quick-start menu";
+    case 0x0029B0F8u: return "leaving the event";
+    case 0:           return "nothing yet";
+    default:          return "an unknown state";
+    }
+}
 
 static const char *state_name(uint32_t vt)
 {
@@ -132,6 +152,17 @@ static DWORD WINAPI game_state_thread(LPVOID unused)
                 last_probe = now;
                 fe_probe(cur, vt, now - t0);
             }
+        }
+        if (vt != last_vt && vt) {         /* 0: no app object yet */
+            static DWORD vt_since;
+            static uint32_t vt_prev;
+            if (vt_since)
+                log_msg(LOG_INFO, "PLAY", "%s (after %.1f s in %s)", state_words(vt),
+                        (now - vt_since) / 1000.0, state_words(vt_prev));
+            else
+                log_msg(LOG_INFO, "PLAY", "%s", state_words(vt));
+            vt_since = now;
+            vt_prev = vt;
         }
         if (vt != last_vt || next != last_next || sub != last_sub) {
             if (vt != last_vt || sub != last_sub)

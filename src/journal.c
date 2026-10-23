@@ -66,7 +66,7 @@ static void cpu_name(char *out, size_t n)
 
 static void system_line(void)
 {
-    char cpu[64], os[128];
+    char cpu[64], os[256];
     double ram_gb = 0.0;
 #ifdef _WIN32
     MEMORYSTATUSEX ms;
