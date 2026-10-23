@@ -236,15 +236,32 @@ void sub_001AD720(void)
  */
 extern void sub_001EAB40_gen(void);
 
+/* The draw distance in use: RECOMP_DRAW_DIST, pulled in towards 1 where the
+ * render lists below run full and let out again where they have room
+ * (sub_000D3740). Fixed lists inside the render object cannot grow, and
+ * skipping what does not fit dropped whole terrain cells, near ones too:
+ * black holes in the ground in Conquer the Mountain's open world (Crow's
+ * Nest at 1.5x). A shorter view in the densest places keeps the ground. */
+static float s_dd_mul = -1.0f, s_dd_eff = 1.0f;
+static volatile int s_dd_full;     /* a list ran full this frame */
+static unsigned s_dd_full_frames;  /* frames with a list full (log) */
+
+static void dd_init(void)
+{
+    if (s_dd_mul < 0.0f) {
+        const char *e = getenv("RECOMP_DRAW_DIST");
+        s_dd_mul = e && *e ? (float)atof(e) : 1.5f;
+        if (s_dd_mul < 0.1f)
+            s_dd_mul = 1.0f;
+        s_dd_eff = s_dd_mul;
+    }
+}
+
 void sub_001EAB40(void)
 {
-    static float mul = -1.0f;
-    if (mul < 0.0f) {
-        const char *e = getenv("RECOMP_DRAW_DIST");
-        mul = e && *e ? (float)atof(e) : 1.5f;
-        if (mul < 0.1f)
-            mul = 1.0f;
-    }
+    float mul;
+    dd_init();
+    mul = s_dd_eff;
     if (mul != 1.0f && ssx3_InGame()) {
         uint32_t bits = MEM32(g_esp + 12);
         float zf;
@@ -344,6 +361,7 @@ static int list_full(uint32_t obj, uint32_t count_off, uint32_t cap, const char 
 {
     if (obj < 0x10000u || MEM32(obj + count_off) < cap)
         return 0;
+    s_dd_full = 1;
     {
         static unsigned said;
         if (said++ < 8)
@@ -448,7 +466,44 @@ void sub_000D3740(void)
     if (on < 0)
         on = getenv("RECOMP_DRAWLIST_STATS") != NULL;
     sub_000D3740_gen();
-    if (!on || self < 0x10000u)
+    if (self < 0x10000u)
+        return;
+    {
+        /* the fullest list against its room (+0x7F84: room unknown) */
+        static const uint32_t cap[9] = {512, 512, 2048, 1024, 2048, 512, 128, 64, 256};
+        static DWORD said_at;
+        static DWORD last_frame;
+        float fill = 0.0f, before = s_dd_eff;
+        dd_init();
+        /* after a pause in the lists (a load, a replay starting) start from
+         * the original view and grow: the first frame of a new place at the
+         * full distance ran the cell list full */
+        if (GetTickCount() - last_frame > 1000u && s_dd_eff > 1.0f)
+            s_dd_eff = 1.0f;
+        last_frame = GetTickCount();
+        for (k = 0; k < 9; k++) {
+            float f = (float)MEM32(self + off[k]) / (float)cap[k];
+            if (f > fill) fill = f;
+        }
+        /* shrink early (80%) and hard on an overflow, grow back slowly
+         * (~20%/s) only with clear room (60%): growing 1% a frame overshot
+         * into full lists again */
+        if (s_dd_full || fill > 0.80f) {
+            float floor_ = s_dd_mul < 1.0f ? s_dd_mul : 1.0f;   /* never below the original */
+            float k = s_dd_full ? 0.85f : 0.95f;
+            s_dd_eff = s_dd_eff * k < floor_ ? floor_ : s_dd_eff * k;
+        }
+        else if (fill < 0.60f && s_dd_eff < s_dd_mul)
+            s_dd_eff = s_dd_eff * 1.003f > s_dd_mul ? s_dd_mul : s_dd_eff * 1.003f;
+        s_dd_full_frames += s_dd_full != 0;
+        s_dd_full = 0;
+        if (s_dd_eff != before && GetTickCount() - said_at >= 1000) {
+            said_at = GetTickCount();
+            fprintf(stderr, "[DRAWDIST] view now x%.2f of x%.2f (fullest render list %.0f%%, %u frames with a full list so far)\n",
+                    s_dd_eff, s_dd_mul, fill * 100.0f, s_dd_full_frames);
+        }
+    }
+    if (!on)
         return;
     for (k = 0; k < 10; k++)
         if (MEM32(self + off[k]) > peak[k])

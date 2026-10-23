@@ -28,6 +28,7 @@
 #define mkdir_one(p) _mkdir(p)
 #else
 #include <sys/stat.h>
+#include <unistd.h>
 #define mkdir_one(p) mkdir(p, 0755)
 #endif
 #include "vkr.h"
@@ -97,6 +98,58 @@ static void load_map(const char *dir)
     fprintf(stderr, "[HDTEX] %zu replacement textures mapped (%s)\n", s_nmap, path);
 }
 
+/* The pack's default place: "hd-textures" in the working directory, else
+ * next to the exe, else one folder up -- the launcher starts the game in
+ * the exe's folder, and a local build's exe sits in build\ while the pack
+ * is in the project folder (the HD textures silently stayed off there). */
+static int has_map(const char *dir)
+{
+    char path[1100];
+    FILE *f;
+    snprintf(path, sizeof path, "%s/ssx3_map.txt", dir);
+    if (!(f = fopen(path, "rb")))
+        return 0;
+    fclose(f);
+    return 1;
+}
+
+static void default_dir(char *out, size_t n)
+{
+    char exe[1024];
+    size_t len = 0;
+    snprintf(out, n, "hd-textures");
+    if (has_map(out))
+        return;
+#ifdef _WIN32
+    len = GetModuleFileNameA(NULL, exe, sizeof exe);
+#elif defined(__linux__)
+    {
+        ssize_t r = readlink("/proc/self/exe", exe, sizeof exe - 1);
+        len = r > 0 ? (size_t)r : 0;
+    }
+#endif
+    if (!len || len >= sizeof exe)
+        return;
+    exe[len] = 0;
+    while (len && exe[len - 1] != '/' && exe[len - 1] != '\\')
+        len--;
+    if (!len)
+        return;
+    exe[len - 1] = 0;                  /* the exe's folder */
+    snprintf(out, n, "%s/hd-textures", exe);
+    if (has_map(out))
+        return;
+    while (len > 1 && exe[len - 2] != '/' && exe[len - 2] != '\\')
+        len--;
+    if (len > 1) {
+        exe[len - 2] = 0;              /* one up */
+        snprintf(out, n, "%s/hd-textures", exe);
+        if (has_map(out))
+            return;
+    }
+    snprintf(out, n, "hd-textures");
+}
+
 static void init(void)
 {
     const char *e;
@@ -111,7 +164,10 @@ static void init(void)
     e = getenv("RECOMP_HDTEX");
     if (e && *e == '0' && !e[1])
         return;
-    snprintf(s_hd_dir, sizeof s_hd_dir, "%s", e && *e ? e : "hd-textures");
+    if (e && *e)
+        snprintf(s_hd_dir, sizeof s_hd_dir, "%s", e);
+    else
+        default_dir(s_hd_dir, sizeof s_hd_dir);
     load_map(s_hd_dir);
 }
 
