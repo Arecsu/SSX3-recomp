@@ -64,7 +64,7 @@ detail that led up to it.
       Character, Select Peak/Mode/Event, My Rules, Options and its pages,
       Lodge and its pages, pause menu, Quit dialog, ...) from the screen
       tracker (sub_00202460), unknown ones as `screen <vt>:<id>`.
-- [ ] **B4** Game mode at the start of play: Single Event, Conquer the
+- [x] **B4** Game mode at the start of play: Single Event, Conquer the
       Mountain, Freeride, Multiplayer (and the debug quick-start menu).
 - [ ] **B5** Event start: peak, kind (Race, Slopestyle, Big Air, Super
       Pipe, ...), course name, rider, opponents (needs finding where the
@@ -125,3 +125,4 @@ detail that led up to it.
 - 2026-10-24: B1 -- src/journal.c: build (commit + date: cmake/build_info.cmake, from git or the BUILD_INFO sync-windows.sh writes), OS, CPU, RAM, monitor, the XBE's name/title id/version, the settings in words (two lines), every RECOMP_* at DEBUG; the GPU line ([VKR] device, now with the driver version) at INFO. Controllers at start: with C4.
 - 2026-10-24: B2 -- game_state.c: one INFO [PLAY] line per top-level state (starting up, intro movies, menus, entering an event, loading, in game, debug menu, leaving the event) with the time spent in the one before; [STATE] sub-flips DEBUG. Briefing/race/results/replay: by screen (B3).
 - 2026-10-24: B3 -- screen_note (ssx3_overrides.c, before and after each screen state change): INFO [PLAY] "screen: <name>" -- menus by id (title ... Credits, lodge 39), in game by vtable only (ids there are garbage): briefings, pause, quit dialog, lodge/station prompt, run result 002984B0, event results 00298378; unknown ones as "in-game screen <vt> (not named yet)" so sessions collect them.
+- 2026-10-24: B4 -- "game mode: Single Event / Conquer the Mountain / Multi Play / Previews" from the main menu's list (+0x95, 4 rows) when the main menu closes (state 6; the next screen reuses its memory). The list is found among those sub_00205D40 has set up, by its parent being a child of the main menu. Checked with menu_test: down,a = Conquer; down,down,a = Previews (Multi Play is skipped without 2 pads); a = Single Event. The debug quick-start menu shows as its own state (B2).

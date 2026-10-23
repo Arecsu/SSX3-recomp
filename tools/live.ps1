@@ -51,6 +51,10 @@ switch ($Cmd) {
         $env:RECOMP_NO_HOST_PAD = "1"
         # ...and are silent (RECOMP_MUTE='0' in -Env for sound).
         $env:RECOMP_MUTE = "1"
+        # ...and log everything, as before the log levels (docs/LOGGING.md):
+        # the test scripts read [HUD], [GLITCH], [UI] ... lines.
+        # -Env @{RECOMP_LOG_LEVEL='info'} for a player's log.
+        $env:RECOMP_LOG_LEVEL = "trace"
         # The emulated hard disk's partition images (and cache) per run
         # directory: instances booting together collided on one shared
         # Partition5.img and the loser quit to the dashboard.

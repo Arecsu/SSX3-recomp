@@ -980,8 +980,21 @@ static int ui_trace_on(void)
     return on;
 }
 
+/* Lists seen being set up (sub_00205D40, this = the list): the main menu's
+ * is found among them when it closes (main_menu_left). */
+static volatile uint32_t s_lists[16];
+static volatile unsigned s_lists_n;
+
 void sub_00205D40(void)
 {
+    {
+        uint32_t self = g_ecx;
+        unsigned i;
+        for (i = 0; i < 16 && s_lists[i] != self; i++)
+            ;
+        if (i == 16)
+            s_lists[s_lists_n++ % 16] = self;
+    }
     if (ui_trace_on()) {
         uint32_t self = g_ecx;
         fprintf(stderr, "[UI] list %08X vt %08X select %u | flags14 %08X sel %u items %u rows %u scroll %u"
@@ -1104,6 +1117,37 @@ static const char *screen_name(uint32_t vt, uint32_t id, int in_menus)
     }
 }
 
+/* The main menu's choice (B4): its list (vtable 002F8958, a child of the
+ * screen: widget list head at +0x24+0xC, next at +8) keeps the selected row
+ * at +0x95 -- 0 Single Event, 1 Conquer the Mountain, 2 Multi Play,
+ * 3 Previews. Read when the main menu gives way to the next screen. */
+#define SSX3_MAIN_MENU_VT 0x0028F060u
+#define SSX3_LIST_VT      0x002F8958u
+static void main_menu_left(uint32_t mm)
+{
+    static const char *const k_modes[4] = {"Single Event", "Conquer the Mountain", "Multi Play", "Previews"};
+    unsigned i;
+    for (i = 0; i < 16; i++) {
+        uint32_t l = s_lists[i], parent, head, n;
+        int k;
+        if (l < 0x10000u || MEM32(l) != SSX3_LIST_VT || MEM8(l + 0x96) != 4)
+            continue;
+        parent = MEM32(l + 0x5C);       /* the container it sits in */
+        head = MEM32(mm + 0x24 + 0xC);  /* the main menu's children */
+        for (n = head, k = 0; n >= 0x10000u && k < 24; k++) {
+            if (n == parent) {
+                uint32_t sel = MEM8(l + 0x95);
+                log_msg(LOG_INFO, "PLAY", "game mode: %s", sel < 4 ? k_modes[sel] : "unknown");
+                return;
+            }
+            n = MEM32(n + 8);
+            if (n == head)
+                break;
+        }
+    }
+    log_msg(LOG_DEBUG, "PLAY", "main menu closed: its list not found");
+}
+
 static void screen_note(uint32_t scr)
 {
     if (scr && ((MEM16(scr + 0x1C) >> 8) & 0x3F) == 5 && MEM32(scr) != SSX3_HUD_SCREEN_VT) {
@@ -1155,11 +1199,26 @@ void sub_00202460(void)
             fflush(stderr);
         }
     }
-    ingame_menu_note(scr);
-    screen_note(scr);
-    sub_00202460_gen();
-    ingame_menu_note(scr);              /* the state as the change left it */
-    screen_note(scr);
+    {
+        /* the main menu closing (state 6, set before this call): its
+         * choice, read while the screen still exists -- the next screen
+         * reuses its memory */
+        static uint32_t mm_read;
+        uint32_t st = scr ? (MEM16(scr + 0x1C) >> 8) & 0x3F : 0;
+        if (scr && MEM32(scr) == SSX3_MAIN_MENU_VT) {
+            if (st == 6 && mm_read != scr) {
+                mm_read = scr;
+                main_menu_left(scr);
+            } else if (st == 5) {
+                mm_read = 0;
+            }
+        }
+        ingame_menu_note(scr);
+        screen_note(scr);
+        sub_00202460_gen();
+        ingame_menu_note(scr);          /* the state as the change left it */
+        screen_note(scr);
+    }
 }
 
 void sub_0008C540(void)
