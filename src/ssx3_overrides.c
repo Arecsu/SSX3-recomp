@@ -1059,6 +1059,76 @@ static void ingame_menu_note(uint32_t scr)
         ingame_menu_check(scr);
 }
 
+/* The active screen (state 5, not the in-game HUD), recorded for the scripts
+ * (game_state.txt fields 7/8) and named in the session log (INFO [PLAY]).
+ * Frontend screens by id, in-game ones by vtable; unknown ones are logged
+ * as "screen <vt>:<id>" so a session collects them for this table. */
+static const char *screen_name(uint32_t vt, uint32_t id, int in_menus)
+{
+    switch (vt) {
+    case 0x00297E30u: return "race briefing";
+    case 0x00297F68u: return "one-on-one briefing";
+    case 0x00297E98u: return "freestyle briefing";
+    case 0x002981D8u: return "pause menu";
+    case 0x00297B60u: return "quit dialog";
+    case 0x00298650u: return "lodge / station prompt";
+    case 0x002938C0u: return "lodge";
+    case 0x002984B0u: return "run result";
+    case 0x00298378u: return "event results";
+    case 0x0028B428u: return "checking hard disk";
+    default: break;
+    }
+    if (!in_menus)
+        return NULL;                    /* in game the id means nothing */
+    switch (id) {
+    case 0:  return "title screen";
+    case 1:  return "checking hard disk";
+    case 2:  return "main menu";
+    case 9:  return "Select Character";
+    case 12: return "Setup Character";
+    case 13: return "Rider Details";
+    case 14: return "Equip Gear";
+    case 16: return "Music";
+    case 19: return "Select Peak / Mode / Event";
+    case 20: return "My Rules";
+    case 24: return "Options";
+    case 28: return "Options: Game";
+    case 29: return "Options: Sound";
+    case 30: return "Options: HUD";
+    case 31: return "Options: Controller";
+    case 32: return "Options: Save / Load";
+    case 35: return "Load game";
+    case 36: return "Credits";
+    case 39: return "lodge";
+    default: return NULL;
+    }
+}
+
+static void screen_note(uint32_t scr)
+{
+    if (scr && ((MEM16(scr + 0x1C) >> 8) & 0x3F) == 5 && MEM32(scr) != SSX3_HUD_SCREEN_VT) {
+        uint32_t vt = MEM32(scr), id = MEM32(scr + 0xC);
+        g_ssx3_ui_screen_ptr = scr;
+        if (vt != g_ssx3_ui_screen_vt || id != g_ssx3_ui_screen_id) {
+            uint32_t app = MEM32(0x003A930Cu), st = app >= 0x10000u ? MEM32(app + 4) : 0;
+            int in_menus = st >= 0x10000u && MEM32(st) == 0x00289618u;   /* frontend */
+            const char *nm = screen_name(vt, id, in_menus);
+            g_ssx3_ui_screen_vt = vt;
+            g_ssx3_ui_screen_id = id;
+            if (nm)
+                log_msg(LOG_INFO, "PLAY", "screen: %s", nm);
+            else if (in_menus)
+                log_msg(LOG_INFO, "PLAY", "screen %08X:%d (not named yet)", vt, (int)id);
+            else
+                log_msg(LOG_INFO, "PLAY", "in-game screen %08X (not named yet)", vt);
+            if (ui_trace_on()) {
+                fprintf(stderr, "[UI] active screen %08X vt %08X id %d\n", scr, vt, (int)id);
+                fflush(stderr);
+            }
+        }
+    }
+}
+
 void sub_00202460(void)
 {
     uint32_t scr = g_ecx;
@@ -1086,20 +1156,10 @@ void sub_00202460(void)
         }
     }
     ingame_menu_note(scr);
-    if (scr && ((MEM16(scr + 0x1C) >> 8) & 0x3F) == 5 && MEM32(scr) != SSX3_HUD_SCREEN_VT) {
-        uint32_t vt = MEM32(scr), id = MEM32(scr + 0xC);
-        g_ssx3_ui_screen_ptr = scr;
-        if (vt != g_ssx3_ui_screen_vt || id != g_ssx3_ui_screen_id) {
-            g_ssx3_ui_screen_vt = vt;
-            g_ssx3_ui_screen_id = id;
-            if (ui_trace_on()) {
-                fprintf(stderr, "[UI] active screen %08X vt %08X id %d\n", scr, vt, (int)id);
-                fflush(stderr);
-            }
-        }
-    }
+    screen_note(scr);
     sub_00202460_gen();
     ingame_menu_note(scr);              /* the state as the change left it */
+    screen_note(scr);
 }
 
 void sub_0008C540(void)

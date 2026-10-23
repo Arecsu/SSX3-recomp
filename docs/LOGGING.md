@@ -60,7 +60,7 @@ detail that led up to it.
 - [x] **B2** Top-level flow: boot, intro, title, frontend, loading,
       in game, results, replay -- one line per change with time spent in
       the previous one (sub-states only at DEBUG).
-- [ ] **B3** Menu screens by name (main menu, Select Character, Setup
+- [x] **B3** Menu screens by name (main menu, Select Character, Setup
       Character, Select Peak/Mode/Event, My Rules, Options and its pages,
       Lodge and its pages, pause menu, Quit dialog, ...) from the screen
       tracker (sub_00202460), unknown ones as `screen <vt>:<id>`.
@@ -124,3 +124,4 @@ detail that led up to it.
 - 2026-10-24: A5 -- "Log detail" in both launchers (Errors only / Warnings and errors / Normal / Detailed / Everything, default Normal), saved as log_level, sets RECOMP_LOG_LEVEL; "Open logs" opens the folder with this session's file selected (latest.txt). The SDL launcher change is not compiled here (no SDL headers in WSL).
 - 2026-10-24: B1 -- src/journal.c: build (commit + date: cmake/build_info.cmake, from git or the BUILD_INFO sync-windows.sh writes), OS, CPU, RAM, monitor, the XBE's name/title id/version, the settings in words (two lines), every RECOMP_* at DEBUG; the GPU line ([VKR] device, now with the driver version) at INFO. Controllers at start: with C4.
 - 2026-10-24: B2 -- game_state.c: one INFO [PLAY] line per top-level state (starting up, intro movies, menus, entering an event, loading, in game, debug menu, leaving the event) with the time spent in the one before; [STATE] sub-flips DEBUG. Briefing/race/results/replay: by screen (B3).
+- 2026-10-24: B3 -- screen_note (ssx3_overrides.c, before and after each screen state change): INFO [PLAY] "screen: <name>" -- menus by id (title ... Credits, lodge 39), in game by vtable only (ids there are garbage): briefings, pause, quit dialog, lodge/station prompt, run result 002984B0, event results 00298378; unknown ones as "in-game screen <vt> (not named yet)" so sessions collect them.
