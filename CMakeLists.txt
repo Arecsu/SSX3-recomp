@@ -62,6 +62,7 @@ file(GLOB RECOMP_GEN_SOURCES CONFIGURE_DEPENDS "src/recomp/gen/*.c")
 # Core game sources
 set(GAME_SOURCES
     src/main.c
+    src/log.c
     src/recomp_manual.c
     src/ssx3_overrides.c
     src/thread_dump.c

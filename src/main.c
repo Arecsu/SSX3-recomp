@@ -34,6 +34,7 @@
 #define _GNU_SOURCE
 #endif
 #ifdef _WIN32
+#include "log.h"
 #include <windows.h>
 #else
 #include "platform/win32_compat.h"
@@ -1085,7 +1086,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         }
         log_async_start();
 #endif
-        fprintf(stderr, "[BOOT] game folder: %s\n", s_game_dir);
+        log_msg(LOG_INFO, "SYSTEM", "SSX 3 recomp started, log level %s, game folder %s",
+                log_level_name(log_level()), s_game_dir);
     }
     if (!load_xbe(s_game_xbe, &xbe_data, &xbe_size)) {
         MessageBoxA(NULL, "default.xbe could not be read.", "SSX 3", MB_ICONERROR);

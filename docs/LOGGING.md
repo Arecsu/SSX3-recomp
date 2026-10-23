@@ -34,7 +34,7 @@ detail that led up to it.
 ## Work items
 
 ### A. The logging core
-- [ ] **A1** `src/log.c/.h`: levels, `log_msg()`, `RECOMP_LOG_LEVEL`, line
+- [x] **A1** `src/log.c/.h`: levels, `log_msg()`, `RECOMP_LOG_LEVEL`, line
       format with timestamps; usable from game code, overrides and src/vk.
 - [ ] **A2** Pump filter (main.c): tag -> level table for existing lines,
       level threshold, timestamps added to untagged lines, flight-recorder
@@ -117,3 +117,4 @@ detail that led up to it.
 
 ## Progress log
 - 2026-10-24: plan written.
+- 2026-10-24: A1 -- src/log.c/.h (levels, log_msg, RECOMP_LOG_LEVEL, timestamped lines); main.c's first line uses it.
