@@ -30,7 +30,10 @@ int log_parse_level(const char *s, int dflt);
 double log_uptime(void);             /* seconds since the log started */
 /* "HH:MM:SS.mmm +SSSS.s " for a line written now (out: >= 32 bytes) */
 void log_stamp(char *out, unsigned n);
-void log_pump_attach(void);          /* main.c: a pump filters the stream */
+/* main.c, once stderr is the session file: start the pump (1 if running)
+ * and drain it before the process ends (crash handler, exits). */
+int log_pump_start(void);
+void log_drain(void);
 
 #ifdef __cplusplus
 }

@@ -36,7 +36,7 @@ detail that led up to it.
 ### A. The logging core
 - [x] **A1** `src/log.c/.h`: levels, `log_msg()`, `RECOMP_LOG_LEVEL`, line
       format with timestamps; usable from game code, overrides and src/vk.
-- [ ] **A2** Pump filter (main.c): tag -> level table for existing lines,
+- [x] **A2** Pump filter (main.c): tag -> level table for existing lines,
       level threshold, timestamps added to untagged lines, flight-recorder
       ring flushed on ERROR/CRITICAL. Linux: the same through a pipe (or
       in-process when stderr is not a file).
@@ -118,3 +118,4 @@ detail that led up to it.
 ## Progress log
 - 2026-10-24: plan written.
 - 2026-10-24: A1 -- src/log.c/.h (levels, log_msg, RECOMP_LOG_LEVEL, timestamped lines); main.c's first line uses it.
+- 2026-10-24: A2 -- the pump moved to src/log.c (Windows and POSIX), grades lines by tag, timestamps them, keeps a 2000-line flight recorder written out before ERROR/CRITICAL, collapses repeats. A scripted race at info: 6 lines plus the flight recorder; RECOMP_TEST_CRASH: the crash block CRITICAL with its lead-up. Found on the way: `[VKR] upload buffer full` ~900 times while a race loads in scripted runs (none in the user's session) -- draws dropped; to look into separately.

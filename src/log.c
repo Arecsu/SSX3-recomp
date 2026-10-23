@@ -60,11 +60,6 @@ int log_enabled(int level)
     return level >= log_level();
 }
 
-void log_pump_attach(void)
-{
-    s_pump = 1;
-}
-
 static double now_s(void)
 {
 #ifdef _WIN32
@@ -129,4 +124,340 @@ void log_msg(int level, const char *cat, const char *fmt, ...)
     fputs(line, stderr);             /* one call: lines from threads stay whole */
     if (level >= LOG_ERROR)
         fflush(stderr);
+}
+
+/* ---------------------------------------------------------------------------
+ * The log pump (RECOMP_LOG_ASYNC=0 off). When stderr is a file (the
+ * launcher's logs\, play.bat and the scripts), every fprintf was a write on
+ * the thread that printed -- the GPU executor, the game's main thread or a
+ * guest thread holding the guest CPU -- and such a write now and then
+ * blocks for 100 ms and more: a dropped frame for a log line. stderr writes
+ * into a 4 MB pipe (a memory copy) and one thread moves it into the file.
+ *
+ * On the way it grades every line (docs/LOGGING.md): lines from log_msg
+ * carry their level after the timestamp; the older "[TAG] ..." lines get
+ * one from k_tags (first match on the line's start, leading blanks
+ * skipped); indented untagged lines -- a crash's stack, a block's details --
+ * the level of the line before; anything else DEBUG. Lines below
+ * RECOMP_LOG_LEVEL go to a ring instead of the file (the flight recorder),
+ * written out ahead of the next ERROR or CRITICAL line. The same message
+ * again is counted and written once as "(repeated N more times)".
+ * log_drain waits until the file has everything: the crash handler and the
+ * toolkit's exits (xbox_before_exit) call it. */
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+static HANDLE s_pump_rd, s_pump_out;
+static volatile LONG s_pump_waiting, s_pump_reads;
+#else
+#include <unistd.h>
+#include <pthread.h>
+#include <fcntl.h>
+static int s_pump_rd = -1, s_pump_out = -1;
+static volatile int s_pump_waiting, s_pump_reads;
+#endif
+
+static const struct { const char *tag; int level; } k_tags[] = {
+    {"[CRASH]", LOG_CRITICAL},
+    {"[ICALL] Failed", LOG_ERROR}, {"[VKR] upload buffer full", LOG_ERROR},
+    {"[VKR] pipeline creation failed", LOG_ERROR},
+    {"[GATHER]", LOG_WARN}, {"[BLOCK-STUCK]", LOG_WARN}, {"[BLOCK-RESCUE]", LOG_WARN},
+    {"[KERNEL]", LOG_TRACE}, {"[CS]", LOG_TRACE}, {"[PATH]", LOG_TRACE}, {"[FILE]", LOG_TRACE},
+    {"[HEAP]", LOG_TRACE}, {"[BRIDGE]", LOG_TRACE}, {"[OHCI", LOG_TRACE}, {"[USB", LOG_TRACE},
+    {"[DPC]", LOG_TRACE}, {"[D3D] frame size", LOG_TRACE},
+};
+
+#define LOG_RING 2000
+static char *s_ring[LOG_RING];
+static int s_ring_head, s_ring_n;
+static int s_prev_level = LOG_DEBUG;
+static char s_partial[65536];        /* a line not yet ended (pump thread) */
+static size_t s_have;
+
+static void out(const char *p, size_t n)
+{
+#ifdef _WIN32
+    DWORD w;
+    WriteFile(s_pump_out, p, (DWORD)n, &w, NULL);
+#else
+    while (n) {
+        ssize_t w = write(s_pump_out, p, n);
+        if (w <= 0)
+            return;
+        p += w;
+        n -= (size_t)w;
+    }
+#endif
+}
+
+#ifdef _WIN32
+#define EOL "\r\n"
+#else
+#define EOL "\n"
+#endif
+
+static void ring_flush(void)
+{
+    static const char hd[] = "----- flight recorder: the lines below the log level before this -----" EOL;
+    static const char tl[] = "----- end of the flight recorder -----" EOL;
+    int i;
+    if (!s_ring_n)
+        return;
+    out(hd, sizeof hd - 1);
+    for (i = 0; i < s_ring_n; i++) {
+        char *l = s_ring[(s_ring_head + LOG_RING - s_ring_n + i) % LOG_RING];
+        out(l, strlen(l));
+        out(EOL, sizeof EOL - 1);
+    }
+    out(tl, sizeof tl - 1);
+    for (i = 0; i < LOG_RING; i++) { free(s_ring[i]); s_ring[i] = NULL; }
+    s_ring_head = s_ring_n = 0;
+}
+
+static int grade(const char *l, size_t n, int *stamped)
+{
+    size_t i = 0, k;
+    int lv;
+    *stamped = n > 20 && l[2] == ':' && l[5] == ':' && l[8] == '.' && l[12] == ' ' && l[13] == '+';
+    if (*stamped) {
+        const char *w = l + 14, *e = l + n;  /* after '+': the uptime, then the level */
+        while (w < e && *w == ' ') w++;
+        while (w < e && ((*w >= '0' && *w <= '9') || *w == '.')) w++;
+        while (w < e && *w == ' ') w++;
+        for (lv = LOG_TRACE; lv <= LOG_CRITICAL; lv++) {
+            const char *nm = log_level_name(lv);
+            if ((size_t)(e - w) >= strlen(nm) && !strncmp(w, nm, strlen(nm)))
+                return lv;
+        }
+        return LOG_INFO;
+    }
+    while (i < n && (l[i] == ' ' || l[i] == '\t')) i++;
+    for (k = 0; k < sizeof k_tags / sizeof k_tags[0]; k++) {
+        size_t tl = strlen(k_tags[k].tag);
+        if (n - i >= tl && !memcmp(l + i, k_tags[k].tag, tl))
+            return k_tags[k].level;
+    }
+    if (i < n && l[i] == '[')
+        return LOG_DEBUG;
+    return i > 0 ? s_prev_level : LOG_DEBUG;
+}
+
+static void pump_line(const char *l, size_t n)
+{
+    static char last[512];
+    static size_t last_n;
+    static unsigned repeats;
+    static int last_lv;
+    int stamped, lv;
+    char stamp[48], *copy;
+    size_t sl = 0;
+    const char *msg;
+    size_t mn;
+    while (n && (l[n - 1] == '\r' || l[n - 1] == '\n')) n--;
+    lv = grade(l, n, &stamped);
+    s_prev_level = lv;
+    if (!stamped) {
+        log_stamp(stamp, sizeof stamp);
+        sl = strlen(stamp);
+        snprintf(stamp + sl, sizeof stamp - sl, "%-5s ", log_level_name(lv));
+        sl = strlen(stamp);
+    }
+    if (lv < log_level()) {
+        if (!(copy = (char *)malloc(sl + n + 1)))
+            return;
+        memcpy(copy, stamp, sl);
+        memcpy(copy + sl, l, n);
+        copy[sl + n] = 0;
+        free(s_ring[s_ring_head]);
+        s_ring[s_ring_head] = copy;
+        s_ring_head = (s_ring_head + 1) % LOG_RING;
+        if (s_ring_n < LOG_RING) s_ring_n++;
+        return;
+    }
+    /* the same message again (the timestamp aside): counted ("upload buffer
+     * full" ran 900 times in a race load) */
+    msg = l;
+    mn = n;
+    if (stamped) {
+        const char *b = memchr(l + 14, ' ', n - 14);
+        while (b && b < l + n && *b == ' ') b++;
+        while (b && b < l + n && ((*b >= '0' && *b <= '9') || *b == '.')) b++;
+        if (b) { msg = b; mn = n - (size_t)(b - l); }
+    }
+    if (mn && mn == last_n && !memcmp(msg, last, mn)) {
+        repeats++;
+        return;
+    }
+    if (repeats) {
+        char rep[96];
+        int rn;
+        log_stamp(rep, sizeof rep);
+        rn = (int)strlen(rep);
+        rn += snprintf(rep + rn, sizeof rep - (size_t)rn, "%-5s (repeated %u more times)" EOL,
+                       log_level_name(last_lv), repeats);
+        out(rep, (size_t)rn);
+        repeats = 0;
+    }
+    last_n = mn <= sizeof last ? mn : 0;
+    last_lv = lv;
+    if (last_n) memcpy(last, msg, mn);
+    if (lv >= LOG_ERROR)
+        ring_flush();
+    if (sl) out(stamp, sl);
+    out(l, n);
+    out(EOL, sizeof EOL - 1);
+}
+
+static void pump_feed(const char *buf, size_t n)
+{
+    size_t i;
+    for (i = 0; i < n; i++) {
+        if (buf[i] == '\n' || s_have == sizeof s_partial) {
+            pump_line(s_partial, s_have);
+            s_have = 0;
+            if (buf[i] == '\n')
+                continue;
+        }
+        s_partial[s_have++] = buf[i];
+    }
+}
+
+#ifdef _WIN32
+static DWORD WINAPI pump_thread(LPVOID unused)
+{
+    static char buf[65536];
+    DWORD n;
+    (void)unused;
+    for (;;) {
+        InterlockedExchange(&s_pump_waiting, 1);
+        if (!ReadFile(s_pump_rd, buf, sizeof buf, &n, NULL) || !n)
+            return 0;
+        InterlockedExchange(&s_pump_waiting, 0);
+        pump_feed(buf, n);
+        InterlockedIncrement(&s_pump_reads);
+    }
+}
+#else
+static void *pump_thread(void *unused)
+{
+    static char buf[65536];
+    (void)unused;
+    for (;;) {
+        ssize_t n;
+        __atomic_store_n(&s_pump_waiting, 1, __ATOMIC_SEQ_CST);
+        n = read(s_pump_rd, buf, sizeof buf);
+        if (n <= 0)
+            return NULL;
+        __atomic_store_n(&s_pump_waiting, 0, __ATOMIC_SEQ_CST);
+        pump_feed(buf, (size_t)n);
+        __atomic_add_fetch(&s_pump_reads, 1, __ATOMIC_SEQ_CST);
+    }
+}
+#endif
+
+/* Everything written so far is in the file once the pump has sat in its
+ * read (pipe empty) for 20 ms. Not PeekNamedPipe on Windows: on this
+ * synchronous handle it waits behind the pump's pending ReadFile -- forever
+ * when nothing more is written. */
+void log_drain(void)
+{
+    int i;
+    int last = -1;
+#ifdef _WIN32
+    if (!s_pump_rd)
+        return;
+#else
+    if (s_pump_rd < 0)
+        return;
+#endif
+    fflush(stderr);
+    for (i = 0; i < 100; i++) {         /* <= 2 s */
+        int r = (int)s_pump_reads;
+        if (r == last && s_pump_waiting) {
+            if (s_have) {               /* the pump sits in its read: safe */
+                pump_line(s_partial, s_have);
+                s_have = 0;
+            }
+            return;
+        }
+        last = r;
+#ifdef _WIN32
+        Sleep(20);
+#else
+        usleep(20000);
+#endif
+    }
+}
+
+int log_pump_start(void)
+{
+    const char *e = getenv("RECOMP_LOG_ASYNC");
+    if (e && e[0] == '0')
+        return 0;
+#ifdef _WIN32
+    {
+        HANDLE outh = GetStdHandle(STD_ERROR_HANDLE), dup, rd, wr, th;
+        int fd;
+        if (!outh || outh == INVALID_HANDLE_VALUE || GetFileType(outh) != FILE_TYPE_DISK)
+            return 0;
+        /* _dup2 below closes the fd's old handle: keep a copy for the pump. */
+        if (!DuplicateHandle(GetCurrentProcess(), outh, GetCurrentProcess(), &dup, 0, FALSE,
+                             DUPLICATE_SAME_ACCESS))
+            return 0;
+        if (!CreatePipe(&rd, &wr, NULL, 4u << 20)) {
+            CloseHandle(dup);
+            return 0;
+        }
+        fd = _open_osfhandle((intptr_t)wr, _O_WRONLY | _O_TEXT);
+        if (fd < 0) {
+            CloseHandle(rd); CloseHandle(wr); CloseHandle(dup);
+            return 0;
+        }
+        fflush(stderr);
+        s_pump_rd = rd;
+        s_pump_out = dup;
+        th = CreateThread(NULL, 0, pump_thread, NULL, 0, NULL);
+        if (!th) {
+            s_pump_rd = NULL; s_pump_out = NULL;
+            _close(fd); CloseHandle(rd); CloseHandle(dup);
+            return 0;
+        }
+        SetThreadPriority(th, THREAD_PRIORITY_ABOVE_NORMAL);
+        CloseHandle(th);
+        _dup2(fd, _fileno(stderr));
+        _close(fd);
+        SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(_fileno(stderr)));
+        setvbuf(stderr, NULL, _IONBF, 0);
+    }
+#else
+    {
+        int p[2], dupfd;
+        pthread_t th;
+        if (isatty(2))
+            return 0;                   /* a terminal: everything, as it comes */
+        if ((dupfd = dup(2)) < 0)
+            return 0;
+        if (pipe(p) < 0) {
+            close(dupfd);
+            return 0;
+        }
+#ifdef F_SETPIPE_SZ
+        fcntl(p[1], F_SETPIPE_SZ, 1 << 20);
+#endif
+        fflush(stderr);
+        s_pump_rd = p[0];
+        s_pump_out = dupfd;
+        if (pthread_create(&th, NULL, pump_thread, NULL)) {
+            s_pump_rd = -1; s_pump_out = -1;
+            close(p[0]); close(p[1]); close(dupfd);
+            return 0;
+        }
+        pthread_detach(th);
+        dup2(p[1], 2);
+        close(p[1]);
+        setvbuf(stderr, NULL, _IONBF, 0);
+    }
+#endif
+    s_pump = 1;
+    return 1;
 }

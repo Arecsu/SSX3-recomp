@@ -56,9 +56,6 @@
 #include <xbox/xboxrecomp.h>
 #ifdef SSX3_VULKAN
 #include "vkr_backend.h"
-#ifdef _WIN32
-static void log_drain(void);      /* the asynchronous log, see log_async_start */
-#endif
 #endif
 
 /*
@@ -739,98 +736,6 @@ static int find_game_dir(char *tried, size_t tried_size)
     return 0;
 }
 
-#ifdef _WIN32
-#include <io.h>
-#include <fcntl.h>
-/* Asynchronous log (RECOMP_LOG_ASYNC=0 off). When stderr is a file (play.bat
- * and the scripts redirect it), every fprintf was a WriteFile on the thread
- * that printed -- the GPU executor, the game's main thread or a guest thread
- * holding the guest CPU -- and such a write now and then blocks for 100 ms
- * and more: a dropped frame for a log line. stderr now writes into a 4 MB
- * pipe (a memory copy) and one background thread moves it into the file.
- * log_drain waits until the file has everything: the crash handler and the
- * toolkit's exits (xbox_before_exit) call it, since the process may end
- * before the pump catches up. */
-static HANDLE s_log_rd, s_log_file;
-static volatile LONG s_log_waiting, s_log_reads;
-
-static DWORD WINAPI log_pump(LPVOID unused)
-{
-    static char buf[65536];
-    DWORD n, w;
-    (void)unused;
-    for (;;) {
-        InterlockedExchange(&s_log_waiting, 1);
-        if (!ReadFile(s_log_rd, buf, sizeof buf, &n, NULL) || !n)
-            return 0;
-        InterlockedExchange(&s_log_waiting, 0);
-        WriteFile(s_log_file, buf, n, &w, NULL);
-        InterlockedIncrement(&s_log_reads);
-    }
-}
-
-/* Everything written so far is in the file once the pump has sat in its
- * ReadFile (pipe empty) for 20 ms. Not PeekNamedPipe: on this synchronous
- * handle it waits behind the pump's pending ReadFile -- forever when nothing
- * more is written. */
-static void log_drain(void)
-{
-    int i;
-    LONG last = -1;
-    if (!s_log_rd)
-        return;
-    fflush(stderr);
-    for (i = 0; i < 100; i++) {         /* <= 2 s */
-        LONG r = s_log_reads;
-        if (r == last && s_log_waiting)
-            return;
-        last = r;
-        Sleep(20);
-    }
-}
-
-static void log_async_start(void)
-{
-    extern void (*volatile xbox_before_exit)(void);
-    const char *e = getenv("RECOMP_LOG_ASYNC");
-    HANDLE out = GetStdHandle(STD_ERROR_HANDLE), dup, rd, wr;
-    int fd;
-    if ((e && e[0] == '0') || !out || out == INVALID_HANDLE_VALUE
-        || GetFileType(out) != FILE_TYPE_DISK)
-        return;
-    /* _dup2 below closes the fd's old handle: keep a copy for the pump. */
-    if (!DuplicateHandle(GetCurrentProcess(), out, GetCurrentProcess(), &dup, 0, FALSE,
-                         DUPLICATE_SAME_ACCESS))
-        return;
-    if (!CreatePipe(&rd, &wr, NULL, 4u << 20)) {
-        CloseHandle(dup);
-        return;
-    }
-    fd = _open_osfhandle((intptr_t)wr, _O_WRONLY | _O_TEXT);
-    if (fd < 0) {
-        CloseHandle(rd); CloseHandle(wr); CloseHandle(dup);
-        return;
-    }
-    fflush(stderr);
-    s_log_rd = rd;
-    s_log_file = dup;
-    {
-        HANDLE th = CreateThread(NULL, 0, log_pump, NULL, 0, NULL);
-        if (!th) {
-            s_log_rd = NULL; s_log_file = NULL;
-            _close(fd); CloseHandle(rd); CloseHandle(dup);
-            return;
-        }
-        SetThreadPriority(th, THREAD_PRIORITY_ABOVE_NORMAL);
-        CloseHandle(th);
-    }
-    _dup2(fd, _fileno(stderr));
-    _close(fd);
-    SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(_fileno(stderr)));
-    setvbuf(stderr, NULL, _IONBF, 0);
-    xbox_before_exit = log_drain;
-}
-#endif
 
 /* ── WinMain ───────────────────────────────────────────────── */
 
@@ -1084,8 +989,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                 freopen("NUL", "w", stdout);
             }
         }
-        log_async_start();
 #endif
+        if (log_pump_start()) {
+            extern void (*volatile xbox_before_exit)(void);
+            xbox_before_exit = log_drain;
+        }
         log_msg(LOG_INFO, "SYSTEM", "SSX 3 recomp started, log level %s, game folder %s",
                 log_level_name(log_level()), s_game_dir);
     }
