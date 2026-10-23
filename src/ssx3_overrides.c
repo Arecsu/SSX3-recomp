@@ -10,6 +10,7 @@
  * `extern uint32_t g_eax` names the TLS template, not the running thread's copy.
  */
 #ifdef _WIN32
+#include "log.h"
 #include <windows.h>
 #else
 #include "platform/win32_compat.h"
@@ -304,7 +305,7 @@ static void list_add(uint32_t self, uint32_t count_off, uint32_t cap, uint32_t o
     } else {
         static unsigned said;
         if (said++ < 4)
-            fprintf(stderr, "[DRAWDIST] %s list full (%u): further objects skipped this frame\n",
+            log_msg(LOG_WARN, "DRAWDIST", "%s list full (%u): further objects skipped this frame",
                     what, cap);
     }
 }
@@ -365,7 +366,7 @@ static int list_full(uint32_t obj, uint32_t count_off, uint32_t cap, const char 
     {
         static unsigned said;
         if (said++ < 8)
-            fprintf(stderr, "[DRAWDIST] %s list full (%u): skipped\n", what, cap);
+            log_msg(LOG_WARN, "DRAWDIST", "%s list full (%u): skipped", what, cap);
     }
     return 1;
 }

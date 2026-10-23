@@ -161,7 +161,8 @@ static const struct { const char *tag; int level; } k_tags[] = {
     {"[CRASH]", LOG_CRITICAL},
     {"[ICALL] Failed", LOG_ERROR}, {"[VKR] upload buffer full", LOG_ERROR},
     {"[VKR] pipeline creation failed", LOG_ERROR},
-    {"[GATHER]", LOG_WARN}, {"[BLOCK-STUCK]", LOG_WARN}, {"[BLOCK-RESCUE]", LOG_WARN},
+    {"[GATHER]", LOG_WARN}, {"[BLOCK-STUCK]", LOG_WARN}, {"[DRAWDIST]", LOG_DEBUG}, {"[BLOCK-RESCUE]", LOG_DEBUG},  /* a lost GPU wake recovered: routine */
+    {"[STATE]", LOG_DEBUG},
     {"[KERNEL]", LOG_TRACE}, {"[CS]", LOG_TRACE}, {"[PATH]", LOG_TRACE}, {"[FILE]", LOG_TRACE},
     {"[HEAP]", LOG_TRACE}, {"[BRIDGE]", LOG_TRACE}, {"[OHCI", LOG_TRACE}, {"[USB", LOG_TRACE},
     {"[DPC]", LOG_TRACE}, {"[D3D] frame size", LOG_TRACE},
