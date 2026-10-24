@@ -65,6 +65,7 @@ set(GAME_SOURCES
     src/log.c
     src/journal.c
     src/mark.c
+    src/perf.c
     src/recomp_manual.c
     src/ssx3_overrides.c
     src/thread_dump.c

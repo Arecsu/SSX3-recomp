@@ -92,6 +92,10 @@ static void event_note(void)
     s_left_id = 0xFFFFFFFFu;
     if (id < 17)
         g_ssx3_events_started++;
+    {
+        extern void ssx3_PerfEvent(const char *name);
+        ssx3_PerfEvent(id < 17 ? k_events[id].name : "free ride");
+    }
     if (again)
         log_msg(LOG_INFO, "PLAY", "event restarted: %s", k_events[id].name);
     else if (id < 17)
@@ -218,8 +222,11 @@ static DWORD WINAPI game_state_thread(LPVOID unused)
                 log_msg(LOG_INFO, "PLAY", "%s", state_words(vt));
             vt_since = now;
             vt_prev = vt;
-            if (last_vt == 0x00299D7Cu)
+            if (last_vt == 0x00299D7Cu) {
+                extern void ssx3_PerfEvent(const char *name);
                 event_left();
+                ssx3_PerfEvent(NULL);     /* this event's frame times */
+            }
             if (vt == 0x00289618u || vt == 0x0028825Cu)   /* back in the menus: not a restart */
                 s_left_id = 0xFFFFFFFFu;
             if (vt == 0x00299D7Cu)        /* in game: which event */
@@ -262,6 +269,12 @@ static DWORD WINAPI game_state_thread(LPVOID unused)
             }
         }
     }
+}
+
+int ssx3_InGameNow(void)
+{
+    uint32_t app = MEM32(APP_PTR_VA), cur;
+    return guest_ok(app) && guest_ok(cur = MEM32(app + 4)) && MEM32(cur) == 0x00299D7Cu;
 }
 
 /* Where the game is, in words, for the player mark (mark.c): the top-level

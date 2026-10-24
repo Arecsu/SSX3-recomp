@@ -2325,6 +2325,10 @@ static void be_flip(const Nv2aTarget *t)
     }
     if (!s_dirty || t->bpp != 4 || t->pitch / 4 < s_w)
         return;
+    {
+        extern void ssx3_PerfFlip(void);
+        ssx3_PerfFlip();                /* [PERF] frame times (src/perf.c) */
+    }
     tf = s_stats ? now_ms() : 0;
     progs_flip();
     scene_flip();
