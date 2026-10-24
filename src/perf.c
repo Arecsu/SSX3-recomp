@@ -148,3 +148,13 @@ void ssx3_PerfFlip(void)
         minute_t = t;
     }
 }
+
+/* the session ends (journal_session_end) in an event: its numbers so far */
+void ssx3_PerfSessionEnd(void)
+{
+    if (s_event_name[0] && s_event.frames) {
+        char what[96];
+        snprintf(what, sizeof what, "%s (until the session ended)", s_event_name);
+        span_say(LOG_INFO, what, &s_event);
+    }
+}

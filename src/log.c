@@ -134,7 +134,9 @@ void log_msg(int level, const char *cat, const char *fmt, ...)
     char line[2048], stamp[40];
     va_list ap;
     int n;
-    if (level < log_level() && !(s_pump && level >= LOG_DEBUG))
+    /* [SESSION] (the build at the start, the summary at the end) is written
+     * at any level: even an "errors only" log says what ran and how it ended */
+    if (level < log_level() && !(s_pump && level >= LOG_DEBUG) && !(cat && !strcmp(cat, "SESSION")))
         return;
     log_stamp(stamp, sizeof stamp);
     n = snprintf(line, sizeof line, "%s%-5s [%s] ", stamp, log_level_name(level), cat ? cat : "-");
@@ -387,7 +389,7 @@ static void pump_line(const char *l, size_t n)
         snprintf(stamp + sl, sizeof stamp - sl, "%-5s ", log_level_name(lv));
         sl = strlen(stamp);
     }
-    if (lv < log_level()) {
+    if (lv < log_level() && !(stamped && n > 50 && memmem_s(l + 20, 30, "[SESSION]"))) {
         if (!(copy = (char *)malloc(sl + n + 1)))
             return;
         memcpy(copy, stamp, sl);

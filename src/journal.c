@@ -174,14 +174,43 @@ static int env_on(const char *name, int dflt)
     return !(v[0] == '0' && !v[1]);
 }
 
+/* RECOMP_RES / RECOMP_ASPECT / RECOMP_WIDESCREEN in words (main.c sets the
+ * defaults before the header is written) */
+static const char *res_words(char *out, size_t n)
+{
+    const char *r = env_or("RECOMP_RES", "");
+    double v = atof(r);
+    if (!*r)
+        snprintf(out, n, "the monitor's height");
+    else if (v >= 240)
+        snprintf(out, n, "%.0fp", v);
+    else if (v == 1)
+        snprintf(out, n, "native 480p");
+    else
+        snprintf(out, n, "%sx 480p", r);
+    return out;
+}
+
+static const char *aspect_words(void)
+{
+    const char *a = getenv("RECOMP_ASPECT"), *w = env_or("RECOMP_WIDESCREEN", "auto");
+    if (a && *a)
+        return a;
+    if (w[0] == '0' && !w[1])
+        return "4:3 (widescreen off)";
+    if (w[0] == '1' && !w[1])
+        return "16:9";
+    return !strcmp(w, "auto") ? "the window's" : w;
+}
+
 static void settings_lines(void)
 {
-    char buf[1024];
+    char buf[1024], res[32];
     size_t n = 0;
     const char *hd = getenv("RECOMP_HDTEX");
 #define ADD(...) do { n += (size_t)snprintf(buf + n, n < sizeof buf ? sizeof buf - n : 0, __VA_ARGS__); } while (0)
     ADD("resolution %s, aspect %s, MSAA %sx, anisotropic %sx, draw distance %sx, shadows %sx,",
-        env_or("RECOMP_RES", "auto"), env_or("RECOMP_ASPECT", env_or("RECOMP_WIDESCREEN", "auto")),
+        res_words(res, sizeof res), aspect_words(),
         env_or("RECOMP_MSAA", "4"), env_or("RECOMP_ANISO", "16"), env_or("RECOMP_DRAW_DIST", "1.5"),
         env_or("RECOMP_SHADOW_RES", "4"));
     ADD(" audio %s channels, %s, HD textures %s, HUD at the edges %s",
@@ -314,8 +343,9 @@ static void file_hook(const char *path, int write, NTSTATUS_T status)
 void journal_session_header(const uint8_t *xbe, size_t xbe_size, const char *game_dir)
 {
     xbox_file_hook = file_hook;
-    log_msg(LOG_INFO, "SYSTEM", "SSX 3 recomp, build %s%s%s (compiled %s %s)", SSX3_BUILD_COMMIT,
-            SSX3_BUILD_DATE[0] ? " of " : "", SSX3_BUILD_DATE, __DATE__, __TIME__);
+    log_msg(LOG_INFO, "SESSION", "SSX 3 recomp, build %s%s%s (compiled %s %s), log level %s", SSX3_BUILD_COMMIT,
+            SSX3_BUILD_DATE[0] ? " of " : "", SSX3_BUILD_DATE, __DATE__, __TIME__,
+            log_level_name(log_level()));
     system_line();
     xbe_line(xbe, xbe_size, game_dir);
     settings_lines();
@@ -329,6 +359,10 @@ void journal_session_end(void)
     const char *how;
     double t = log_uptime();
     int s = (int)t;
+    {
+        extern void ssx3_PerfSessionEnd(void);    /* perf.c */
+        ssx3_PerfSessionEnd();
+    }
     log_session_counts(&warn, &err, &crit, &how);
     log_msg(LOG_INFO, "SESSION", "session ended: %s, after %d:%02d:%02d; %d event%s started, %d with a result",
             how, s / 3600, s / 60 % 60, s % 60, g_ssx3_events_started,
