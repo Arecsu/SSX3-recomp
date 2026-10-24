@@ -48,10 +48,37 @@ int log_parse_level(const char *s, int dflt)
     return dflt;
 }
 
+/* a RECOMP_*_TRACE / *_STATS / *_DIAG diagnostic switched on: its lines are
+ * DEBUG, so without RECOMP_LOG_LEVEL the default becomes debug (asking for
+ * a trace and not seeing it helps no one) */
+static int name_has(const char *var, const char *eq, const char *word)
+{
+    const char *p = strstr(var, word);
+    return p && p < eq;
+}
+
+static int trace_asked(void)
+{
+#ifdef _WIN32
+    char **e = _environ;
+#else
+    extern char **environ;
+    char **e = environ;
+#endif
+    for (; e && *e; e++) {
+        const char *eq = strchr(*e, '=');
+        if (strncmp(*e, "RECOMP_", 7) || !eq || !eq[1] || (eq[1] == '0' && !eq[2]))
+            continue;
+        if (name_has(*e, eq, "_TRACE") || name_has(*e, eq, "_STATS") || name_has(*e, eq, "_DIAG"))
+            return 1;
+    }
+    return 0;
+}
+
 int log_level(void)
 {
     if (s_level < 0)
-        s_level = log_parse_level(getenv("RECOMP_LOG_LEVEL"), LOG_INFO);
+        s_level = log_parse_level(getenv("RECOMP_LOG_LEVEL"), trace_asked() ? LOG_DEBUG : LOG_INFO);
     return s_level;
 }
 
@@ -158,6 +185,18 @@ static volatile int s_pump_waiting, s_pump_reads;
 #endif
 
 static const struct { const char *tag; int level; } k_tags[] = {
+    /* C9: the always-on diagnostics; opt-in traces stay DEBUG (the default
+     * for any [TAG] line) */
+    {"[NV2A-WARN]", LOG_WARN}, {"[APU-WARN]", LOG_WARN}, {"[ABI]", LOG_WARN},
+    {"[ALLOC] FAILED", LOG_ERROR}, {"[CONTIG] arena exhausted", LOG_ERROR},
+    {"[IRQLBUG]", LOG_WARN}, {"[GPU] REFUSING", LOG_WARN},
+    {"[BOOT] hardware TSO unavailable", LOG_WARN}, {"[BOOT] flat dispatch unavailable", LOG_WARN},
+    {"[BOOT] widescreen", LOG_INFO}, {"[BOOT]", LOG_DEBUG},
+    {"[VIDEO] File not found", LOG_ERROR}, {"[VIDEO] could not open", LOG_ERROR},
+    {"[VIDEO] Failed", LOG_ERROR}, {"[VIDEO] No video stream", LOG_ERROR},
+    {"[VIDEO] CreateDevice failed", LOG_ERROR}, {"[VIDEO] Direct3DCreate8 failed", LOG_ERROR},
+    {"[VIDEO] MFStartup failed", LOG_ERROR}, {"[VIDEO] window creation failed", LOG_ERROR},
+    {"[RECORD]", LOG_INFO}, {"[DEBUGMENU]", LOG_INFO},
     {"[CRASH]", LOG_CRITICAL}, {"[EXIT]", LOG_INFO}, {"[FBWIN] window closed", LOG_INFO},
     {"[FBWIN] fullscreen", LOG_INFO}, {"[FBWIN] focus", LOG_INFO},
     {"[VKR] internal resolution", LOG_INFO},
