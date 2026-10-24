@@ -159,6 +159,8 @@ static volatile int s_pump_waiting, s_pump_reads;
 
 static const struct { const char *tag; int level; } k_tags[] = {
     {"[CRASH]", LOG_CRITICAL}, {"[EXIT]", LOG_INFO}, {"[FBWIN] window closed", LOG_INFO},
+    {"[FBWIN] fullscreen", LOG_INFO}, {"[FBWIN] focus", LOG_INFO},
+    {"[VKR] internal resolution", LOG_INFO},
     {"[VKR] device:", LOG_INFO}, {"[VKR] MSAA", LOG_INFO}, {"[VKR] window", LOG_INFO},
     {"[ICALL] Failed", LOG_ERROR}, {"[VKR] upload buffer full", LOG_ERROR},
     {"[VKR] pipeline creation failed", LOG_ERROR},
