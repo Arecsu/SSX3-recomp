@@ -17,6 +17,9 @@ void journal_session_header(const uint8_t *xbe, size_t xbe_size, const char *gam
 /* B10: how the session ended, how long it ran, events played, warnings
  * and errors seen; from the exits (xbox_before_exit) and the crash report. */
 void journal_session_end(void);
+/* C8: for a crash report -- where the game was and the last [PLAY] lines,
+ * as indented lines of the report. */
+void journal_crash_context(void);
 
 #ifdef __cplusplus
 }

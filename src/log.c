@@ -277,6 +277,34 @@ static void note_exit(const char *l, size_t n)
         snprintf(s_exit_how, sizeof s_exit_how, "crash");
 }
 
+/* the last [PLAY] lines (what the player did), repeated in a crash report */
+#define RECENT_PLAY 8
+static char s_recent[RECENT_PLAY][200];
+static unsigned s_recent_n;
+
+static void note_play(const char *l, size_t n)
+{
+    const char *p = memchr(l, '[', n < 40 ? n : 40);
+    size_t k;
+    if (!p || n - (size_t)(p - l) < 7 || memcmp(p, "[PLAY]", 6))
+        return;
+    p += 7;
+    k = n - (size_t)(p - l);
+    if (k >= sizeof s_recent[0])
+        k = sizeof s_recent[0] - 1;
+    memcpy(s_recent[s_recent_n % RECENT_PLAY], l, 13);      /* the clock time */
+    memcpy(s_recent[s_recent_n % RECENT_PLAY] + 13, p, k);
+    s_recent[s_recent_n % RECENT_PLAY][13 + k < sizeof s_recent[0] ? 13 + k : sizeof s_recent[0] - 1] = 0;
+    s_recent_n++;
+}
+
+void log_recent_play(void)
+{
+    unsigned i = s_recent_n > RECENT_PLAY ? s_recent_n - RECENT_PLAY : 0;
+    for (; i < s_recent_n; i++)
+        fprintf(stderr, "  recent: %s\n", s_recent[i % RECENT_PLAY]);
+}
+
 void log_session_counts(unsigned *warn, unsigned *err, unsigned *crit, const char **how)
 {
     *warn = s_counts[LOG_WARN];
@@ -311,6 +339,8 @@ static void pump_line(const char *l, size_t n)
         s_counts[lv]++;
     if (!stamped && lv >= LOG_INFO)
         note_exit(l, n);
+    if (stamped && lv == LOG_INFO && n > 40)
+        note_play(l, n);
     s_prev_level = lv;
     if (!stamped) {
         log_stamp(stamp, sizeof stamp);

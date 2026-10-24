@@ -37,6 +37,8 @@ void log_drain(void);
 /* lines seen at WARN / ERROR / CRITICAL and how the session ended (from the
  * [EXIT] / window closed / [CRASH] lines), for the summary */
 void log_session_counts(unsigned *warn, unsigned *err, unsigned *crit, const char **how);
+/* the last INFO [PLAY] lines, written as indented lines (a crash report) */
+void log_recent_play(void);
 
 #ifdef __cplusplus
 }

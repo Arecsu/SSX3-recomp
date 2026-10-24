@@ -507,18 +507,7 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
         fprintf(stderr, "  Xbox VA of fault: 0x%08X\n",
             (uint32_t)(fault_addr - (uintptr_t)g_xbox_mem_offset));
         print_guest_context((void *)ep->ContextRecord->Rip);
-
-        /*
-         * TODO: Add game-specific diagnostics here. Examples:
-         *
-         * Dump CRT heap handle:
-         *   uint32_t heap = *(uint32_t *)((uint8_t *)g_xbox_mem_offset + HEAP_HANDLE_VA);
-         *   fprintf(stderr, "  CRT heap handle: 0x%08X\n", heap);
-         *
-         * Dump game state:
-         *   uint32_t state = *(uint32_t *)((uint8_t *)g_xbox_mem_offset + GAME_STATE_VA);
-         *   fprintf(stderr, "  Game state: %u\n", state);
-         */
+        journal_crash_context();        /* where the game was, what the player did */
 
         /* Print native stack return addresses for debugging (the exe's own,
          * wherever ASLR put it -- a fixed 0x140000000 range found none). */
@@ -735,8 +724,10 @@ static void segv_handler(int sig, siginfo_t *si, void *uc_)
     fprintf(stderr, "  Xbox VA of fault: 0x%08X\n",
             (uint32_t)(fault - (uintptr_t)g_xbox_mem_offset));
     print_guest_stack();
+    journal_crash_context();
     n = backtrace(bt, 32);
     backtrace_symbols_fd(bt, n, 2);
+    session_end();
     _exit(139);
 }
 

@@ -100,7 +100,7 @@ detail that led up to it.
       distance trimming (DEBUG; a full render list WARN).
 - [x] **C7** Loading: world files loaded and load time per event; missing
       or unreadable game files as ERROR with the path.
-- [ ] **C8** Crash report: the CRITICAL block (fault, guest and native
+- [x] **C8** Crash report: the CRITICAL block (fault, guest and native
       stacks, minidump path) plus the current screen/event, the last
       `[PLAY]` lines and the flight recorder.
 - [ ] **C9** Existing diagnostics graded: `[GATHER]`, `[DRAWDIST]`,
@@ -139,3 +139,4 @@ detail that led up to it.
 - 2026-10-24: C5 -- toolkit audio: "[XA2] output device: 2 channels at 48000 Hz (speaker mask 0x3)" after the XAudio2 init line (both INFO); without RECOMP_APU_LEVEL, "[XA2] audio output: N underruns, M dropped buffers in the last 10 s" every 10 s when there were any (WARN); XAudio2/SDL/waveOut failures ERROR, falling back to waveOut WARN. Checked: one unmuted start (stereo device).
 - 2026-10-24: C6 -- vkr.c: a failed Vulkan call (CK, and now the per-frame end/submit/fence wait, which returned silently) logs ERROR with the result in words, CRITICAL for VK_ERROR_DEVICE_LOST ("GPU driver reset or crashed"); per-frame failures the first time and every 600th. Init/shader/memory failures ERROR or CRITICAL, missing BC7 / depth-stencil / pipeline cache full WARN by tag. HD textures: "507 replacement textures mapped" INFO, "no HD texture pack at ...: the game's own textures" INFO, unreadable or wrong-format files WARN, loads DEBUG. Draw-distance trimming was graded in A3. vkr_selftest links log.c. Checked: a start with the pack (507 mapped).
 - 2026-10-24: C7 -- journal.c's file hook: "loading world file BAM.big" (a data\worlds\*.big other than the last one), a disc file (D:\data\... / \Device\CdRom0\...) that does not open for reading: ERROR "game file missing or unreadable: data\... (status)", once per path; other failed opens DEBUG (a race cycle has exactly one, t:\$u\contentmeta.xbx, the game probing). game_state.c times entering an event (or loading, which the 100 ms sampler sees when it misses the short first state) to its briefing screen: "event loaded in 2.1 s". Free ride has no briefing, so no load time.
+- 2026-10-24: C8 -- the crash report (Windows VEH and POSIX signal handler) now has "while: in game, Peak 1 Race Snow Jam" (state, event, screen) and the last 8 INFO [PLAY] lines ("recent: 02:37:48.914 screen: race briefing", ...) as indented lines of the CRITICAL block (log.c keeps them as the pump passes them); the flight recorder before it and the minidump path were there already, the session summary after it (B10; the POSIX handler now writes it too). Checked: RECOMP_TEST_CRASH in a race.

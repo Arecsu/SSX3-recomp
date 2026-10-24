@@ -337,3 +337,16 @@ void journal_session_end(void)
             "this log has %u warning%s, %u error%s, %u critical", warn, warn == 1 ? "" : "s", err,
             err == 1 ? "" : "s", crit);
 }
+
+void journal_crash_context(void)
+{
+    extern void ssx3_WhereNow(char *out, size_t n);       /* game_state.c */
+    extern const char *ssx3_ScreenNow(void);              /* ssx3_overrides.c */
+    char where[128];
+    const char *scr = ssx3_ScreenNow();
+    ssx3_WhereNow(where, sizeof where);
+    fprintf(stderr, "  while: %s%s%s\n", where, strcmp(scr, "in game") ? "; " : "",
+            strcmp(scr, "in game") ? scr : "");
+    log_recent_play();
+    fflush(stderr);
+}
