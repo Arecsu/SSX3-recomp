@@ -69,7 +69,7 @@ detail that led up to it.
 - [x] **B5** Event start: peak, kind (Race, Slopestyle, Big Air, Super
       Pipe, ...), course name, rider, opponents (needs finding where the
       game keeps the selected event; fall back to the world file loaded).
-- [ ] **B6** Event end: finishing place / score / medal, time, restarted
+- [x] **B6** Event end: finishing place / score / medal, time, restarted
       or quit (pause menu -> Restart/Quit).
 - [x] **B7** Saves and loads (`[SAVE]`): game saved / loaded / failed,
       slot and profile name, from UDATA file activity.
@@ -129,3 +129,4 @@ detail that led up to it.
 - 2026-10-24: B5 -- game_state.c: on entering in game, "event: Peak N, <kind>, <course>" from the event number at 0x346440 (17 events: 5 races, 3 slopestyle, 3 big air, 3 super pipe, 3 peak runs); 17 = "free ride (no event)". Rider and opponents not logged yet (where the game keeps them is not found).
 - 2026-10-24: B7 -- toolkit hook xbox_file_hook (kernel_file.c, every NtCreateFile with its access and status); journal.c logs Data.ssx writes "game saved", reads "save data read", failed writes WARN. The game opens the file relative to the save folder handle, so the path is just the name; it also reads the save just before overwriting it (read + saved = a save). Checked: lodge -> Save Game -> overwrite Yes.
 - 2026-10-24: B8 -- player 1's cash (0x3474B4 + (slot*10 + rider) * 0xF88, profile record [0x346400]*32 + 0x345948) checked after each frontend update: "spent 250 (money 200000 -> 199750, on Buy Attributes)"; the money key: "money key: +200000, now 200000". Screens named on the way: Buy Attributes, dialog, name keyboard, message box; the title only by its vtable (id 0 is reused by dialogs).
+- 2026-10-24: B6 -- when the event results screen comes up, player 1's result as the screen's setup (sub_000A4620) reads it: "event result: place 6 of 6, time 4:00.17" (race; time in 1/60 s), "place N of 6, score S, gold medal" (freestyle), won/lost for the two-rider challenges, "did not finish", race rounds 1-2 of 3, platinum. Leaving an event without results: "left Snow Jam without a result"; the pause menu's Quit passes a state of its own (0029AD64, "quitting the event"); the same event entered again without the menus in between: "event restarted". Checked: Super Pipe and Snow Jam runs (score/time), cycle_test 2 quits. Restart itself not driven by a script yet. Screen 00298448 = "race end".

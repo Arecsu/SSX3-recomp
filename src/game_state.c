@@ -46,6 +46,7 @@ static const struct { uint32_t vt; const char *name; } k_states[] = {
     { 0x00299D7Cu, "ingame" },       /* briefing, race, results, replay */
     { 0x0028825Cu, "debugmenu" },    /* EA's quick-start menu (RECOMP_DEBUG_MENU) */
     { 0x0029B0F8u, "to_frontend" },  /* leaving an event for the menus / a lodge */
+    { 0x0029AD64u, "event_exit" },   /* after Quit -> Yes in the pause menu */
     { 0, NULL }
 };
 
@@ -66,10 +67,30 @@ static const struct { int peak; const char *kind, *name; } k_events[17] = {
     {1, "Peak run", "Happiness"}, {2, "Peak run", "Ruthless"}, {3, "Peak run", "The Throne"},
 };
 
+/* set by the event results screen (ssx3_overrides.c event_result_note) */
+volatile int g_ssx3_event_result;
+static uint32_t s_left_id = 0xFFFFFFFFu;   /* an event left without a result */
+
+/* leaving in game: an event without a result was quit or restarted */
+static void event_left(void)
+{
+    uint32_t id = MEM32(EVENT_ID_VA);
+    s_left_id = 0xFFFFFFFFu;
+    if (id < 17 && !g_ssx3_event_result) {
+        log_msg(LOG_INFO, "PLAY", "left %s without a result", k_events[id].name);
+        s_left_id = id;
+    }
+}
+
 static void event_note(void)
 {
     uint32_t id = MEM32(EVENT_ID_VA);
-    if (id < 17)
+    int again = id == s_left_id;
+    g_ssx3_event_result = 0;
+    s_left_id = 0xFFFFFFFFu;
+    if (again)
+        log_msg(LOG_INFO, "PLAY", "event restarted: %s", k_events[id].name);
+    else if (id < 17)
         log_msg(LOG_INFO, "PLAY", "event: Peak %d, %s, %s", k_events[id].peak, k_events[id].kind,
                 k_events[id].name);
     else if (id == 17)
@@ -90,6 +111,7 @@ static const char *state_words(uint32_t vt)
     case 0x00299D7Cu: return "in game";
     case 0x0028825Cu: return "debug quick-start menu";
     case 0x0029B0F8u: return "leaving the event";
+    case 0x0029AD64u: return "quitting the event";
     case 0:           return "nothing yet";
     default:          return "an unknown state";
     }
@@ -192,6 +214,10 @@ static DWORD WINAPI game_state_thread(LPVOID unused)
                 log_msg(LOG_INFO, "PLAY", "%s", state_words(vt));
             vt_since = now;
             vt_prev = vt;
+            if (last_vt == 0x00299D7Cu)
+                event_left();
+            if (vt == 0x00289618u || vt == 0x0028825Cu)   /* back in the menus: not a restart */
+                s_left_id = 0xFFFFFFFFu;
             if (vt == 0x00299D7Cu)        /* in game: which event */
                 event_note();
         }

@@ -1131,6 +1131,7 @@ static const char *screen_name(uint32_t vt, uint32_t id, int in_menus)
     case 0x002938C0u: return "lodge";
     case 0x002984B0u: return "run result";
     case 0x00298378u: return "event results";
+    case 0x00298448u: return "race end";
     case 0x0028B428u: return "checking hard disk";
     default: break;
     }
@@ -1212,6 +1213,62 @@ static const char *screen_name_now(void)
     return buf;
 }
 
+/* The event results screen (00298378) is up: player 1's result, as its
+ * setup sub_000A4620 reads it -- kind byte 0x367F90 (0 race; 5 and 6 two-
+ * rider challenges), players 0x367F91, race round [[[0x369534]+0xC0]],
+ * per rider slot: place 0x369458 (0 = first), score 0x369408 (races and
+ * kind 5: time in 1/60 s), DNF 0x3693FC; platinum 0x36860B. Player 1's
+ * slot is the first whose profile ([0x346400 + i*4]) has a controller
+ * (0x367FDC + profile*32 > -1), as sub_00051B80(0) finds it. */
+extern volatile int g_ssx3_event_result;   /* game_state.c */
+
+static void event_result_note(void)
+{
+    int kind = (int8_t)MEM8(0x00367F90u), players = MEM8(0x00367F91u), slot = -1, i, n, place,
+        score, round = 0;
+    uint32_t mgr = MEM32(0x00369534u), p;
+    char what[48], extra[48];
+    for (i = 0; i < 6 && slot < 0; i++)
+        if ((int32_t)MEM32(0x00367FDCu + (MEM32(0x00346400u + i * 4) & 0x1F) * 32) > -1)
+            slot = i;
+    if (slot < 0) {
+        log_msg(LOG_DEBUG, "PLAY", "event results: player 1 not found");
+        return;
+    }
+    if (mgr >= 0x10000u && (p = MEM32(mgr + 0xC0)) >= 0x10000u)
+        round = (int)MEM32(p);
+    if (kind == 5 || kind == 6)
+        n = 2;
+    else if (kind == 0 && mgr >= 0x10000u && (p = MEM32(mgr + 0x74)) >= 0x10000u
+             && (p = MEM32(p + 0xC)) >= 0x10000u)
+        n = (int)MEM32(p + 0x78);
+    else
+        n = players == 2 ? 2 : 6;
+    g_ssx3_event_result = 1;
+    place = (int)MEM32(0x00369458u + slot * 4);
+    score = (int)MEM32(0x00369408u + slot * 4);
+    log_msg(LOG_DEBUG, "PLAY", "event results: kind %d players %d round %d slot %d place %d score %d "
+            "riders %d dnf %d platinum %d", kind, players, round, slot, place, score, n,
+            MEM8(0x003693FCu + slot), MEM8(0x0036860Bu));
+    if (kind == 0 || kind == 5)
+        snprintf(what, sizeof what, "time %d:%05.2f", score / 3600, (score % 3600) / 60.0);
+    else
+        snprintf(what, sizeof what, "score %d", score);
+    extra[0] = 0;
+    if (kind == 0 && round >= 1 && round < 3)
+        snprintf(extra, sizeof extra, ", round %d of 3", round);
+    else if (kind != 5 && kind != 6 && MEM8(0x0036860Bu))
+        snprintf(extra, sizeof extra, ", platinum medal");
+    else if (kind != 5 && kind != 6 && place >= 0 && place < 3)
+        snprintf(extra, sizeof extra, ", %s medal", place == 0 ? "gold" : place == 1 ? "silver" : "bronze");
+    if (MEM8(0x003693FCu + slot))
+        log_msg(LOG_INFO, "PLAY", "event result: did not finish%s", extra);
+    else if (kind == 5 || kind == 6)
+        log_msg(LOG_INFO, "PLAY", "event result: %s, %s", place == 0 ? "won" : "lost", what);
+    else
+        log_msg(LOG_INFO, "PLAY", "event result: place %d of %d, %s%s", place + 1, n, what, extra);
+}
+
 static void screen_note(uint32_t scr)
 {
     if (scr && ((MEM16(scr + 0x1C) >> 8) & 0x3F) == 5 && MEM32(scr) != SSX3_HUD_SCREEN_VT) {
@@ -1229,6 +1286,8 @@ static void screen_note(uint32_t scr)
                 log_msg(LOG_INFO, "PLAY", "screen %08X:%d (not named yet)", vt, (int)id);
             else
                 log_msg(LOG_INFO, "PLAY", "in-game screen %08X (not named yet)", vt);
+            if (vt == 0x00298378u)
+                event_result_note();
             if (ui_trace_on()) {
                 fprintf(stderr, "[UI] active screen %08X vt %08X id %d\n", scr, vt, (int)id);
                 fflush(stderr);
