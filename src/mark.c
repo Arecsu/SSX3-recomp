@@ -7,6 +7,10 @@
  * lines below the log level) just before it -- and saves what the window
  * shows next to the log. A host thread polls every 50 ms, so a mark works
  * while the game itself hangs.
+ *
+ * The same thread logs the host's input (C4), [INPUT]: controllers as they
+ * come and go (the ones plugged in at start first), a battery running low,
+ * and the first key pressed in the window (keyboard in use).
  */
 #include "log.h"
 #ifdef _WIN32
@@ -27,6 +31,7 @@
 #endif
 
 extern int xbox_FramebufferKeyPresses(int vk);
+extern int xbox_FramebufferKeyDown(int vk);
 extern void xbox_FramebufferSnapshot(const char *path);
 extern const char *ssx3_LogsDir(void);                /* main.c */
 extern void ssx3_WhereNow(char *out, size_t n);       /* game_state.c */
@@ -59,29 +64,95 @@ static void mark(const char *how)
             ssx3_ScreenNow(), path);
 }
 
+#ifdef _WIN32
+/* controller i's battery, logged when it changes to low or empty (wired
+ * pads report none) */
+static void battery_check(DWORD i, int *last)
+{
+    XINPUT_BATTERY_INFORMATION b;
+    int lv;
+    if (XInputGetBatteryInformation(i, BATTERY_DEVTYPE_GAMEPAD, &b) != ERROR_SUCCESS
+            || b.BatteryType == BATTERY_TYPE_WIRED || b.BatteryType == BATTERY_TYPE_DISCONNECTED)
+        return;
+    lv = b.BatteryLevel;
+    if (lv != *last && *last >= 0 && lv <= BATTERY_LEVEL_LOW)
+        log_msg(LOG_WARN, "INPUT", "controller %lu: battery %s", (unsigned long)i + 1,
+                lv == BATTERY_LEVEL_EMPTY ? "empty" : "low");
+    *last = lv;
+}
+
+static const char *battery_words(DWORD i)
+{
+    XINPUT_BATTERY_INFORMATION b;
+    if (XInputGetBatteryInformation(i, BATTERY_DEVTYPE_GAMEPAD, &b) != ERROR_SUCCESS)
+        return "";
+    if (b.BatteryType == BATTERY_TYPE_WIRED)
+        return ", wired";
+    switch (b.BatteryLevel) {
+    case BATTERY_LEVEL_EMPTY:  return ", battery empty";
+    case BATTERY_LEVEL_LOW:    return ", battery low";
+    case BATTERY_LEVEL_MEDIUM: return ", battery medium";
+    default:                   return ", battery full";
+    }
+}
+#endif
+
 static DWORD WINAPI mark_thread(LPVOID unused)
 {
-    int pads_held = 0;
+    int pads_held = 0, keyboard_seen = 0;
+    unsigned tick = 0;
 #ifdef _WIN32
-    int pads = !getenv("RECOMP_NO_HOST_PAD");
+    const char *nh = getenv("RECOMP_NO_HOST_PAD");
+    int pads = !(nh && *nh && *nh != '0'), connected[4] = {-1, -1, -1, -1},
+        battery[4] = {-1, -1, -1, -1};
+    if (!pads)
+        log_msg(LOG_INFO, "INPUT", "the machine's controllers are ignored (RECOMP_NO_HOST_PAD)");
 #endif
     (void)unused;
     for (;;) {
         int k = xbox_FramebufferKeyPresses(VK_F12), held = 0;
         while (k-- > 0)
             mark("F12");
+        if (!keyboard_seen) {
+            int vk;
+            for (vk = 8; vk < 256 && !xbox_FramebufferKeyDown(vk); vk++)
+                ;
+            if (vk < 256) {
+                keyboard_seen = 1;
+                log_msg(LOG_INFO, "INPUT", "keyboard in use (first key 0x%02X)", vk);
+            }
+        }
 #ifdef _WIN32
         if (pads) {
             DWORD i;
             for (i = 0; i < 4; i++) {
                 XINPUT_STATE st;
-                if (XInputGetState(i, &st) == ERROR_SUCCESS
-                        && (st.Gamepad.wButtons & (XINPUT_GAMEPAD_LEFT_THUMB | XINPUT_GAMEPAD_RIGHT_THUMB))
-                               == (XINPUT_GAMEPAD_LEFT_THUMB | XINPUT_GAMEPAD_RIGHT_THUMB))
+                int on = XInputGetState(i, &st) == ERROR_SUCCESS;
+                if (on != connected[i]) {
+                    if (on) {
+                        XINPUT_CAPABILITIES caps;
+                        int sub = XInputGetCapabilities(i, 0, &caps) == ERROR_SUCCESS ? caps.SubType : -1;
+                        log_msg(LOG_INFO, "INPUT", "controller %lu connected%s (%s%s)", (unsigned long)i + 1,
+                                connected[i] < 0 ? " at start" : "",
+                                sub == XINPUT_DEVSUBTYPE_GAMEPAD ? "gamepad" : sub < 0 ? "unknown type"
+                                    : "not a gamepad", battery_words(i));
+                    } else if (connected[i] > 0) {
+                        log_msg(LOG_WARN, "INPUT", "controller %lu disconnected", (unsigned long)i + 1);
+                    }
+                    connected[i] = on;
+                    battery[i] = -1;
+                }
+                if (on && tick % 200 == 0)        /* every 10 s */
+                    battery_check(i, &battery[i]);
+                if (on && (st.Gamepad.wButtons & (XINPUT_GAMEPAD_LEFT_THUMB | XINPUT_GAMEPAD_RIGHT_THUMB))
+                              == (XINPUT_GAMEPAD_LEFT_THUMB | XINPUT_GAMEPAD_RIGHT_THUMB))
                     held = 1;
             }
+            if (tick == 0 && !connected[0] && !connected[1] && !connected[2] && !connected[3])
+                log_msg(LOG_INFO, "INPUT", "no controller connected at start");
         }
 #endif
+        tick++;
         if (held && !pads_held)
             mark("both sticks clicked");
         pads_held = held;
