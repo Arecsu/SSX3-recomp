@@ -134,13 +134,22 @@ The launcher's choices are these environment variables:
 | 1 3 | Left / right trigger | Arrows | D-pad |
 | Numpad 8/4/2/6 | Left stick | I J K L | Right stick |
 | F11 / Alt+Enter | Fullscreen | F3 | FPS counter |
+| F12 | Mark a problem in the log | | |
 
 F11 and F3 work on Windows only.
 
 **Controller.** An Xbox/XInput controller works without setup, rumble
-included; two controllers enable Multi Play. Each run's log is kept in
-`logs\`. A crash also leaves a minidump there (`crash_<time>.dmp`, open it
-in Visual Studio next to `build\ssx3_recomp.pdb`).
+included; two controllers enable Multi Play.
+
+**Logs.** Each run's log is kept in `logs\` (the last 20; `logs\latest.txt`
+names the newest). At the default level it reads as the session's story --
+settings, menus, events with results and frame rate, saves, money spent,
+warnings, how it ended; the launcher's "Log detail" (or
+`RECOMP_LOG_LEVEL=trace|debug|info|warn|error|critical`) turns detail up or
+down. F12, or both thumbsticks clicked, writes a marked line plus a
+snapshot (`mark_<time>.bmp`). A crash also leaves a minidump there
+(`crash_<time>.dmp`, open it in Visual Studio next to
+`build\ssx3_recomp.pdb`). Details: [docs/LOGGING.md](docs/LOGGING.md).
 
 On Linux, any controller SDL recognises works: wired over USB, or over
 Bluetooth. The Xbox Wireless Adapter needs the

@@ -14,22 +14,37 @@ lands it.
 (default `info`); the launcher's "Log detail" dropdown sets it.
 
 **Line format**: `HH:MM:SS.mmm +SSSS.s LEVEL [CAT] message` -- wall clock,
-seconds since start, level, category (`PLAY`, `SETTINGS`, `SYSTEM`, `GFX`,
-`AUDIO`, `INPUT`, `SAVE`, `PERF`, `CRASH`, or a diagnostic's own tag).
+seconds since start, level, category. The session story uses `SYSTEM`,
+`SETTINGS`, `PLAY`, `SAVE`, `PERF`, `INPUT`, `MARK` and `SESSION`; the
+rest is a diagnostic's own tag (`VKR`, `HDTEX`, `FILE`, `XA2`, ...).
 
 **Two sources, one filter.** New code logs through `log_msg(level, cat,
 fmt, ...)` (src/log.c). The ~840 existing `fprintf(stderr, "[TAG] ...")`
-lines (game code and toolkit) stay as they are: the log pump (main.c,
-which already moves stderr to the file) grades each untagged line by its
-`[TAG]` from a table (`[KERNEL]`, `[CS]`, `[PATH]`, `[FILE]` -> TRACE;
-`[STATE]`, `[VKR] pipeline`, `[HUD-FLICKER]` -> DEBUG; `[GATHER]`,
-`[DRAWDIST] ... full` -> WARN; `[CRASH]` -> CRITICAL; unknown -> DEBUG)
-and drops what is below the level.
+lines (game code and toolkit) stay as they are: the log pump (src/log.c,
+started by main.c once stderr is the session file) grades each untagged
+line by its `[TAG]` prefix from a table (`[KERNEL]`, `[CS]`, `[PATH]`,
+`[FILE]` -> TRACE; `[STATE]`, `[DRAWDIST]` and any other tag -> DEBUG;
+`[GATHER]`, `[NV2A-WARN]` -> WARN; failures -> ERROR; `[CRASH]` ->
+CRITICAL), indented continuation lines take the level of the line above,
+and drops what is below the level. The same message again is written once
+with "(repeated N more times)". Switching on a `RECOMP_*_TRACE` /
+`*_STATS` / `*_DIAG` diagnostic without a level makes `debug` the default.
 
 **Flight recorder.** Lines below the level are not lost: the pump keeps the
-last ~2000 in memory and writes them out (marked as such) when an `ERROR`
-or `CRITICAL` line arrives, so a crash at `info` still comes with the
-detail that led up to it.
+last 2000 in memory and writes them out ahead of an `ERROR` or `CRITICAL`
+line, or a player mark, so a crash at `info` still comes with the detail
+that led up to it.
+
+**Where things are.** The session header and saves: src/journal.c (the
+toolkit's `xbox_file_hook` reports every file open). States, events,
+results, quits, load times: src/game_state.c. Screens, game mode, money,
+stations: src/ssx3_overrides.c. The mark key and the host's controllers:
+src/mark.c. Frame rate: src/perf.c (fed by the renderer's flip). The end:
+`session_end` in main.c (the toolkit's exits and the crash handler) writes
+the summary; the crash report adds where the game was and the last
+`[PLAY]` lines. Files: `logs\` beside the game folder, the newest 20
+sessions, 10 crash dumps and 30 marks kept, `latest.txt` names the current
+log; the launcher's "Open logs" selects it.
 
 ## Work items
 
@@ -108,7 +123,7 @@ detail that led up to it.
       `[FPS30]`, `[HDTEX]`, `[VKR]` ... each with a sensible level.
 
 ### D. Finish
-- [ ] **D1** docs: this file's design section kept current; the player
+- [x] **D1** docs: this file's design section kept current; the player
       README explains the "Log detail" option, the mark key and which
       file to send.
 - [ ] **D2** Test: scripted runs at each level (a race, a freestyle, the
@@ -141,3 +156,4 @@ detail that led up to it.
 - 2026-10-24: C7 -- journal.c's file hook: "loading world file BAM.big" (a data\worlds\*.big other than the last one), a disc file (D:\data\... / \Device\CdRom0\...) that does not open for reading: ERROR "game file missing or unreadable: data\... (status)", once per path; other failed opens DEBUG (a race cycle has exactly one, t:\$u\contentmeta.xbx, the game probing). game_state.c times entering an event (or loading, which the 100 ms sampler sees when it misses the short first state) to its briefing screen: "event loaded in 2.1 s". Free ride has no briefing, so no load time.
 - 2026-10-24: C8 -- the crash report (Windows VEH and POSIX signal handler) now has "while: in game, Peak 1 Race Snow Jam" (state, event, screen) and the last 8 INFO [PLAY] lines ("recent: 02:37:48.914 screen: race briefing", ...) as indented lines of the CRITICAL block (log.c keeps them as the pump passes them); the flight recorder before it and the minidump path were there already, the session summary after it (B10; the POSIX handler now writes it too). Checked: RECOMP_TEST_CRASH in a race.
 - 2026-10-24: C9 -- went through every [TAG] the game and toolkit print (~170). Opt-in traces stay DEBUG (any [TAG] line); the always-on ones graded: [NV2A-WARN], [APU-WARN], [ABI], [IRQLBUG], "[GPU] REFUSING", missing TSO / flat dispatch WARN; [ALLOC] FAILED, [CONTIG] arena exhausted, intro-movie failures ([VIDEO] File not found / could not open / ... failed) ERROR; [BOOT] widescreen, [RECORD], [DEBUGMENU] INFO; [GATHER] / [BLOCK-STUCK] WARN and [DRAWDIST] / [BLOCK-RESCUE] / [STATE] DEBUG from A3. New: with a RECOMP_*_TRACE / *_STATS / *_DIAG switch on and no RECOMP_LOG_LEVEL, the default level is debug -- a trace that was asked for shows (checked with RECOMP_UI_TRACE=1).
+- 2026-10-24: D1 -- design section brought up to date (pump in log.c, categories, repeats, trace default, mark, where each part lives, files kept); PLAYER-README.txt: "Reporting a problem" (which file to send, F12 / both sticks, Log detail, crash dump); README: a Logs paragraph and F12 in the key table.

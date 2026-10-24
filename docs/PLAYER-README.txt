@@ -24,6 +24,7 @@ Controls
   numpad 8/4/2/6 = left stick, 1 / 3 = triggers. Copy keys.example.ini to
   keys.ini to change the keys.
   F11 or Alt+Enter: fullscreen.  F3: FPS counter.
+  F12 (or both thumbsticks clicked together): mark a problem, see below.
 
 HD textures
   The hd-textures folder holds Bl4ckH4nd's HD texture pack for SSX 3
@@ -34,3 +35,16 @@ HD textures
 
 Saves are written next to the game files (UDATA). Logs go to a logs
 folder next to the game folder; "Open logs" in the launcher shows them.
+
+Reporting a problem
+  Every session writes a log: the settings, the menus and events you
+  played, results, saves, frame rate per event, warnings and errors, and
+  how the session ended. "Open logs" in the launcher opens the folder with
+  the newest log selected (latest.txt names it too) -- send that file.
+  - Saw something wrong? Press F12 right away (or click both thumbsticks).
+    That marks the moment in the log and saves a picture of the screen
+    next to it (mark_<time>.bmp); send that too.
+  - "Log detail" in the launcher: Normal is right for playing. Detailed or
+    Everything write much more (and bigger files); use them when asked to.
+  - After a crash the log ends with the crash report, and a crash_<time>.dmp
+    is left next to it; send both.
