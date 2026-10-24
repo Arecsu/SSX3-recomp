@@ -67,6 +67,18 @@ static const struct { int peak; const char *kind, *name; } k_events[17] = {
     {1, "Peak run", "Happiness"}, {2, "Peak run", "Ruthless"}, {3, "Peak run", "The Throne"},
 };
 
+/* entering an event -> its briefing screen: the load time (C7) */
+static volatile DWORD s_enter_ms;
+
+void ssx3_EventReady(void)
+{
+    DWORD t = s_enter_ms;
+    if (t) {
+        s_enter_ms = 0;
+        log_msg(LOG_INFO, "PLAY", "event loaded in %.1f s", (GetTickCount() - t) / 1000.0);
+    }
+}
+
 /* set by the event results screen (ssx3_overrides.c event_result_note) */
 volatile int g_ssx3_event_result;
 /* for the session summary (journal_session_end) */
@@ -229,6 +241,10 @@ static DWORD WINAPI game_state_thread(LPVOID unused)
             }
             if (vt == 0x00289618u || vt == 0x0028825Cu)   /* back in the menus: not a restart */
                 s_left_id = 0xFFFFFFFFu;
+            /* entering an event / loading (the sampler can miss the short
+             * first): its load starts */
+            if ((vt == 0x0029AD48u || vt == 0x0029B0DCu) && !s_enter_ms)
+                s_enter_ms = now ? now : 1;
             if (vt == 0x00299D7Cu)        /* in game: which event */
                 event_note();
         }

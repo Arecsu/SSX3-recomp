@@ -29,6 +29,16 @@ static int _stricmp_portable(const char *a, const char *b)
     return (unsigned char)*a - (unsigned char)*b;
 }
 
+static int _strnicmp_portable(const char *a, const char *b, size_t n)
+{
+    for (; n && *a && *b; a++, b++, n--) {
+        int x = (*a >= 'A' && *a <= 'Z') ? *a + 32 : *a, y = (*b >= 'A' && *b <= 'Z') ? *b + 32 : *b;
+        if (x != y)
+            return x - y;
+    }
+    return n ? (unsigned char)*a - (unsigned char)*b : 0;
+}
+
 static void cpu_name(char *out, size_t n)
 {
     unsigned r[12] = {0};
@@ -233,6 +243,42 @@ static void file_hook(const char *path, int write, NTSTATUS_T status)
     double t;
     if (!path)
         return;
+    {
+        /* game files: D:\data\... or \Device\CdRom0\data\... (the disc,
+         * i.e. game\data).
+         * A disc file that will not open is missing or unreadable -- the
+         * install is broken (once per path). Elsewhere a failed open is the
+         * game probing for optional files (t:\$u\contentmeta.xbx). */
+        const char *d = strstr(path, "CdRom");
+        const char *rel = (path[0] == 'D' || path[0] == 'd') && path[1] == ':' ? path + 2
+                          : d ? strchr(d, '\\') : NULL;
+        if (status < 0) {
+            static char said[16][128];
+            static int nsaid;
+            int k;
+            if (rel && !write) {
+                for (k = 0; k < nsaid && strcmp(said[k], rel + 1); k++)
+                    ;
+                if (k == nsaid) {
+                    if (nsaid < 16)
+                        snprintf(said[nsaid++], sizeof said[0], "%s", rel + 1);
+                    log_msg(LOG_ERROR, "FILE", "game file missing or unreadable: %s (status %08lX)", rel + 1,
+                            (unsigned long)status);
+                }
+            } else {
+                log_msg(LOG_DEBUG, "FILE", "open failed: %s (%s, status %08lX)", path,
+                        write ? "write" : "read", (unsigned long)status);
+            }
+        } else if (rel && !_strnicmp_portable(rel + 1, "data\\worlds\\", 12)) {
+            /* the world an event loads (a .big each; opened more than once) */
+            static char last_world[64];
+            const char *w = rel + 13, *dot = strrchr(w, '.');
+            if (dot && !_stricmp_portable(dot, ".big") && _stricmp_portable(w, last_world)) {
+                snprintf(last_world, sizeof last_world, "%s", w);
+                log_msg(LOG_INFO, "PLAY", "loading world file %s", w);
+            }
+        }
+    }
     name = strrchr(path, '\\');
     name = name ? name + 1 : path;
     if (_stricmp_portable(name, "Data.ssx"))

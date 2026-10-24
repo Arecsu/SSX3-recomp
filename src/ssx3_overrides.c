@@ -1333,6 +1333,10 @@ static void screen_note(uint32_t scr)
                 log_msg(LOG_INFO, "PLAY", "in-game screen %08X (not named yet)", vt);
             if (vt == 0x00298378u)
                 event_result_note();
+            if (vt == 0x00297E30u || vt == 0x00297F68u || vt == 0x00297E98u) {
+                extern void ssx3_EventReady(void);   /* game_state.c: the load time */
+                ssx3_EventReady();
+            }
             if (ui_trace_on()) {
                 fprintf(stderr, "[UI] active screen %08X vt %08X id %d\n", scr, vt, (int)id);
                 fflush(stderr);
