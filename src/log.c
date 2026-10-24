@@ -158,7 +158,7 @@ static volatile int s_pump_waiting, s_pump_reads;
 #endif
 
 static const struct { const char *tag; int level; } k_tags[] = {
-    {"[CRASH]", LOG_CRITICAL},
+    {"[CRASH]", LOG_CRITICAL}, {"[EXIT]", LOG_INFO}, {"[FBWIN] window closed", LOG_INFO},
     {"[VKR] device:", LOG_INFO}, {"[VKR] MSAA", LOG_INFO}, {"[VKR] window", LOG_INFO},
     {"[ICALL] Failed", LOG_ERROR}, {"[VKR] upload buffer full", LOG_ERROR},
     {"[VKR] pipeline creation failed", LOG_ERROR},
@@ -244,6 +244,33 @@ static int grade(const char *l, size_t n, int *stamped)
     return i > 0 ? s_prev_level : LOG_DEBUG;
 }
 
+/* for the session summary (log_session_counts) */
+static unsigned s_counts[LOG_CRITICAL + 1];
+static char s_exit_how[96];
+
+static void note_exit(const char *l, size_t n)
+{
+    const char *e;
+    char line[512];
+    if (n >= sizeof line) n = sizeof line - 1;
+    memcpy(line, l, n);
+    line[n] = 0;
+    if ((e = strstr(line, "[EXIT] ")) != NULL)
+        snprintf(s_exit_how, sizeof s_exit_how, "the game ended itself (%s)", e + 7);
+    else if (strstr(line, "[FBWIN] window closed"))
+        snprintf(s_exit_how, sizeof s_exit_how, "window closed");
+    else if (strstr(line, "[CRASH]"))
+        snprintf(s_exit_how, sizeof s_exit_how, "crash");
+}
+
+void log_session_counts(unsigned *warn, unsigned *err, unsigned *crit, const char **how)
+{
+    *warn = s_counts[LOG_WARN];
+    *err = s_counts[LOG_ERROR];
+    *crit = s_counts[LOG_CRITICAL];
+    *how = s_exit_how[0] ? s_exit_how : "unknown";
+}
+
 static void pump_line(const char *l, size_t n)
 {
     static char last[512];
@@ -257,6 +284,10 @@ static void pump_line(const char *l, size_t n)
     size_t mn;
     while (n && (l[n - 1] == '\r' || l[n - 1] == '\n')) n--;
     lv = grade(l, n, &stamped);
+    if (n && l[0] != ' ' && l[0] != '\t')     /* continuation lines are part of one */
+        s_counts[lv]++;
+    if (!stamped && lv >= LOG_INFO)
+        note_exit(l, n);
     s_prev_level = lv;
     if (!stamped) {
         log_stamp(stamp, sizeof stamp);

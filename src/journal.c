@@ -275,3 +275,19 @@ void journal_session_header(const uint8_t *xbe, size_t xbe_size, const char *gam
     settings_lines();
     env_lines();
 }
+
+void journal_session_end(void)
+{
+    extern volatile int g_ssx3_events_started, g_ssx3_events_finished;   /* game_state.c */
+    unsigned warn, err, crit;
+    const char *how;
+    double t = log_uptime();
+    int s = (int)t;
+    log_session_counts(&warn, &err, &crit, &how);
+    log_msg(LOG_INFO, "SESSION", "session ended: %s, after %d:%02d:%02d; %d event%s started, %d with a result",
+            how, s / 3600, s / 60 % 60, s % 60, g_ssx3_events_started,
+            g_ssx3_events_started == 1 ? "" : "s", g_ssx3_events_finished);
+    log_msg(warn + err + crit ? LOG_WARN : LOG_INFO, "SESSION",
+            "this log has %u warning%s, %u error%s, %u critical", warn, warn == 1 ? "" : "s", err,
+            err == 1 ? "" : "s", crit);
+}

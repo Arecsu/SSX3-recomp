@@ -1258,7 +1258,7 @@ static const char *screen_name_now(void)
  * kind 5: time in 1/60 s), DNF 0x3693FC; platinum 0x36860B. Player 1's
  * slot is the first whose profile ([0x346400 + i*4]) has a controller
  * (0x367FDC + profile*32 > -1), as sub_00051B80(0) finds it. */
-extern volatile int g_ssx3_event_result;   /* game_state.c */
+extern volatile int g_ssx3_event_result, g_ssx3_events_finished;   /* game_state.c */
 
 static void event_result_note(void)
 {
@@ -1282,6 +1282,8 @@ static void event_result_note(void)
         n = (int)MEM32(p + 0x78);
     else
         n = players == 2 ? 2 : 6;
+    if (!g_ssx3_event_result)
+        g_ssx3_events_finished++;
     g_ssx3_event_result = 1;
     place = (int)MEM32(0x00369458u + slot * 4);
     score = (int)MEM32(0x00369408u + slot * 4);

@@ -157,4 +157,13 @@ public static class LiveKey {
         $g = Get-Game; if ($g) { Stop-Process -Id $g.Id -Force; "stopped" } else { "not running" }
         Remove-Item $pidFile -ErrorAction SilentlyContinue
     }
+    "close" {
+        # as a player ends it: close the window (the game logs its session
+        # summary), killed only if it is still there after 10 s
+        $g = Get-Game
+        if (-not $g) { "not running"; break }
+        [void]$g.CloseMainWindow()
+        if ($g.WaitForExit(10000)) { "closed" } else { Stop-Process -Id $g.Id -Force; "close timed out: stopped" }
+        Remove-Item $pidFile -ErrorAction SilentlyContinue
+    }
 }

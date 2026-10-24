@@ -34,6 +34,9 @@ void log_stamp(char *out, unsigned n);
  * and drain it before the process ends (crash handler, exits). */
 int log_pump_start(void);
 void log_drain(void);
+/* lines seen at WARN / ERROR / CRITICAL and how the session ended (from the
+ * [EXIT] / window closed / [CRASH] lines), for the summary */
+void log_session_counts(unsigned *warn, unsigned *err, unsigned *crit, const char **how);
 
 #ifdef __cplusplus
 }

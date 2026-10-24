@@ -69,6 +69,8 @@ static const struct { int peak; const char *kind, *name; } k_events[17] = {
 
 /* set by the event results screen (ssx3_overrides.c event_result_note) */
 volatile int g_ssx3_event_result;
+/* for the session summary (journal_session_end) */
+volatile int g_ssx3_events_started, g_ssx3_events_finished;
 static uint32_t s_left_id = 0xFFFFFFFFu;   /* an event left without a result */
 
 /* leaving in game: an event without a result was quit or restarted */
@@ -88,6 +90,8 @@ static void event_note(void)
     int again = id == s_left_id;
     g_ssx3_event_result = 0;
     s_left_id = 0xFFFFFFFFu;
+    if (id < 17)
+        g_ssx3_events_started++;
     if (again)
         log_msg(LOG_INFO, "PLAY", "event restarted: %s", k_events[id].name);
     else if (id < 17)
