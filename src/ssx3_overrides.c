@@ -607,10 +607,29 @@ void sub_0009C7A0(void)
  * (who opened it: 0x1F = "enter the lodge?"). */
 extern void sub_000C4C20_gen(void);
 
+static uint32_t s_station_id = 0xFFFFFFFFu;   /* the station whose gate the rider is at */
+
+static const char *station_name(uint32_t id)
+{
+    static char buf[32];
+    switch (id) {
+    case 0x17: return "Green Base Station";
+    }
+    snprintf(buf, sizeof buf, "station %u", id);
+    return buf;
+}
+
 void sub_000C4C20(void)
 {
     static int on = -1;
+    uint32_t type = MEM32(g_esp + 4);
     if (on < 0) on = getenv("RECOMP_STATION_TRACE") != NULL;
+    if (type == 0x1F)
+        log_msg(LOG_INFO, "PLAY", "at the lodge of %s: enter? (prompt)", station_name(s_station_id));
+    else if (type == 0x21)
+        log_msg(LOG_INFO, "PLAY", "at the transport of %s (prompt)", station_name(s_station_id));
+    else
+        log_msg(LOG_DEBUG, "PLAY", "in-game screen type 0x%X opened", type);
     if (on) {
         int k;
         fprintf(stderr, "[INGAMESCREEN] open 0x%X from", MEM32(g_esp + 4));
@@ -640,8 +659,18 @@ void sub_000D5A60(void)
     static uint32_t objs[16], last[16][4];
     static int n;
     uint32_t o = g_ecx;
+    uint32_t before = o >= 0x10000u ? MEM32(o + 0x10) : 0;
     if (on < 0) on = getenv("RECOMP_STATION_TRACE") != NULL;
+    if (o >= 0x10000u)
+        s_station_id = MEM32(o + 0x18);   /* its prompt opens from inside this call */
     sub_000D5A60_gen();
+    if (o >= 0x10000u) {
+        uint32_t after = MEM32(o + 0x10), kind = MEM32(o + 0x14);
+        /* 0 rider at the gate, 1 prompt up, 2 answered, 3 said no */
+        if (after != before && after == 3 && before == 2)
+            log_msg(LOG_INFO, "PLAY", "said no to the %s of %s", kind == 0 ? "lodge" : "transport",
+                    station_name(MEM32(o + 0x18)));
+    }
     if (on && o >= 0x10000u) {
         int i;
         uint32_t v[4] = {MEM32(o + 0x0C), MEM32(o + 0x10), MEM32(o + 0x14), MEM32(o + 0x18)};
@@ -795,10 +824,16 @@ static const char *screen_name_now(void);
 static void money_watch(void)
 {
     static uint32_t last_va;
-    static int32_t last;
+    static int32_t last, run_gain;   /* cash picked up in game, said once out of it */
     int rider = -1;
-    uint32_t va = player_cash_va(&rider);
+    uint32_t va = player_cash_va(&rider), app = MEM32(0x003A930Cu),
+             st = app >= 0x10000u ? MEM32(app + 4) : 0;
+    int ingame = st >= 0x10000u && MEM32(st) == 0x00299D7Cu;
     int32_t now;
+    if (run_gain && (!ingame || !va)) {
+        log_msg(LOG_INFO, "PLAY", "picked up %d on the mountain (money now %d)", run_gain, last);
+        run_gain = 0;
+    }
     if (!va) {
         last_va = 0;
         return;
@@ -813,7 +848,10 @@ static void money_watch(void)
         return;
     if (s_money_key_pending)
         log_msg(LOG_INFO, "PLAY", "money key: %+d, now %d", now - last, now);
-    else
+    else if (ingame) {
+        run_gain += now - last;
+        log_msg(LOG_DEBUG, "PLAY", "money %d -> %d (%+d) in game", last, now, now - last);
+    } else
         log_msg(LOG_INFO, "PLAY", "%s %d (money %d -> %d, %s)", now < last ? "spent" : "got",
                 now < last ? last - now : now - last, last, now, screen_name_now());
     s_money_key_pending = 0;
