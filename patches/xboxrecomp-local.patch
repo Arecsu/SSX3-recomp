@@ -7899,7 +7899,7 @@ index 0000000..165eab0
 +    return s_lut_serial;
 +}
 diff --git a/src/video/fb_present.c b/src/video/fb_present.c
-index 08bae4b..6c1bcb6 100644
+index 08bae4b..782d43f 100644
 --- a/src/video/fb_present.c
 +++ b/src/video/fb_present.c
 @@ -15,12 +15,15 @@
@@ -8362,7 +8362,7 @@ index 08bae4b..6c1bcb6 100644
              line[x * 3 + 0] = (uint8_t)(src[x] & 0xFF);
              line[x * 3 + 1] = (uint8_t)((src[x] >> 8) & 0xFF);
              line[x * 3 + 2] = (uint8_t)((src[x] >> 16) & 0xFF);
-@@ -250,12 +604,146 @@ int xbox_FramebufferDumpBmp(const char *path)
+@@ -250,12 +604,157 @@ int xbox_FramebufferDumpBmp(const char *path)
          fwrite(line, 1, row, f);
      }
      free(line);
@@ -8482,6 +8482,17 @@ index 08bae4b..6c1bcb6 100644
 +    }
 +}
 +
++void xbox_FramebufferSnapshot(const char *path)
++{
++    if (gpu_present_active()) {
++        gpu_present_capture(path);
++        return;
++    }
++    s_dump_quiet = 1;
++    xbox_FramebufferDumpBmp(path);
++    s_dump_quiet = 0;
++}
++
 +/* GDI fallback: the frame letterboxed into the client area, like the D3D11
 + * presenter; the borders are cleared when the size changes. */
 +static void gdi_blit(HWND hwnd, HDC hdc, const BITMAPINFO *bi)
@@ -8511,7 +8522,7 @@ index 08bae4b..6c1bcb6 100644
  static DWORD WINAPI fb_thread(LPVOID unused)
  {
      HWND hwnd;
-@@ -274,18 +762,56 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -274,18 +773,56 @@ static DWORD WINAPI fb_thread(LPVOID unused)
          wc.lpszClassName = "XboxRecompFramebuffer";
          RegisterClassA(&wc);
      }
@@ -8575,7 +8586,7 @@ index 08bae4b..6c1bcb6 100644
  
      memset(&bi, 0, sizeof(bi));
      bi.bmiHeader.biSize        = sizeof(bi.bmiHeader);
-@@ -299,6 +825,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -299,6 +836,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
  
      fprintf(stderr, "  [FBWIN] framebuffer window open (%ux%u)\n",
              s_fb_width, s_fb_height);
@@ -8586,7 +8597,7 @@ index 08bae4b..6c1bcb6 100644
  
      while (InterlockedCompareExchange(&s_fb_running, 1, 1)) {
          MSG msg;
-@@ -306,7 +836,42 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -306,7 +847,42 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              TranslateMessage(&msg);
              DispatchMessageA(&msg);
          }
@@ -8630,7 +8641,7 @@ index 08bae4b..6c1bcb6 100644
              /* A finished frame, published by the flip. Copied into s_rgb so
               * the dump path and GDI see one consistent image even if the
               * next flip lands mid-blit. */
-@@ -314,19 +879,28 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -314,19 +890,28 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              if (s_present[idx])
                  memcpy(s_rgb, s_present[idx],
                         (size_t)s_fb_width * s_fb_height * 4);
@@ -8665,7 +8676,7 @@ index 08bae4b..6c1bcb6 100644
          {
              /* One dump a few seconds in, so the title has had time to render
               * something rather than catching the first blank frame.
-@@ -357,6 +931,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -357,6 +942,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              if (now - t0 >= 1000) {
                  LONG f = s_flips;
                  wchar_t tb[128];
@@ -8676,7 +8687,7 @@ index 08bae4b..6c1bcb6 100644
                  _snwprintf(tb, 127, L"%ls | FPS: %.1f | draws: %ld", s_title,
                             t0 ? (f - f0) * 1000.0 / (now - t0) : 0.0,
                             (long)s_frame_draws);
-@@ -365,9 +943,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -365,9 +954,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
                  t0 = now; f0 = f;
              }
          }
@@ -8690,7 +8701,7 @@ index 08bae4b..6c1bcb6 100644
      ReleaseDC(hwnd, hdc);
      DestroyWindow(hwnd);
      free(s_rgb);
-@@ -390,11 +971,4 @@ void xbox_FramebufferWindowStart(void)
+@@ -390,11 +982,4 @@ void xbox_FramebufferWindowStart(void)
          InterlockedExchange(&s_fb_running, 0);
  }
  
@@ -8704,10 +8715,10 @@ index 08bae4b..6c1bcb6 100644
  #endif
 diff --git a/src/video/fb_present_sdl.c b/src/video/fb_present_sdl.c
 new file mode 100644
-index 0000000..266bdcf
+index 0000000..951155e
 --- /dev/null
 +++ b/src/video/fb_present_sdl.c
-@@ -0,0 +1,482 @@
+@@ -0,0 +1,487 @@
 +/**
 + * POSIX counterpart of fb_present.c: show the guest framebuffer in an SDL2
 + * window. Same contract (RECOMP_FB_WINDOW, flip-time copy, BMP dump, snap
@@ -9011,6 +9022,11 @@ index 0000000..266bdcf
 +    unlink(trig);
 +    if (!n)
 +        return;
++    xbox_FramebufferSnapshot(path);
++}
++
++void xbox_FramebufferSnapshot(const char *path)
++{
 +    /* The image the window shows: a renderer's published frame (Vulkan, at
 +     * the internal resolution and in widescreen) when there is a current
 +     * one, else the guest framebuffer, which that renderer leaves unused. */
@@ -9192,10 +9208,10 @@ index 0000000..266bdcf
 +#endif /* !_WIN32 */
 diff --git a/src/video/fb_present_web.c b/src/video/fb_present_web.c
 new file mode 100644
-index 0000000..9b7ce12
+index 0000000..4f2e829
 --- /dev/null
 +++ b/src/video/fb_present_web.c
-@@ -0,0 +1,268 @@
+@@ -0,0 +1,273 @@
 +/**
 + * Browser counterpart of fb_present_sdl.c: the guest framebuffer for a page.
 + *
@@ -9452,6 +9468,11 @@ index 0000000..9b7ce12
 +    fprintf(stderr, "  [FBWIN] wrote %s (%ux%u from 0x%08X)\n",
 +            path, s_fb_width, s_fb_height, s_fb_va);
 +    return 0;
++}
++
++void xbox_FramebufferSnapshot(const char *path)
++{
++    xbox_FramebufferDumpBmp(path);
 +}
 +
 +void xbox_FramebufferWindowStart(void)
@@ -9875,10 +9896,10 @@ index 0000000..8891786
 +#endif
 +#endif
 diff --git a/src/video/video_player.h b/src/video/video_player.h
-index c844aef..cf11ad1 100644
+index c844aef..bc4d39c 100644
 --- a/src/video/video_player.h
 +++ b/src/video/video_player.h
-@@ -62,6 +62,11 @@ int  video_dump_frame_bmp(const char *path);
+@@ -62,13 +62,26 @@ int  video_dump_frame_bmp(const char *path);
   * zero when there is no window, which is the right answer: with nothing to
   * focus there is nothing to type into. */
  int xbox_FramebufferKeyDown(int vk);
@@ -9890,7 +9911,13 @@ index c844aef..cf11ad1 100644
  
  void xbox_FramebufferWindowStart(void);
  void xbox_FramebufferWindowSet(uint32_t fb_va, uint32_t pitch);
-@@ -70,5 +75,8 @@ int  xbox_FramebufferDumpBmp(const char *path);
+ int  xbox_FramebufferDumpBmp(const char *path);
++/* What the window shows (a renderer's published frame, gamma and overlay
++ * included where the presenter allows) as a BMP: the snapshot trigger's
++ * capture, callable from any thread. Written asynchronously by the window
++ * thread where the presenter captures its back buffer. */
++void xbox_FramebufferSnapshot(const char *path);
+ /* Title bar: "<XBE title> | FPS: n | draws: n". The name is the certificate's
   * UTF-16 title (40 chars max); the stats come from each flip. */
  void xbox_FramebufferWindowSetTitle(const uint16_t *name, int max_chars);
  void xbox_FramebufferWindowFrameStats(uint32_t draws);

@@ -271,6 +271,15 @@ void log_session_counts(unsigned *warn, unsigned *err, unsigned *crit, const cha
     *how = s_exit_how[0] ? s_exit_how : "unknown";
 }
 
+static int memmem_s(const char *h, size_t hn, const char *needle)
+{
+    size_t nn = strlen(needle), i;
+    for (i = 0; i + nn <= hn; i++)
+        if (!memcmp(h + i, needle, nn))
+            return 1;
+    return 0;
+}
+
 static void pump_line(const char *l, size_t n)
 {
     static char last[512];
@@ -334,7 +343,8 @@ static void pump_line(const char *l, size_t n)
     last_n = mn <= sizeof last ? mn : 0;
     last_lv = lv;
     if (last_n) memcpy(last, msg, mn);
-    if (lv >= LOG_ERROR)
+    /* an error, or the player's mark (mark.c): the detail before it */
+    if (lv >= LOG_ERROR || (stamped && n > 50 && memmem_s(l + 20, 30, "[MARK]")))
         ring_flush();
     if (sl) out(stamp, sl);
     out(l, n);

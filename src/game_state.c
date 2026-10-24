@@ -264,6 +264,22 @@ static DWORD WINAPI game_state_thread(LPVOID unused)
     }
 }
 
+/* Where the game is, in words, for the player mark (mark.c): the top-level
+ * state, and the event when in game. */
+void ssx3_WhereNow(char *out, size_t n)
+{
+    uint32_t app = MEM32(APP_PTR_VA), cur, vt = 0, id;
+    if (guest_ok(app) && guest_ok(cur = MEM32(app + 4)))
+        vt = MEM32(cur);
+    id = MEM32(EVENT_ID_VA);
+    if (vt == 0x00299D7Cu && id < 17)
+        snprintf(out, n, "in game, Peak %d %s %s", k_events[id].peak, k_events[id].kind, k_events[id].name);
+    else if (vt == 0x00299D7Cu && id == 17)
+        snprintf(out, n, "in game, free ride");
+    else
+        snprintf(out, n, "%s", state_words(vt));
+}
+
 void ssx3_GameStateStart(void)
 {
     const char *e = getenv("RECOMP_GAME_STATE");

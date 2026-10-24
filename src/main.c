@@ -62,6 +62,8 @@
  * logs\ in the working directory. Crash dumps go there too. */
 static char s_logs_dir[MAX_PATH] = "logs";
 
+const char *ssx3_LogsDir(void) { return s_logs_dir; }
+
 static int cmp_name(const void *a, const void *b)
 {
     return strcmp(*(char *const *)a, *(char *const *)b);
@@ -222,6 +224,9 @@ static void print_guest_context(void *rip)
     print_guest_stack();
 }
 #endif /* _WIN32 */
+#ifndef _WIN32
+const char *ssx3_LogsDir(void) { return "logs"; }
+#endif
 
 static DWORD WINAPI test_crash_thread(LPVOID arg)
 {
@@ -1037,6 +1042,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                 /* the last 20 sessions and 10 crash dumps (with this one) */
                 logs_prune("ssx3_*_stderr.txt", 19);
                 logs_prune("crash_*.dmp", 9);
+                logs_prune("mark_*.bmp", 30);
                 GetLocalTime(&st);
                 snprintf(logp + strlen(logp), sizeof logp - strlen(logp),
                          "\\ssx3_%04u%02u%02u-%02u%02u%02u_stderr.txt", st.wYear, st.wMonth,
@@ -1221,6 +1227,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         {
             extern void ssx3_GameStateStart(void);
             ssx3_GameStateStart();  /* [STATE] lines + game_state.txt */
+        }
+        {
+            extern void ssx3_MarkStart(void);
+            ssx3_MarkStart();       /* F12 / both sticks: a player mark in the log */
         }
         {
             extern void ssx3_AutonavStart(void);

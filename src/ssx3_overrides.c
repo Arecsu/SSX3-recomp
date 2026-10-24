@@ -1309,6 +1309,11 @@ static void event_result_note(void)
         log_msg(LOG_INFO, "PLAY", "event result: place %d of %d, %s%s", place + 1, n, what, extra);
 }
 
+const char *ssx3_ScreenNow(void)
+{
+    return screen_name_now();
+}
+
 static void screen_note(uint32_t scr)
 {
     if (scr && ((MEM16(scr + 0x1C) >> 8) & 0x3F) == 5 && MEM32(scr) != SSX3_HUD_SCREEN_VT) {
