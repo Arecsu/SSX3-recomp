@@ -4,6 +4,8 @@
  *     FPS, 1% low, worst frame -- INFO when the event is left;
  *   - a frame over 100 ms in game: WARN with where it happened (at most one
  *     line a second; the rest counted into the next);
+ *   - a stretch of seconds under 50 FPS in an event (RECOMP_PERF_SLOW_FPS):
+ *     WARN when it ends, with when, how slow and where the rider was;
  *   - once a minute: the last minute at DEBUG.
  * Fed by the renderer at every presented frame (ssx3_PerfFlip, vkr_backend.c
  * be_flip); the state thread (game_state.c) asks for the event's numbers
@@ -18,6 +20,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 extern uint32_t xbox_TickCountMs(void);
 extern void ssx3_WhereNow(char *out, size_t n);       /* game_state.c */
@@ -38,6 +41,74 @@ static char s_event_name[64];
 static double s_event_t0;
 static volatile int s_req_start, s_req_report;   /* handled at the next frame */
 static char s_req_name[64];
+
+/* A slow stretch: consecutive seconds in an event under RECOMP_PERF_SLOW_FPS
+ * (default 50), said once it ends if it lasted SLOW_MIN_S or more -- when
+ * (seconds into the event, the uptime column), how long, how slow and where
+ * the rider was. Single long frames are the hitch lines instead. */
+#define SLOW_MIN_S 2
+typedef struct {
+    int secs;                           /* 0: none running */
+    unsigned frames;
+    double ms, lowest_fps, t0_event, t0_up;
+    float from[3], to[3];
+    int have_from, have_to;
+} Slow;
+static Slow s_slow;
+static double s_slow_fps = -1;
+
+extern int ssx3_PlayerPos(float out[3]);              /* game_state.c */
+extern double log_uptime(void);
+
+/* " at (x, y, z)" when player 1 is in a race */
+static void pos_words(char *out, size_t n, int have, const float p[3])
+{
+    if (have)
+        snprintf(out, n, " (rider at %.0f, %.0f, %.0f)", p[0], p[1], p[2]);
+    else
+        out[0] = 0;
+}
+
+static void slow_end(void)
+{
+    if (s_slow.secs >= SLOW_MIN_S && s_slow.ms > 0) {
+        char from[64], to[64];
+        pos_words(from, sizeof from, s_slow.have_from, s_slow.from);
+        pos_words(to, sizeof to, s_slow.have_to, s_slow.to);
+        log_msg(LOG_WARN, "PERF", "slow for %d s in %s: %.1f FPS average, lowest second %.0f FPS; from %.0f s "
+                "into the event (+%.1f)%s to %.0f s%s", s_slow.secs, s_event_name,
+                s_slow.frames * 1000.0 / s_slow.ms, s_slow.lowest_fps, s_slow.t0_event / 1000.0,
+                s_slow.t0_up, from, (s_slow.t0_event + s_slow.ms) / 1000.0, to);
+    }
+    memset(&s_slow, 0, sizeof s_slow);
+}
+
+/* one second of an event's frames: frames over ms */
+static void slow_second(unsigned frames, double ms, double t_event)
+{
+    double fps = frames * 1000.0 / ms;
+    if (s_slow_fps < 0) {
+        const char *e = getenv("RECOMP_PERF_SLOW_FPS");
+        s_slow_fps = e && *e ? atof(e) : 50.0;
+    }
+    if (fps >= s_slow_fps) {
+        if (s_slow.secs)
+            slow_end();
+        return;
+    }
+    if (!s_slow.secs) {
+        s_slow.t0_event = t_event - ms;
+        s_slow.t0_up = log_uptime() - ms / 1000.0;
+        s_slow.lowest_fps = fps;
+        s_slow.have_from = ssx3_PlayerPos(s_slow.from);
+    }
+    s_slow.secs++;
+    s_slow.frames += frames;
+    s_slow.ms += ms;
+    if (fps < s_slow.lowest_fps)
+        s_slow.lowest_fps = fps;
+    s_slow.have_to = ssx3_PlayerPos(s_slow.to);
+}
 
 static double now_ms(void)
 {
@@ -96,10 +167,15 @@ void ssx3_PerfEvent(const char *name)
 void ssx3_PerfFlip(void)
 {
     static double last, minute_t, hitch_t;
+    static unsigned sec_frames;
+    static double sec_t0;
     static unsigned hitches_unsaid;
     double t = now_ms(), dt = last ? t - last : 0;
     last = t;
     if (s_req_report || s_req_start) {
+        slow_end();
+        sec_frames = 0;
+        sec_t0 = t;
         if (s_req_report) {
             s_req_report = 0;
             if (s_event_name[0])
@@ -120,15 +196,30 @@ void ssx3_PerfFlip(void)
     span_add(&s_minute, dt);
     if (s_event_name[0] && t - s_event_t0 < SETTLE_MS)
         return;
-    if (s_event_name[0])
+    if (s_event_name[0]) {
         span_add(&s_event, dt);
+        if (!sec_frames)
+            sec_t0 = t - dt;
+        sec_frames++;
+        if (t - sec_t0 >= 1000.0) {
+            slow_second(sec_frames, t - sec_t0, t - s_event_t0);
+            sec_frames = 0;
+        }
+    }
     if (dt >= HITCH_MS && ssx3_InGameNow()) {
         if (t - hitch_t >= 1000.0) {
-            char where[160];
+            char where[256];
             const char *scr = ssx3_ScreenNow();
+            float pos[3];
             ssx3_WhereNow(where, sizeof where);
             if (strcmp(scr, "in game"))
                 snprintf(where + strlen(where), sizeof where - strlen(where), ", %s", scr);
+            if (s_event_name[0])
+                snprintf(where + strlen(where), sizeof where - strlen(where), ", %.0f s into the event",
+                         (t - s_event_t0) / 1000.0);
+            if (ssx3_PlayerPos(pos))
+                snprintf(where + strlen(where), sizeof where - strlen(where), ", rider at %.0f, %.0f, %.0f",
+                         pos[0], pos[1], pos[2]);
             if (hitches_unsaid)
                 log_msg(LOG_WARN, "PERF", "frame took %.0f ms (%s); %u more since the last such line",
                         dt, where, hitches_unsaid);
@@ -152,6 +243,7 @@ void ssx3_PerfFlip(void)
 /* the session ends (journal_session_end) in an event: its numbers so far */
 void ssx3_PerfSessionEnd(void)
 {
+    slow_end();
     if (s_event_name[0] && s_event.frames) {
         char what[96];
         snprintf(what, sizeof what, "%s (until the session ended)", s_event_name);
