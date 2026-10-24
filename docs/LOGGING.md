@@ -95,7 +95,7 @@ detail that led up to it.
       keyboard in use.
 - [x] **C5** Audio: output device and channels, underruns and drops as
       WARN (rate-limited).
-- [ ] **C6** Graphics: Vulkan device lost / errors as ERROR/CRITICAL,
+- [x] **C6** Graphics: Vulkan device lost / errors as ERROR/CRITICAL,
       pipeline build failures, HD textures found / missing, draw
       distance trimming (DEBUG; a full render list WARN).
 - [ ] **C7** Loading: world files loaded and load time per event; missing
@@ -137,3 +137,4 @@ detail that led up to it.
 - 2026-10-24: C3 -- toolkit window: "[FBWIN] fullscreen on/off" (F11 / Alt+Enter, and at start with RECOMP_FULLSCREEN), "[FBWIN] focus lost / gained" (Win32 and SDL); graded INFO with "[VKR] internal resolution" (rebuilds of the render target); "[VKR] window WxH: frame aspect" (resizes, widescreen auto) was INFO already. Checked: focus gained at start, window close. Fullscreen not toggled in a script (it would cover the screen).
 - 2026-10-24: C4 -- mark.c's thread also logs [INPUT]: "controller N connected at start (gamepad, battery full / wired)", later connects, "controller N disconnected" (WARN), battery dropping to low / empty (WARN, checked every 10 s), "no controller connected at start", "keyboard in use (first key 0xNN)", and in scripted runs "the machine's controllers are ignored (RECOMP_NO_HOST_PAD)" (=0 now counts as not set, as in main.c). Checked: keyboard, no controller, scripted. A connected controller was not available to test (none plugged in during the loop).
 - 2026-10-24: C5 -- toolkit audio: "[XA2] output device: 2 channels at 48000 Hz (speaker mask 0x3)" after the XAudio2 init line (both INFO); without RECOMP_APU_LEVEL, "[XA2] audio output: N underruns, M dropped buffers in the last 10 s" every 10 s when there were any (WARN); XAudio2/SDL/waveOut failures ERROR, falling back to waveOut WARN. Checked: one unmuted start (stereo device).
+- 2026-10-24: C6 -- vkr.c: a failed Vulkan call (CK, and now the per-frame end/submit/fence wait, which returned silently) logs ERROR with the result in words, CRITICAL for VK_ERROR_DEVICE_LOST ("GPU driver reset or crashed"); per-frame failures the first time and every 600th. Init/shader/memory failures ERROR or CRITICAL, missing BC7 / depth-stencil / pipeline cache full WARN by tag. HD textures: "507 replacement textures mapped" INFO, "no HD texture pack at ...: the game's own textures" INFO, unreadable or wrong-format files WARN, loads DEBUG. Draw-distance trimming was graded in A3. vkr_selftest links log.c. Checked: a start with the pack (507 mapped).

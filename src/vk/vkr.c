@@ -1,4 +1,5 @@
 #include "vkr.h"
+#include "../log.h"
 
 #include "vkr_thread.h"
 #include <stdio.h>
@@ -268,9 +269,25 @@ static void wait_all_free(VkrContext *c)
     pthread_mutex_unlock(&c->lock);
 }
 
+/* A Vulkan call that failed: ERROR, CRITICAL when the device is lost (the
+ * driver reset or crashed; nothing renders after it). Once per call site
+ * and result. */
+static void vk_failed(const char *call, VkResult r, const char *file, int line)
+{
+    log_msg(r == VK_ERROR_DEVICE_LOST ? LOG_CRITICAL : LOG_ERROR, "VKR", "%s failed: %d%s (%s:%d)", call,
+            (int)r, r == VK_ERROR_DEVICE_LOST ? ", device lost (GPU driver reset or crashed)"
+                    : r == VK_ERROR_OUT_OF_DEVICE_MEMORY ? ", out of GPU memory"
+                    : r == VK_ERROR_OUT_OF_HOST_MEMORY ? ", out of memory" : "", file, line);
+}
+
 #define CK(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) { \
-    fprintf(stderr, "[VKR] %s failed: %d (%s:%d)\n", #x, (int)r_, __FILE__, __LINE__); \
+    vk_failed(#x, r_, __FILE__, __LINE__); \
     return 0; } } while (0)
+
+/* the same for the per-frame calls: the first failure, then every 600th */
+#define CK_FRAME(x, fail) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) { \
+    static unsigned n_; if (n_++ % 600 == 0) vk_failed(#x, r_, __FILE__, __LINE__); \
+    fail; } } while (0)
 
 static int find_mem(VkrContext *c, uint32_t bits, VkMemoryPropertyFlags want)
 {
@@ -2691,10 +2708,10 @@ int vkr_flip_submit(VkrContext *c)
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
     prof_mark(c, NULL, 0, -1);
-    if (vkEndCommandBuffer(c->cmd) != VK_SUCCESS) return -1;
+    CK_FRAME(vkEndCommandBuffer(c->cmd), return -1);
     c->recording = 0;
     si.commandBufferCount = 1; si.pCommandBuffers = &c->cmd;
-    if (vkQueueSubmit(c->queue, 1, &si, c->fence) != VK_SUCCESS) return -1;
+    CK_FRAME(vkQueueSubmit(c->queue, 1, &si, c->fence), return -1);
     pthread_mutex_lock(&c->lock);
     c->fr[slot].busy = 1;
     pthread_mutex_unlock(&c->lock);
@@ -2713,8 +2730,7 @@ int vkr_flip_submit(VkrContext *c)
 
 const uint8_t *vkr_frame_pixels(VkrContext *c, int slot)
 {
-    if (vkWaitForFences(c->dev, 1, &c->fr[slot].fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
-        return NULL;
+    CK_FRAME(vkWaitForFences(c->dev, 1, &c->fr[slot].fence, VK_TRUE, UINT64_MAX), return NULL);
     prof_report(c, slot);
     if (c->fr[slot].rb_noncoherent) {
         VkMappedMemoryRange mr = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};

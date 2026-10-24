@@ -18,6 +18,7 @@
  * coordinates are normalised by the game's size (vkr_backend.c), so any
  * replacement size works. Only BC7 DDS files (DX10 header, DXGI 98/99).
  */
+#include "../log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,8 +60,10 @@ static void load_map(const char *dir)
     FILE *f;
     size_t cap = 0;
     snprintf(path, sizeof path, "%s/ssx3_map.txt", dir);
-    if (!(f = fopen(path, "r")))
+    if (!(f = fopen(path, "r"))) {
+        fprintf(stderr, "[HDTEX] no HD texture pack at %s: the game's own textures\n", dir);
         return;
+    }
     while (fgets(line, sizeof line, f)) {
         char *p = line, *name;
         uint64_t key;
@@ -95,7 +98,7 @@ static void load_map(const char *dir)
     }
     fclose(f);
     qsort(s_map, s_nmap, sizeof *s_map, cmp_entry);
-    fprintf(stderr, "[HDTEX] %zu replacement textures mapped (%s)\n", s_nmap, path);
+    log_msg(LOG_INFO, "HDTEX", "%zu replacement textures mapped (%s)", s_nmap, path);
 }
 
 /* The pack's default place: "hd-textures" in the working directory, else
@@ -273,7 +276,7 @@ int hdtex_get(VkrContext *vk, uint64_t key, uint64_t cache_key, VkrTex **out)
     if (size < 148 || fread(hdr, 1, 148, f) != 148 || memcmp(hdr, "DDS ", 4)
         || memcmp(hdr + 84, "DX10", 4)) {
         fclose(f);
-        fprintf(stderr, "[HDTEX] %s: not a DX10 DDS\n", e->file);
+        log_msg(LOG_WARN, "HDTEX", "%s: not a DX10 DDS", e->file);
         e->failed = 1; s_hd_fail++;
         return 0;
     }
@@ -283,7 +286,7 @@ int hdtex_get(VkrContext *vk, uint64_t key, uint64_t cache_key, VkrTex **out)
         mips = 1;
     if (dxgi != 98 && dxgi != 99) {
         fclose(f);
-        fprintf(stderr, "[HDTEX] %s: DXGI format %u, only BC7 (98/99) is supported\n", e->file, dxgi);
+        log_msg(LOG_WARN, "HDTEX", "%s: DXGI format %u, only BC7 (98/99) is supported", e->file, dxgi);
         e->failed = 1; s_hd_fail++;
         return 0;
     }
@@ -299,6 +302,6 @@ int hdtex_get(VkrContext *vk, uint64_t key, uint64_t cache_key, VkrTex **out)
     if (!*out)
         return -1;                     /* the frame's staging buffer is full */
     if (++s_hd_loaded <= 8 || (s_hd_loaded & 63) == 0)
-        fprintf(stderr, "[HDTEX] %u loaded (%s, %ux%u, %u mips)\n", s_hd_loaded, e->file, w, h, mips);
+        log_msg(LOG_DEBUG, "HDTEX", "%u loaded (%s, %ux%u, %u mips)", s_hd_loaded, e->file, w, h, mips);
     return 1;
 }
