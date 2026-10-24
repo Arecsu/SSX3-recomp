@@ -161,6 +161,12 @@ static const struct { const char *tag; int level; } k_tags[] = {
     {"[CRASH]", LOG_CRITICAL}, {"[EXIT]", LOG_INFO}, {"[FBWIN] window closed", LOG_INFO},
     {"[FBWIN] fullscreen", LOG_INFO}, {"[FBWIN] focus", LOG_INFO},
     {"[VKR] internal resolution", LOG_INFO},
+    {"[XA2] XAudio2 initialized", LOG_INFO}, {"[XA2] output device", LOG_INFO},
+    {"[XA2] audio output:", LOG_WARN}, {"[XA2] SDL audio initialized", LOG_INFO},
+    {"[XA2] web audio", LOG_INFO}, {"[XA2] Shut down", LOG_DEBUG},
+    {"[XA2]", LOG_ERROR},               /* the rest: failures */
+    {"[APU] XAudio2 unavailable", LOG_WARN}, {"[APU] waveOut audio output initialized", LOG_INFO},
+    {"[APU] waveOutOpen failed", LOG_ERROR},
     {"[VKR] device:", LOG_INFO}, {"[VKR] MSAA", LOG_INFO}, {"[VKR] window", LOG_INFO},
     {"[ICALL] Failed", LOG_ERROR}, {"[VKR] upload buffer full", LOG_ERROR},
     {"[VKR] pipeline creation failed", LOG_ERROR},

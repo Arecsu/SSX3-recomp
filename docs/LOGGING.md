@@ -93,7 +93,7 @@ detail that led up to it.
       regained, aspect changes, internal resolution rebuilds.
 - [x] **C4** Input: controller connected / disconnected / battery low,
       keyboard in use.
-- [ ] **C5** Audio: output device and channels, underruns and drops as
+- [x] **C5** Audio: output device and channels, underruns and drops as
       WARN (rate-limited).
 - [ ] **C6** Graphics: Vulkan device lost / errors as ERROR/CRITICAL,
       pipeline build failures, HD textures found / missing, draw
@@ -136,3 +136,4 @@ detail that led up to it.
 - 2026-10-24: C2 -- src/perf.c, fed by vkr_backend.c be_flip at every presented frame: per event (game_state.c starts it on entering in game, reports on leaving) "INFO [PERF] Snow Jam: 60.0 FPS average, 1% low 52.6 FPS, worst frame 23 ms (2116 frames, 35 s)"; a frame over 100 ms in game: WARN with the event and screen (one line a second, the rest counted); the last minute at DEBUG. An event's first 2 s are left out (the first frame after a load took 160 ms every time). GPU time is not in it: the timestamps exist only with RECOMP_VKR_GPUPROF (which logs its own [GPUPROF] lines). Software renderer (RECOMP_GPU=sw): no [PERF].
 - 2026-10-24: C3 -- toolkit window: "[FBWIN] fullscreen on/off" (F11 / Alt+Enter, and at start with RECOMP_FULLSCREEN), "[FBWIN] focus lost / gained" (Win32 and SDL); graded INFO with "[VKR] internal resolution" (rebuilds of the render target); "[VKR] window WxH: frame aspect" (resizes, widescreen auto) was INFO already. Checked: focus gained at start, window close. Fullscreen not toggled in a script (it would cover the screen).
 - 2026-10-24: C4 -- mark.c's thread also logs [INPUT]: "controller N connected at start (gamepad, battery full / wired)", later connects, "controller N disconnected" (WARN), battery dropping to low / empty (WARN, checked every 10 s), "no controller connected at start", "keyboard in use (first key 0xNN)", and in scripted runs "the machine's controllers are ignored (RECOMP_NO_HOST_PAD)" (=0 now counts as not set, as in main.c). Checked: keyboard, no controller, scripted. A connected controller was not available to test (none plugged in during the loop).
+- 2026-10-24: C5 -- toolkit audio: "[XA2] output device: 2 channels at 48000 Hz (speaker mask 0x3)" after the XAudio2 init line (both INFO); without RECOMP_APU_LEVEL, "[XA2] audio output: N underruns, M dropped buffers in the last 10 s" every 10 s when there were any (WARN); XAudio2/SDL/waveOut failures ERROR, falling back to waveOut WARN. Checked: one unmuted start (stereo device).

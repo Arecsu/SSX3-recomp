@@ -13,7 +13,7 @@ index 0bd4ebd..70568cb 100644
      # Linux: platform layer (Win32 primitives on POSIX) + SDL2 audio + libm
      find_package(SDL2 REQUIRED)
 diff --git a/src/apu/apu_core.c b/src/apu/apu_core.c
-index 258048c..d7555c5 100644
+index 258048c..9760f17 100644
 --- a/src/apu/apu_core.c
 +++ b/src/apu/apu_core.c
 @@ -20,6 +20,7 @@
@@ -83,7 +83,7 @@ index 258048c..d7555c5 100644
  
      WAVEFORMATEX wfx = { 0 };
      wfx.wFormatTag      = WAVE_FORMAT_PCM;
-@@ -377,12 +381,74 @@ void mcpx_apu_monitor_finalize(MCPXAPUState *d)
+@@ -377,12 +381,87 @@ void mcpx_apu_monitor_finalize(MCPXAPUState *d)
              g_waveout.frames_written);
  }
  
@@ -102,8 +102,21 @@ index 258048c..d7555c5 100644
 +    int i, p = 0;
 +    if (on < 0)
 +        on = getenv("RECOMP_APU_LEVEL") != NULL;
-+    if (!on)
++    if (!on) {
++        /* without the level report: underruns and drops (heard as clicks
++         * and gaps) once every 10 s when there were any */
++        static int64_t last_check;
++        int64_t now = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
++        if (now - last_check >= 10000) {
++            int under, drops, minq, waits, refills;
++            last_check = now;
++            xa2_take_stats(&under, &drops, &minq, &waits, &refills);
++            if (under || drops)
++                fprintf(stderr, "[XA2] audio output: %d underruns, %d dropped buffers in the last 10 s\n",
++                        under, drops);
++        }
 +        return;
++    }
 +    for (i = 0; i < n * 2; i++) {
 +        int v = buf[i] < 0 ? -buf[i] : buf[i];
 +        if (v > p) p = v;
@@ -158,7 +171,7 @@ index 258048c..d7555c5 100644
      /* XAudio2 path: render and submit a buffer */
      if (xa2_is_active()) {
          int buf_size = xa2_get_buffer_size();
-@@ -413,12 +479,48 @@ void mcpx_apu_monitor_frame(MCPXAPUState *d)
+@@ -413,12 +492,48 @@ void mcpx_apu_monitor_frame(MCPXAPUState *d)
              remaining -= chunk;
          }
  
@@ -207,7 +220,7 @@ index 258048c..d7555c5 100644
      int idx = g_waveout.next_buf;
      WAVEHDR *hdr = &g_waveout.hdrs[idx];
  
-@@ -483,10 +585,32 @@ static void throttle(MCPXAPUState *d)
+@@ -483,10 +598,32 @@ static void throttle(MCPXAPUState *d)
  
      int64_t now_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
  
@@ -241,7 +254,7 @@ index 258048c..d7555c5 100644
  
      while (!d->pause_requested) {
          now_us = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
-@@ -530,7 +654,9 @@ static void se_frame(MCPXAPUState *d)
+@@ -530,7 +667,9 @@ static void se_frame(MCPXAPUState *d)
  
      mcpx_apu_vp_frame(d, mixbins);
      mcpx_apu_dsp_frame(d, mixbins);
@@ -251,7 +264,7 @@ index 258048c..d7555c5 100644
  
      d->ep_frame_div++;
  
-@@ -544,6 +670,12 @@ static void se_frame(MCPXAPUState *d)
+@@ -544,6 +683,12 @@ static void se_frame(MCPXAPUState *d)
  static void *mcpx_apu_frame_thread(void *arg)
  {
      MCPXAPUState *d = MCPX_APU_DEVICE(arg);
@@ -264,7 +277,7 @@ index 258048c..d7555c5 100644
      qemu_mutex_lock(&d->lock);
  
      while (!qatomic_read(&d->exiting)) {
-@@ -605,6 +737,17 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -605,6 +750,17 @@ static void *mcpx_apu_frame_thread(void *arg)
           * off every USB interrupt. */
          qemu_mutex_unlock(&d->lock);
          SwitchToThread();
@@ -282,7 +295,7 @@ index 258048c..d7555c5 100644
          qemu_mutex_lock(&d->lock);
      }
  
-@@ -693,6 +836,14 @@ MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr)
+@@ -693,6 +849,14 @@ MCPXAPUState *mcpx_apu_init_standalone(uint8_t *ram_ptr)
          warn_reportf_err(local_err, "mcpx_apu_monitor_init failed: ");
      }
  
@@ -417,7 +430,7 @@ index f45b42b..d03ef75 100644
      uint64_t mask = 1ULL << (v % 64);
      if (lock) {
 diff --git a/src/apu/apu_xaudio2.c b/src/apu/apu_xaudio2.c
-index cd69e57..2c9a504 100644
+index cd69e57..e7e3053 100644
 --- a/src/apu/apu_xaudio2.c
 +++ b/src/apu/apu_xaudio2.c
 @@ -11,8 +11,8 @@
@@ -541,7 +554,7 @@ index cd69e57..2c9a504 100644
      if (FAILED(hr)) {
          fprintf(stderr, "[XA2] CreateSourceVoice failed: 0x%08lX\n", hr);
          goto fail;
-@@ -87,8 +148,8 @@ int xa2_init(void)
+@@ -87,8 +148,18 @@ int xa2_init(void)
      g_xa2_initialized = 1;
      g_xa2_frames_written = 0;
  
@@ -549,10 +562,20 @@ index cd69e57..2c9a504 100644
 -            XA2_SAMPLE_RATE, XA2_NUM_BUFS, XA2_BUF_SAMPLES);
 +    fprintf(stderr, "[XA2] XAudio2 initialized (%d Hz %s 16-bit, %d x %d-sample buffers)\n",
 +            XA2_SAMPLE_RATE, g_xa2_ch == 6 ? "5.1" : "stereo", XA2_NUM_BUFS, XA2_BUF_SAMPLES);
++    {
++        /* what the default output device takes (the mix is mapped or
++         * downmixed to it) */
++        XAUDIO2_VOICE_DETAILS vd;
++        DWORD mask = 0;
++        IXAudio2MasteringVoice_GetVoiceDetails(g_xa2_master, &vd);
++        IXAudio2MasteringVoice_GetChannelMask(g_xa2_master, &mask);
++        fprintf(stderr, "[XA2] output device: %u channels at %u Hz (speaker mask 0x%lX)\n",
++                (unsigned)vd.InputChannels, (unsigned)vd.InputSampleRate, (unsigned long)mask);
++    }
      return 1;
  
  fail:
-@@ -135,14 +196,68 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
+@@ -135,14 +206,68 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
      int copy_samples;
      HRESULT hr;
  
@@ -623,7 +646,7 @@ index cd69e57..2c9a504 100644
  
      memset(&xbuf, 0, sizeof(xbuf));
      xbuf.AudioBytes = copy_samples * XA2_CHANNELS * sizeof(int16_t);
-@@ -156,17 +271,260 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
+@@ -156,17 +281,260 @@ int xa2_submit_samples(const int16_t *samples, int num_samples)
      return 1;
  }
  
@@ -653,12 +676,11 @@ index cd69e57..2c9a504 100644
 +    return (int)state.BuffersQueued;
 +}
 +
- int xa2_get_buffer_size(void)
- {
-     return XA2_BUF_SAMPLES;
- }
- 
--#else /* !_WIN32 -- POSIX stubs (no audio output yet) */
++int xa2_get_buffer_size(void)
++{
++    return XA2_BUF_SAMPLES;
++}
++
 +#elif defined(__EMSCRIPTEN__) /* -- ring in shared memory, AudioWorklet */
 +
 +/* The page's AudioWorklet (web/ in the game project) reads this ring straight
@@ -757,22 +779,18 @@ index cd69e57..2c9a504 100644
 +    g_web_underruns = g_web_drops = g_web_refills = 0;
 +    g_web_min_queued = 1 << 30;
 +}
- 
--int  xa2_init(void)                                   { return 0; }
--void xa2_shutdown(void)                               {}
--int  xa2_is_active(void)                              { return 0; }
--int  xa2_submit_samples(const int16_t *s, int n)      { (void)s; (void)n; return 0; }
--int  xa2_get_buffer_size(void)                        { return 0; }
++
 +int xa2_queued(void)
 +{
 +    return g_web_on ? web_queued(g_web_buf_samples) : 0;
 +}
 +
-+int xa2_get_buffer_size(void)
-+{
-+    return XA2_BUF_SAMPLES;
-+}
-+
+ int xa2_get_buffer_size(void)
+ {
+     return XA2_BUF_SAMPLES;
+ }
+ 
+-#else /* !_WIN32 -- POSIX stubs (no audio output yet) */
 +#else /* !_WIN32 -- SDL2 audio queue */
 +
 +int xa2_channels(void) { return 2; }      /* 5.1: Windows (XAudio2) only */
@@ -817,7 +835,12 @@ index cd69e57..2c9a504 100644
 +            SDL_GetCurrentAudioDriver(), have.freq, have.samples);
 +    return 1;
 +}
-+
+ 
+-int  xa2_init(void)                                   { return 0; }
+-void xa2_shutdown(void)                               {}
+-int  xa2_is_active(void)                              { return 0; }
+-int  xa2_submit_samples(const int16_t *s, int n)      { (void)s; (void)n; return 0; }
+-int  xa2_get_buffer_size(void)                        { return 0; }
 +void xa2_shutdown(void)
 +{
 +    if (!g_sdl_dev) return;
