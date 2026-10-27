@@ -7922,7 +7922,7 @@ index 0000000..165eab0
 +    return s_lut_serial;
 +}
 diff --git a/src/video/fb_present.c b/src/video/fb_present.c
-index 08bae4b..791e0d3 100644
+index 08bae4b..b52ae02 100644
 --- a/src/video/fb_present.c
 +++ b/src/video/fb_present.c
 @@ -15,12 +15,15 @@
@@ -8437,7 +8437,7 @@ index 08bae4b..791e0d3 100644
              line[x * 3 + 0] = (uint8_t)(src[x] & 0xFF);
              line[x * 3 + 1] = (uint8_t)((src[x] >> 8) & 0xFF);
              line[x * 3 + 2] = (uint8_t)((src[x] >> 16) & 0xFF);
-@@ -250,12 +648,157 @@ int xbox_FramebufferDumpBmp(const char *path)
+@@ -250,12 +648,163 @@ int xbox_FramebufferDumpBmp(const char *path)
          fwrite(line, 1, row, f);
      }
      free(line);
@@ -8559,12 +8559,18 @@ index 08bae4b..791e0d3 100644
 +
 +void xbox_FramebufferSnapshot(const char *path)
 +{
++    char bmp[MAX_PATH];
++    size_t n = strlen(path);
 +    if (gpu_present_active()) {
-+        gpu_present_capture(path);
++        gpu_present_capture(path);      /* PNG for a .png path, on its own thread */
 +        return;
 +    }
++    /* without the presenter only the BMP dump: a .png path gets .bmp */
++    snprintf(bmp, sizeof bmp, "%s", path);
++    if (n > 4 && n < sizeof bmp && !_stricmp(bmp + n - 4, ".png"))
++        memcpy(bmp + n - 4, ".bmp", 4);
 +    s_dump_quiet = 1;
-+    xbox_FramebufferDumpBmp(path);
++    xbox_FramebufferDumpBmp(bmp);
 +    s_dump_quiet = 0;
 +}
 +
@@ -8597,7 +8603,7 @@ index 08bae4b..791e0d3 100644
  static DWORD WINAPI fb_thread(LPVOID unused)
  {
      HWND hwnd;
-@@ -274,18 +817,56 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -274,18 +823,56 @@ static DWORD WINAPI fb_thread(LPVOID unused)
          wc.lpszClassName = "XboxRecompFramebuffer";
          RegisterClassA(&wc);
      }
@@ -8661,7 +8667,7 @@ index 08bae4b..791e0d3 100644
  
      memset(&bi, 0, sizeof(bi));
      bi.bmiHeader.biSize        = sizeof(bi.bmiHeader);
-@@ -299,6 +880,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -299,6 +886,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
  
      fprintf(stderr, "  [FBWIN] framebuffer window open (%ux%u)\n",
              s_fb_width, s_fb_height);
@@ -8672,7 +8678,7 @@ index 08bae4b..791e0d3 100644
  
      while (InterlockedCompareExchange(&s_fb_running, 1, 1)) {
          MSG msg;
-@@ -306,7 +891,42 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -306,7 +897,42 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              TranslateMessage(&msg);
              DispatchMessageA(&msg);
          }
@@ -8716,7 +8722,7 @@ index 08bae4b..791e0d3 100644
              /* A finished frame, published by the flip. Copied into s_rgb so
               * the dump path and GDI see one consistent image even if the
               * next flip lands mid-blit. */
-@@ -314,19 +934,28 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -314,19 +940,28 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              if (s_present[idx])
                  memcpy(s_rgb, s_present[idx],
                         (size_t)s_fb_width * s_fb_height * 4);
@@ -8751,7 +8757,7 @@ index 08bae4b..791e0d3 100644
          {
              /* One dump a few seconds in, so the title has had time to render
               * something rather than catching the first blank frame.
-@@ -357,6 +986,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -357,6 +992,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
              if (now - t0 >= 1000) {
                  LONG f = s_flips;
                  wchar_t tb[128];
@@ -8762,7 +8768,7 @@ index 08bae4b..791e0d3 100644
                  _snwprintf(tb, 127, L"%ls | FPS: %.1f | draws: %ld", s_title,
                             t0 ? (f - f0) * 1000.0 / (now - t0) : 0.0,
                             (long)s_frame_draws);
-@@ -365,9 +998,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
+@@ -365,9 +1004,12 @@ static DWORD WINAPI fb_thread(LPVOID unused)
                  t0 = now; f0 = f;
              }
          }
@@ -8776,7 +8782,7 @@ index 08bae4b..791e0d3 100644
      ReleaseDC(hwnd, hdc);
      DestroyWindow(hwnd);
      free(s_rgb);
-@@ -390,11 +1026,4 @@ void xbox_FramebufferWindowStart(void)
+@@ -390,11 +1032,4 @@ void xbox_FramebufferWindowStart(void)
          InterlockedExchange(&s_fb_running, 0);
  }
  
@@ -9577,10 +9583,10 @@ index 0000000..d67e1fd
 +}
 diff --git a/src/video/gpu_present.c b/src/video/gpu_present.c
 new file mode 100644
-index 0000000..7b3408b
+index 0000000..47a6dd0
 --- /dev/null
 +++ b/src/video/gpu_present.c
-@@ -0,0 +1,381 @@
+@@ -0,0 +1,494 @@
 +/*
 + * D3D11 presentation for the framebuffer window (ROADMAP Phase 2.1).
 + *
@@ -9600,6 +9606,7 @@ index 0000000..7b3408b
 +#include <d3d11.h>
 +#include <dxgi.h>
 +#include <d3dcompiler.h>
++#include <wincodec.h>
 +#include <stdio.h>
 +#include <stdint.h>
 +#include <stdlib.h>
@@ -9609,6 +9616,8 @@ index 0000000..7b3408b
 +#pragma comment(lib, "d3d11.lib")
 +#pragma comment(lib, "dxgi.lib")
 +#pragma comment(lib, "d3dcompiler.lib")
++#pragma comment(lib, "windowscodecs.lib")
++#pragma comment(lib, "ole32.lib")
 +
 +static ID3D11Device             *s_dev;
 +static ID3D11DeviceContext      *s_ctx;
@@ -9627,7 +9636,8 @@ index 0000000..7b3408b
 +static volatile LONG             s_capture_pending;
 +
 +/* The next presented image (back buffer: letterbox, overlay and gamma
-+ * included -- what the window shows) as a 24-bit BMP. RECOMP_SNAP_PRESENTED=1
++ * included -- what the window shows) as a PNG (path ending in .png) or a
++ * 24-bit BMP, written on a thread of its own. RECOMP_SNAP_PRESENTED=1
 + * routes the snapshot trigger here (fb_present.c). */
 +void gpu_present_capture(const char *path)
 +{
@@ -9636,12 +9646,120 @@ index 0000000..7b3408b
 +    InterlockedExchange(&s_capture_pending, 1);
 +}
 +
++/* A captured frame written to disk on its own thread: a PNG (Windows' own
++ * encoder, WIC) when the path ends in .png -- compressing 5120x1440 takes
++ * a while, and the window thread must not wait for it -- else a BMP. */
++typedef struct {
++    char path[MAX_PATH];
++    uint8_t *px;                        /* BGRA, top-down, w * 4 bytes a row */
++    uint32_t w, h;
++} CaptureJob;
++
++static int path_is_png(const char *p)
++{
++    size_t n = strlen(p);
++    return n > 4 && !_stricmp(p + n - 4, ".png");
++}
++
++static int write_png(const CaptureJob *j)
++{
++    IWICImagingFactory *fac = NULL;
++    IWICStream *st = NULL;
++    IWICBitmapEncoder *enc = NULL;
++    IWICBitmapFrameEncode *fr = NULL;
++    IPropertyBag2 *props = NULL;
++    WCHAR wpath[MAX_PATH];
++    WICPixelFormatGUID fmt = GUID_WICPixelFormat24bppBGR;
++    uint8_t *bgr = NULL;
++    uint32_t stride = j->w * 3, y, x;
++    int ok = 0;
++    MultiByteToWideChar(CP_ACP, 0, j->path, -1, wpath, MAX_PATH);
++    if (!(bgr = (uint8_t *)malloc((size_t)stride * j->h)))
++        return 0;
++    for (y = 0; y < j->h; y++) {                /* drop the alpha byte */
++        const uint8_t *s = j->px + (size_t)y * j->w * 4;
++        uint8_t *d = bgr + (size_t)y * stride;
++        for (x = 0; x < j->w; x++, s += 4, d += 3) {
++            d[0] = s[0]; d[1] = s[1]; d[2] = s[2];
++        }
++    }
++    if (SUCCEEDED(CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
++                                   &IID_IWICImagingFactory, (void **)&fac))
++        && SUCCEEDED(IWICImagingFactory_CreateStream(fac, &st))
++        && SUCCEEDED(IWICStream_InitializeFromFilename(st, wpath, GENERIC_WRITE))
++        && SUCCEEDED(IWICImagingFactory_CreateEncoder(fac, &GUID_ContainerFormatPng, NULL, &enc))
++        && SUCCEEDED(IWICBitmapEncoder_Initialize(enc, (IStream *)st, WICBitmapEncoderNoCache))
++        && SUCCEEDED(IWICBitmapEncoder_CreateNewFrame(enc, &fr, &props))
++        && SUCCEEDED(IWICBitmapFrameEncode_Initialize(fr, props))
++        && SUCCEEDED(IWICBitmapFrameEncode_SetSize(fr, j->w, j->h))
++        && SUCCEEDED(IWICBitmapFrameEncode_SetPixelFormat(fr, &fmt))
++        && IsEqualGUID(&fmt, &GUID_WICPixelFormat24bppBGR)
++        && SUCCEEDED(IWICBitmapFrameEncode_WritePixels(fr, j->h, stride, stride * j->h, bgr))
++        && SUCCEEDED(IWICBitmapFrameEncode_Commit(fr))
++        && SUCCEEDED(IWICBitmapEncoder_Commit(enc)))
++        ok = 1;
++    if (props) IPropertyBag2_Release(props);
++    if (fr) IWICBitmapFrameEncode_Release(fr);
++    if (enc) IWICBitmapEncoder_Release(enc);
++    if (st) IWICStream_Release(st);
++    if (fac) IWICImagingFactory_Release(fac);
++    free(bgr);
++    return ok;
++}
++
++static void write_bmp(const CaptureJob *j)
++{
++    FILE *f = fopen(j->path, "wb");
++    uint32_t row = (j->w * 3u + 3u) & ~3u, img = row * j->h, total = 54u + img, y, x;
++    uint8_t hdr[54] = {'B', 'M'}, *line;
++    if (!f)
++        return;
++    memcpy(hdr + 2, &total, 4); hdr[10] = 54; hdr[14] = 40;
++    memcpy(hdr + 18, &j->w, 4); memcpy(hdr + 22, &j->h, 4);
++    hdr[26] = 1; hdr[28] = 24; memcpy(hdr + 34, &img, 4);
++    fwrite(hdr, 1, 54, f);
++    line = (uint8_t *)calloc(1, row);
++    for (y = j->h; line && y-- > 0;) {          /* BMP rows go bottom-up */
++        const uint8_t *src = j->px + (size_t)y * j->w * 4;
++        for (x = 0; x < j->w; x++) {
++            line[x * 3] = src[x * 4]; line[x * 3 + 1] = src[x * 4 + 1];
++            line[x * 3 + 2] = src[x * 4 + 2];
++        }
++        fwrite(line, 1, row, f);
++    }
++    free(line);
++    fclose(f);
++}
++
++static DWORD WINAPI capture_write_thread(LPVOID arg)
++{
++    CaptureJob *j = (CaptureJob *)arg;
++    HRESULT co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
++    char final_path[MAX_PATH];
++    int png = path_is_png(j->path);
++    /* written under a temporary name, renamed when complete: whoever waits
++     * for the file (live.ps1 snap) never reads half of it */
++    snprintf(final_path, sizeof final_path, "%s", j->path);
++    snprintf(j->path, sizeof j->path, "%s.part", final_path);
++    if (!png || !write_png(j)) {
++        if (png)
++            fprintf(stderr, "[FBWIN] PNG encoder failed: %s written as BMP data\n", final_path);
++        write_bmp(j);
++    }
++    MoveFileExA(j->path, final_path, MOVEFILE_REPLACE_EXISTING);
++    if (SUCCEEDED(co))
++        CoUninitialize();
++    free(j->px);
++    free(j);
++    return 0;
++}
++
 +static void capture_back_buffer(void)
 +{
 +    ID3D11Texture2D *back = NULL, *stg = NULL;
 +    D3D11_TEXTURE2D_DESC td;
 +    D3D11_MAPPED_SUBRESOURCE m;
-+    FILE *f;
++    CaptureJob *j;
 +    if (FAILED(IDXGISwapChain_GetBuffer(s_chain, 0, &IID_ID3D11Texture2D, (void **)&back)))
 +        return;
 +    ID3D11Texture2D_GetDesc(back, &td);
@@ -9650,24 +9768,25 @@ index 0000000..7b3408b
 +    if (SUCCEEDED(ID3D11Device_CreateTexture2D(s_dev, &td, NULL, &stg))) {
 +        ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource *)stg, (ID3D11Resource *)back);
 +        if (SUCCEEDED(ID3D11DeviceContext_Map(s_ctx, (ID3D11Resource *)stg, 0, D3D11_MAP_READ, 0, &m))) {
-+            if ((f = fopen(s_capture, "wb")) != NULL) {
-+                uint32_t row = (td.Width * 3u + 3u) & ~3u, img = row * td.Height, y, x;
-+                uint8_t hdr[54] = {'B', 'M'}, *line = (uint8_t *)calloc(1, row);
-+                uint32_t total = 54u + img;
-+                memcpy(hdr + 2, &total, 4); hdr[10] = 54; hdr[14] = 40;
-+                memcpy(hdr + 18, &td.Width, 4); memcpy(hdr + 22, &td.Height, 4);
-+                hdr[26] = 1; hdr[28] = 24; memcpy(hdr + 34, &img, 4);
-+                fwrite(hdr, 1, 54, f);
-+                for (y = td.Height; line && y-- > 0;) {
-+                    const uint8_t *src = (const uint8_t *)m.pData + (size_t)y * m.RowPitch;
-+                    for (x = 0; x < td.Width; x++) {
-+                        line[x * 3] = src[x * 4]; line[x * 3 + 1] = src[x * 4 + 1];
-+                        line[x * 3 + 2] = src[x * 4 + 2];
-+                    }
-+                    fwrite(line, 1, row, f);
++            /* only the copy here; encoding and writing on a thread of its own */
++            if ((j = (CaptureJob *)calloc(1, sizeof *j)) != NULL
++                && (j->px = (uint8_t *)malloc((size_t)td.Width * 4 * td.Height)) != NULL) {
++                uint32_t y;
++                snprintf(j->path, sizeof j->path, "%s", s_capture);
++                j->w = td.Width;
++                j->h = td.Height;
++                for (y = 0; y < td.Height; y++)
++                    memcpy(j->px + (size_t)y * td.Width * 4, (const uint8_t *)m.pData + (size_t)y * m.RowPitch,
++                           (size_t)td.Width * 4);
++                {
++                    HANDLE th = CreateThread(NULL, 0, capture_write_thread, j, 0, NULL);
++                    if (th)
++                        CloseHandle(th);
++                    else
++                        capture_write_thread(j);
 +                }
-+                free(line);
-+                fclose(f);
++            } else if (j) {
++                free(j);
 +            }
 +            ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource *)stg, 0);
 +        }
@@ -9986,10 +10105,10 @@ index 0000000..8891786
 +#endif
 +#endif
 diff --git a/src/video/video_player.h b/src/video/video_player.h
-index c844aef..a48364a 100644
+index c844aef..b10a657 100644
 --- a/src/video/video_player.h
 +++ b/src/video/video_player.h
-@@ -62,13 +62,28 @@ int  video_dump_frame_bmp(const char *path);
+@@ -62,13 +62,29 @@ int  video_dump_frame_bmp(const char *path);
   * zero when there is no window, which is the right answer: with nothing to
   * focus there is nothing to type into. */
  int xbox_FramebufferKeyDown(int vk);
@@ -10003,9 +10122,10 @@ index c844aef..a48364a 100644
  void xbox_FramebufferWindowSet(uint32_t fb_va, uint32_t pitch);
  int  xbox_FramebufferDumpBmp(const char *path);
 +/* What the window shows (a renderer's published frame, gamma and overlay
-+ * included where the presenter allows) as a BMP: the snapshot trigger's
-+ * capture, callable from any thread. Written asynchronously by the window
-+ * thread where the presenter captures its back buffer. */
++ * included where the presenter allows): the snapshot trigger's capture,
++ * callable from any thread. With the Windows presenter the frame is copied
++ * at the next present and written on a thread of its own, as a PNG when the
++ * path ends in .png; otherwise (and on SDL / web) a BMP. */
 +void xbox_FramebufferSnapshot(const char *path);
 +/* A short message on screen for ~3 s (a setting changed with a key). */
 +void xbox_FramebufferOsd(const char *text);

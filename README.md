@@ -174,7 +174,7 @@ settings, menus, events with results and frame rate, saves, money spent,
 warnings, how it ended; the launcher's "Log detail" (or
 `RECOMP_LOG_LEVEL=trace|debug|info|warn|error|critical`) turns detail up or
 down. F12, or both thumbsticks clicked, writes a marked line plus a
-snapshot (`mark_<time>.bmp`). A crash also leaves a minidump there
+snapshot (`mark_<time>.png`; BMP on Linux). A crash also leaves a minidump there
 (`crash_<time>.dmp`, open it in Visual Studio next to
 `build\ssx3_recomp.pdb`). Details: [docs/LOGGING.md](docs/LOGGING.md).
 

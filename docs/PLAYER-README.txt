@@ -47,7 +47,7 @@ Reporting a problem
   the newest log selected (latest.txt names it too) -- send that file.
   - Saw something wrong? Press F12 right away (or click both thumbsticks).
     That marks the moment in the log and saves a picture of the screen
-    next to it (mark_<time>.bmp); send that too.
+    next to it (mark_<time>.png); send that too.
   - "Log detail" in the launcher: Normal is right for playing. Detailed or
     Everything write much more (and bigger files); use them when asked to.
   - After a crash the log ends with the crash report, and a crash_<time>.dmp

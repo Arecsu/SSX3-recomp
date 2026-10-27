@@ -2,7 +2,7 @@
  * The player's mark (docs/LOGGING.md C1): "I saw it here".
  *
  * F12, or both thumbsticks clicked together on a controller, writes
- *   INFO [MARK] *** player mark N (F12) *** in game, Snow Jam; in game; snapshot logs\mark_...bmp
+ *   INFO [MARK] *** player mark N (F12) *** in game, Peak 1 Race Snow Jam; snapshot logs\mark_...png
  * to the session log -- the log pump writes its flight recorder (the detail
  * lines below the log level) just before it -- and saves what the window
  * shows next to the log. A host thread polls every 50 ms, so a mark works
@@ -90,13 +90,20 @@ static void mark(const char *how)
     mkdir(ssx3_LogsDir(), 0755);
 #endif
     n++;
-    snprintf(path, sizeof path, "%s%cmark_%04d%02d%02d-%02d%02d%02d_%d.bmp", ssx3_LogsDir(),
+    /* PNG on Windows (encoded on a thread of the presenter's own), BMP
+     * elsewhere */
+    snprintf(path, sizeof path, "%s%cmark_%04d%02d%02d-%02d%02d%02d_%d.%s", ssx3_LogsDir(),
 #ifdef _WIN32
              '\\',
 #else
              '/',
 #endif
-             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, n);
+             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, n,
+#ifdef _WIN32
+             "png");
+#else
+             "bmp");
+#endif
     ssx3_WhereNow(where, sizeof where);
     xbox_FramebufferSnapshot(path);
     {
