@@ -1285,6 +1285,14 @@ static void free_target(VkrContext *c)
     c->color = c->depth = VK_NULL_HANDLE;
 }
 
+void vkr_info(VkrContext *c, uint32_t *w, uint32_t *h, uint32_t *msaa, uint64_t *tex_bytes)
+{
+    *w = c->sw;
+    *h = c->sh;
+    *msaa = (uint32_t)c->main.samples;
+    *tex_bytes = c->tex_bytes;
+}
+
 void vkr_tex_purge(VkrContext *c)
 {
     c->purge_req = 1;

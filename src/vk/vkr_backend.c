@@ -1844,6 +1844,20 @@ void ssx3_LiveShadows(int on)
     s_no_shadows = !on;
 }
 
+int ssx3_LiveShadowsOn(void)
+{
+    return !s_no_shadows;
+}
+
+/* for the player mark's state line: 0 without a renderer */
+int ssx3_RenderInfo(uint32_t *w, uint32_t *h, uint32_t *msaa, uint64_t *tex_bytes)
+{
+    if (!s_vk)
+        return 0;
+    vkr_info(s_vk, w, h, msaa, tex_bytes);
+    return 1;
+}
+
 static int be_draw(const Nv2aTarget *t, uint32_t prim, const Nv2aVshOutput *v, uint32_t n)
 {
     uint32_t *idx, k = 0, topo;

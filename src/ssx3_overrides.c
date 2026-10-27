@@ -258,6 +258,13 @@ static void dd_init(void)
     }
 }
 
+void ssx3_DrawDist(float *setting, float *in_use)
+{
+    dd_init();
+    *setting = s_dd_mul;
+    *in_use = s_dd_eff;
+}
+
 /* F5 (src/live.c): the draw distance setting, Normal 1x -> Far 1.5x ->
  * Maximum 2x -> Normal; the adaptive view starts again from the original. */
 float ssx3_LiveDrawDistNext(void)
