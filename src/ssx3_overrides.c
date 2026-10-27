@@ -2761,3 +2761,632 @@ void sub_001BDAE0(void)
     }
     sub_001BDAE0_gen();
 }
+
+/*
+ * RECOMP_MUSIC_TRACE=1 (research, docs/MUSIC.md): every call from the game
+ * into EA's audio engine API that the music code uses, with its first four
+ * stack arguments and the caller -- logged only when the arguments differ
+ * from that function's previous call (volumes and positions are set every
+ * frame). Finds which calls fire Pathfinder events and set its values.
+ */
+static int music_trace_on(void)
+{
+    static int on = -1;
+    if (on < 0) on = getenv("RECOMP_MUSIC_TRACE") != NULL;
+    return on;
+}
+
+static void music_trace(const char *fn, uint32_t last[5])
+{
+    uint32_t a[5] = {MEM32(g_esp), MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12), MEM32(g_esp + 16)};
+    /* the per-frame and sound-effect calls: not wanted in the trace */
+    static const char *const quiet[] = {"sub_0018E590", "sub_0018F5A0", "sub_0018E370", "sub_0018E6A0",
+        "sub_0018F770", "sub_0018E450", "sub_001906F0", "sub_0018F0F0", "sub_0018F1E0", "sub_0018E760",
+        "sub_0018E0A0", NULL};
+    int k;
+    if (!music_trace_on() || !memcmp(a + 1, last + 1, 16))
+        return;
+    for (k = 0; quiet[k]; k++)
+        if (!strcmp(fn, quiet[k]))
+            return;
+    memcpy(last, a, sizeof a);
+    log_msg(LOG_DEBUG, "MUSIC", "%s(%08X, %08X, %08X, %08X) ecx %08X from %08X", fn, a[1], a[2], a[3], a[4],
+            g_ecx, a[0]);
+}
+
+extern void sub_0018F240_gen(void);
+
+void sub_0018F240(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018F240", last);
+    sub_0018F240_gen();
+}
+
+extern void sub_0018F440_gen(void);
+
+void sub_0018F440(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018F440", last);
+    sub_0018F440_gen();
+}
+
+extern void sub_0018F520_gen(void);
+
+void sub_0018F520(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018F520", last);
+    sub_0018F520_gen();
+}
+
+extern void sub_0018F4F0_gen(void);
+
+void sub_0018F4F0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018F4F0", last);
+    sub_0018F4F0_gen();
+}
+
+extern void sub_0018F660_gen(void);
+
+void sub_0018F660(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018F660", last);
+    sub_0018F660_gen();
+}
+
+extern void sub_0018F6F0_gen(void);
+
+void sub_0018F6F0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018F6F0", last);
+    sub_0018F6F0_gen();
+}
+
+extern void sub_0018F770_gen(void);
+
+void sub_0018F770(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018F770", last);
+    sub_0018F770_gen();
+}
+
+extern void sub_0018F7B0_gen(void);
+
+void sub_0018F7B0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018F7B0", last);
+    sub_0018F7B0_gen();
+}
+
+extern void sub_0018F5A0_gen(void);
+
+void sub_0018F5A0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018F5A0", last);
+    sub_0018F5A0_gen();
+}
+
+extern void sub_0018AAC0_gen(void);
+
+void sub_0018AAC0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018AAC0", last);
+    sub_0018AAC0_gen();
+}
+
+extern void sub_0018DF00_gen(void);
+
+void sub_0018DF00(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018DF00", last);
+    sub_0018DF00_gen();
+}
+
+extern void sub_0018E0A0_gen(void);
+
+void sub_0018E0A0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018E0A0", last);
+    sub_0018E0A0_gen();
+}
+
+extern void sub_0018E6A0_gen(void);
+
+void sub_0018E6A0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018E6A0", last);
+    sub_0018E6A0_gen();
+}
+
+extern void sub_0018E760_gen(void);
+
+void sub_0018E760(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018E760", last);
+    sub_0018E760_gen();
+}
+
+extern void sub_0018F0F0_gen(void);
+
+void sub_0018F0F0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018F0F0", last);
+    sub_0018F0F0_gen();
+}
+
+extern void sub_0018F1E0_gen(void);
+
+void sub_0018F1E0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018F1E0", last);
+    sub_0018F1E0_gen();
+}
+
+extern void sub_00190670_gen(void);
+
+void sub_00190670(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_00190670", last);
+    sub_00190670_gen();
+}
+
+extern void sub_001906F0_gen(void);
+
+void sub_001906F0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_001906F0", last);
+    sub_001906F0_gen();
+}
+
+extern void sub_00190730_gen(void);
+
+void sub_00190730(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_00190730", last);
+    sub_00190730_gen();
+}
+
+extern void sub_00190760_gen(void);
+
+void sub_00190760(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_00190760", last);
+    sub_00190760_gen();
+}
+
+extern void sub_00190830_gen(void);
+
+void sub_00190830(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_00190830", last);
+    sub_00190830_gen();
+}
+
+extern void sub_0018FE30_gen(void);
+
+void sub_0018FE30(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018FE30", last);
+    sub_0018FE30_gen();
+}
+
+extern void sub_0018E590_gen(void);
+
+void sub_0018E590(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018E590", last);
+    sub_0018E590_gen();
+}
+
+extern void sub_0018E7C0_gen(void);
+
+void sub_0018E7C0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018E7C0", last);
+    sub_0018E7C0_gen();
+}
+
+extern void sub_0018EC70_gen(void);
+
+void sub_0018EC70(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018EC70", last);
+    sub_0018EC70_gen();
+}
+
+extern void sub_0018F190_gen(void);
+
+void sub_0018F190(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018F190", last);
+    sub_0018F190_gen();
+}
+
+extern void sub_0018E370_gen(void);
+
+void sub_0018E370(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018E370", last);
+    sub_0018E370_gen();
+}
+
+extern void sub_0018F370_gen(void);
+
+void sub_0018F370(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018F370", last);
+    sub_0018F370_gen();
+}
+
+extern void sub_0018F3F0_gen(void);
+
+void sub_0018F3F0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018F3F0", last);
+    sub_0018F3F0_gen();
+}
+
+extern void sub_0018E0F0_gen(void);
+
+void sub_0018E0F0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018E0F0", last);
+    sub_0018E0F0_gen();
+}
+
+extern void sub_0018E450_gen(void);
+
+void sub_0018E450(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018E450", last);
+    sub_0018E450_gen();
+}
+
+extern void sub_0018E500_gen(void);
+
+void sub_0018E500(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018E500", last);
+    sub_0018E500_gen();
+}
+
+extern void sub_0018E630_gen(void);
+
+void sub_0018E630(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018E630", last);
+    sub_0018E630_gen();
+}
+
+extern void sub_00189720_gen(void);
+
+void sub_00189720(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_00189720", last);
+    sub_00189720_gen();
+}
+
+extern void sub_00189490_gen(void);
+
+void sub_00189490(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_00189490", last);
+    sub_00189490_gen();
+}
+
+extern void sub_0018DEA0_gen(void);
+
+void sub_0018DEA0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018DEA0", last);
+    sub_0018DEA0_gen();
+}
+
+extern void sub_0018DEE0_gen(void);
+
+void sub_0018DEE0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018DEE0", last);
+    sub_0018DEE0_gen();
+}
+
+extern void sub_0018A6E0_gen(void);
+
+void sub_0018A6E0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018A6E0", last);
+    sub_0018A6E0_gen();
+}
+
+extern void sub_0018A8C0_gen(void);
+
+void sub_0018A8C0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018A8C0", last);
+    sub_0018A8C0_gen();
+}
+
+extern void sub_0018AA90_gen(void);
+
+void sub_0018AA90(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018AA90", last);
+    sub_0018AA90_gen();
+}
+
+extern void sub_0018B720_gen(void);
+
+void sub_0018B720(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018B720", last);
+    sub_0018B720_gen();
+}
+
+extern void sub_0018ABC0_gen(void);
+
+void sub_0018ABC0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018ABC0", last);
+    sub_0018ABC0_gen();
+}
+
+extern void sub_0018A010_gen(void);
+
+void sub_0018A010(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_0018A010", last);
+    sub_0018A010_gen();
+}
+
+extern void sub_00189A30_gen(void);
+
+void sub_00189A30(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_00189A30", last);
+    sub_00189A30_gen();
+}
+
+extern void sub_00189B70_gen(void);
+
+void sub_00189B70(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    music_trace("sub_00189B70", last);
+    sub_00189B70_gen();
+}
+
+/* the music director's "play event" (vtable 0x2E4DBC): each Pathfinder
+ * event the game fires, with its caller and where the game is */
+extern void sub_0010D850_gen(void);
+
+void sub_0010D850(void)
+{
+    if (music_trace_on()) {
+        extern void ssx3_WhereNow(char *out, size_t n);
+        char where[128];
+        ssx3_WhereNow(where, sizeof where);
+        char chain[160];
+        size_t n = 0;
+        int k;
+        chain[0] = 0;
+        for (k = 0; k < 48 && n < sizeof chain - 10; k++) {   /* guest return addresses */
+            uint32_t w = MEM32(g_esp + k * 4);
+            if (w >= 0x00011000u && w < 0x00280000u)
+                n += (size_t)snprintf(chain + n, sizeof chain - n, " %08X", w);
+        }
+        log_msg(LOG_DEBUG, "MUSIC", "EVENT %u (%s; %s) chain%s", MEM32(g_esp + 4), where, screen_name_now(),
+                chain);
+    }
+    sub_0010D850_gen();
+}
+
+/* music research: loop phrase start */
+extern void sub_001043E0_gen(void);
+
+void sub_001043E0(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    if (music_trace_on())
+        log_msg(LOG_DEBUG, "MUSIC", "loop phrase start sub_001043E0(%08X, %08X) ecx %08X from %08X", MEM32(g_esp + 4),
+                MEM32(g_esp + 8), g_ecx, MEM32(g_esp));
+    (void)last;
+    sub_001043E0_gen();
+    if (music_trace_on() && !strcmp("001043E0", "00103140"))
+        log_msg(LOG_DEBUG, "MUSIC", "  phrase pick -> %u", g_eax);
+}
+
+/* music research: loop callback */
+extern void sub_00104570_gen(void);
+
+void sub_00104570(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    if (music_trace_on())
+        log_msg(LOG_DEBUG, "MUSIC", "loop callback sub_00104570(%08X, %08X) ecx %08X from %08X", MEM32(g_esp + 4),
+                MEM32(g_esp + 8), g_ecx, MEM32(g_esp));
+    (void)last;
+    sub_00104570_gen();
+    if (music_trace_on() && !strcmp("00104570", "00103140"))
+        log_msg(LOG_DEBUG, "MUSIC", "  phrase pick -> %u", g_eax);
+}
+
+/* music research: overlay on */
+extern void sub_00104850_gen(void);
+
+void sub_00104850(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    if (music_trace_on())
+        log_msg(LOG_DEBUG, "MUSIC", "overlay on sub_00104850(%08X, %08X) ecx %08X from %08X", MEM32(g_esp + 4),
+                MEM32(g_esp + 8), g_ecx, MEM32(g_esp));
+    (void)last;
+    sub_00104850_gen();
+    if (music_trace_on() && !strcmp("00104850", "00103140"))
+        log_msg(LOG_DEBUG, "MUSIC", "  phrase pick -> %u", g_eax);
+}
+
+/* music research: overlay off */
+extern void sub_00104890_gen(void);
+
+void sub_00104890(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    if (music_trace_on())
+        log_msg(LOG_DEBUG, "MUSIC", "overlay off sub_00104890(%08X, %08X) ecx %08X from %08X", MEM32(g_esp + 4),
+                MEM32(g_esp + 8), g_ecx, MEM32(g_esp));
+    (void)last;
+    sub_00104890_gen();
+    if (music_trace_on() && !strcmp("00104890", "00103140"))
+        log_msg(LOG_DEBUG, "MUSIC", "  phrase pick -> %u", g_eax);
+}
+
+/* music research: phrase pick */
+extern void sub_00103140_gen(void);
+
+void sub_00103140(void)
+{
+    static uint32_t last[5] = {1, 1, 1, 1, 1};
+    if (music_trace_on())
+        log_msg(LOG_DEBUG, "MUSIC", "phrase pick sub_00103140(%08X, %08X) ecx %08X from %08X", MEM32(g_esp + 4),
+                MEM32(g_esp + 8), g_ecx, MEM32(g_esp));
+    (void)last;
+    sub_00103140_gen();
+    if (music_trace_on() && !strcmp("00103140", "00103140"))
+        log_msg(LOG_DEBUG, "MUSIC", "  phrase pick -> %u", g_eax);
+}
+
+/* music research: loops arm */
+extern void sub_00104E50_gen(void);
+
+void sub_00104E50(void)
+{
+    if (music_trace_on()) {
+        char chain[120];
+        size_t n = 0;
+        int k;
+        chain[0] = 0;
+        for (k = 0; k < 24 && n < sizeof chain - 10; k++) {
+            uint32_t w = MEM32(g_esp + k * 4);
+            if (w >= 0x00011000u && w < 0x00280000u)
+                n += (size_t)snprintf(chain + n, sizeof chain - n, " %08X", w);
+        }
+        log_msg(LOG_DEBUG, "MUSIC", "loops arm sub_00104E50 ecx %08X chain%s", g_ecx, chain);
+    }
+    sub_00104E50_gen();
+}
+
+/* music research: loops disarm */
+extern void sub_00104EB0_gen(void);
+
+void sub_00104EB0(void)
+{
+    if (music_trace_on()) {
+        char chain[120];
+        size_t n = 0;
+        int k;
+        chain[0] = 0;
+        for (k = 0; k < 24 && n < sizeof chain - 10; k++) {
+            uint32_t w = MEM32(g_esp + k * 4);
+            if (w >= 0x00011000u && w < 0x00280000u)
+                n += (size_t)snprintf(chain + n, sizeof chain - n, " %08X", w);
+        }
+        log_msg(LOG_DEBUG, "MUSIC", "loops disarm sub_00104EB0 ecx %08X chain%s", g_ecx, chain);
+    }
+    sub_00104EB0_gen();
+}
+
+/* music research: song stop */
+extern void sub_00105150_gen(void);
+
+void sub_00105150(void)
+{
+    if (music_trace_on()) {
+        char chain[120];
+        size_t n = 0;
+        int k;
+        chain[0] = 0;
+        for (k = 0; k < 24 && n < sizeof chain - 10; k++) {
+            uint32_t w = MEM32(g_esp + k * 4);
+            if (w >= 0x00011000u && w < 0x00280000u)
+                n += (size_t)snprintf(chain + n, sizeof chain - n, " %08X", w);
+        }
+        log_msg(LOG_DEBUG, "MUSIC", "song stop sub_00105150 ecx %08X chain%s", g_ecx, chain);
+    }
+    sub_00105150_gen();
+}
+
+/* music research: the race intensity ramp's reset and its length class */
+extern void sub_0010D670_gen(void);
+
+void sub_0010D670(void)
+{
+    if (music_trace_on()) {
+        char chain[120];
+        size_t n = 0;
+        int k;
+        chain[0] = 0;
+        for (k = 0; k < 24 && n < sizeof chain - 10; k++) {
+            uint32_t w = MEM32(g_esp + k * 4);
+            if (w >= 0x00011000u && w < 0x00280000u)
+                n += (size_t)snprintf(chain + n, sizeof chain - n, " %08X", w);
+        }
+        log_msg(LOG_DEBUG, "MUSIC", "intensity reset chain%s", chain);
+    }
+    sub_0010D670_gen();
+}
+
+extern void sub_0010A590_gen(void);
+
+void sub_0010A590(void)
+{
+    static uint32_t last = 0xFFFFFFFFu;
+    sub_0010A590_gen();
+    if (music_trace_on() && g_eax != last) {
+        last = g_eax;
+        log_msg(LOG_DEBUG, "MUSIC", "intensity class -> %u", g_eax);
+    }
+}
