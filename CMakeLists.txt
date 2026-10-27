@@ -211,7 +211,9 @@ endif()
 if(WIN32)
     add_executable(ssx3_launcher WIN32 src/launcher/launcher.c)
     set_target_properties(ssx3_launcher PROPERTIES OUTPUT_NAME launcher)
-    target_link_libraries(ssx3_launcher PRIVATE comctl32 ole32 shell32 xinput)
+    target_link_libraries(ssx3_launcher PRIVATE comctl32 ole32 shell32 xinput winhttp)
+    target_include_directories(ssx3_launcher PRIVATE ${CMAKE_BINARY_DIR})   # build_info.h
+    add_dependencies(ssx3_launcher ssx3_build_info)
 else()
     # The same launcher on SDL2 (src/launcher/launcher_sdl.c): text through
     # SDL2_ttf in the desktop's font (fontconfig). Optional: without them
@@ -224,6 +226,8 @@ else()
         set_target_properties(ssx3_launcher PROPERTIES OUTPUT_NAME launcher)
         target_link_libraries(ssx3_launcher PRIVATE SDL2::SDL2 SDL2_ttf::SDL2_ttf
                               Fontconfig::Fontconfig)
+        target_include_directories(ssx3_launcher PRIVATE ${CMAKE_BINARY_DIR})   # build_info.h
+        add_dependencies(ssx3_launcher ssx3_build_info)
     else()
         message(STATUS "launcher: SDL2_ttf or fontconfig not found, not built")
     endif()
