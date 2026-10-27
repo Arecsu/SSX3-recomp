@@ -174,11 +174,16 @@ int ssx3_InGame(void)
     return cur >= 0x10000u && MEM32(cur) == 0x00299D7Cu;
 }
 
+static int ssx3_FullScreenPanelUp(void);
+
+/* ... and not while an MCOMM station prompt fills the screen: those panels
+ * are 4:3 art like the menus (laid out for widescreen their background
+ * stretched to the edges, white and grey, under a frame in the middle). */
 int ssx3_WidescreenNow(void)
 {
     if (ssx3_Aspect() <= 4.0f / 3.0f + 0.01f)
         return 0;
-    return ssx3_InGame();
+    return ssx3_InGame() && !ssx3_FullScreenPanelUp();
 }
 
 /*
@@ -1143,6 +1148,15 @@ int ssx3_InGameMenuUp(void)
     return scr && ssx3_InGame() && MEM32(scr) == s_ingame_menu_vt && ssx3_ScreenShown(scr);
 }
 
+/* The in-game screens that cover the whole screen with 4:3 art: the MCOMM
+ * station prompts, lodge (opened as in-game screen 0x1F) and transport
+ * (0x21). Shown pillarboxed, like the menus (ssx3_WidescreenNow). */
+static int ssx3_FullScreenPanelUp(void)
+{
+    uint32_t vt = s_ingame_menu_vt;
+    return (vt == 0x00298650u || vt == 0x00298788u) && ssx3_InGameMenuUp();
+}
+
 /* Forget the remembered menu once it has closed (or is no longer that
  * screen): the briefing panel closed at the race start stayed remembered
  * for the whole race. */
@@ -1187,6 +1201,7 @@ static const char *screen_name(uint32_t vt, uint32_t id, int in_menus)
     case 0x002981D8u: return "pause menu";
     case 0x00297B60u: return "quit dialog";
     case 0x00298650u: return "lodge / station prompt";
+    case 0x00298788u: return "transport prompt";
     case 0x002938C0u: return "lodge";
     case 0x002984B0u: return "run result";
     case 0x00298378u: return "event results";
