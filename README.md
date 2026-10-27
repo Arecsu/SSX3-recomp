@@ -9,7 +9,7 @@ runs as native code, and the Xbox GPU is emulated on Vulkan. It plays at
 **60 FPS**, at your monitor's resolution, in **true widescreen** (16:9, 21:9
 or 32:9), with HD textures, anti-aliasing and a longer view.
 
-![Snow Jam on a 32:9 monitor](docs/screenshots/46-snow-jam-32x9.jpg)
+![Snow Jam on a 32:9 monitor](docs/screenshots/46-snow-jam-32x9.png)
 <sub>Snow Jam at 5120x1440 (32:9): the game's camera is widened, so nothing is stretched, and the HUD sits at the screen edges.</sub>
 
 | Platform | Status |
