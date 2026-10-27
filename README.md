@@ -62,7 +62,7 @@ the scripts below.
 | **Every event on every peak**: all races, slopestyle, big air and super pipe (here The Junction at night), plus the peak runs. **Longer view and sharper shadows**: draw distance up to 2x the original (pulled in by itself where the game's render lists would overflow) and rider shadows drawn on the GPU at up to 8x the original resolution. | ![The Junction](docs/screenshots/49-the-junction-16x9.jpg) |
 | **Conquer the Mountain** free-roam, lodges and transport, in widescreen; here Green Base Station. The MCOMM station prompts are 4:3 art and shown pillarboxed, like the menus. | ![Conquer the Mountain](docs/screenshots/50-conquer-the-mountain-16x9.jpg) |
 | **Lighting matches the hardware.** Riders were washed out because vertex colours were not clamped the way the Xbox GPU clamps them. Left: xemu; right: this project. | ![lighting](docs/screenshots/39-lighting-vs-xemu.png) |
-| **Trails and snow spray.** Board trails are lines and snow spray is point sprites; the GPU renderer draws both, following xemu's rules. | ![trails](docs/screenshots/42-intimidator-board-trails.png) |
+| **Trails and snow spray.** Board trails are lines and snow spray is point sprites; the GPU renderer draws both, following xemu's rules, and the snow's own trails keep their depth (they used to show through the slope). Intimidator on Peak 2. | ![trails](docs/screenshots/52-intimidator-trails-16x9.jpg) |
 | **2-player split-screen** (Multi Play) works when two controllers are plugged in at start. | ![split](docs/screenshots/43-split-screen.png) |
 
 | | | |
