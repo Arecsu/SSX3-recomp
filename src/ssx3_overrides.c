@@ -258,6 +258,20 @@ static void dd_init(void)
     }
 }
 
+/* F5 (src/live.c): the draw distance setting, Normal 1x -> Far 1.5x ->
+ * Maximum 2x -> Normal; the adaptive view starts again from the original. */
+float ssx3_LiveDrawDistNext(void)
+{
+    static const float steps[3] = {1.0f, 1.5f, 2.0f};
+    int i;
+    dd_init();
+    for (i = 0; i < 3 && steps[i] <= s_dd_mul + 0.01f; i++)
+        ;
+    s_dd_mul = i < 3 ? steps[i] : steps[0];
+    s_dd_eff = s_dd_mul < 1.0f ? s_dd_mul : 1.0f;
+    return s_dd_mul;
+}
+
 void sub_001EAB40(void)
 {
     float mul;

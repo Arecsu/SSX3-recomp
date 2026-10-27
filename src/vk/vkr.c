@@ -97,6 +97,7 @@ struct VkrContext {
     pthread_mutex_t lock;           /* fr[].busy */
     pthread_cond_t freed;
     uint32_t tex_gen;               /* bumped when every texture is freed */
+    volatile int purge_req;         /* vkr_tex_purge: free them all at the next flip */
     /* aliases of fr[cur] */
     VkCommandBuffer cmd;
     VkFence fence;
@@ -1282,6 +1283,11 @@ static void free_target(VkrContext *c)
         c->sc_in = VK_NULL_HANDLE;
     }
     c->color = c->depth = VK_NULL_HANDLE;
+}
+
+void vkr_tex_purge(VkrContext *c)
+{
+    c->purge_req = 1;
 }
 
 uint32_t vkr_tex_generation(VkrContext *c)
@@ -2721,7 +2727,8 @@ int vkr_flip_submit(VkrContext *c)
     c->upload_serial++;
     if (++c->flip_serial % 120 == 0)     /* every ~2 s: textures unused for 5 s */
         tex_evict_old(c, 300);
-    if (c->tex_bytes > (768ull << 20)) {  /* drop the cache once nothing is in flight */
+    if (c->tex_bytes > (768ull << 20) || c->purge_req) {  /* drop the cache once nothing is in flight */
+        c->purge_req = 0;
         vkDeviceWaitIdle(c->dev);
         tex_free_all(c);
     }

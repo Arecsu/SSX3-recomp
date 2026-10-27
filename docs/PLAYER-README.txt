@@ -25,6 +25,10 @@ Controls
   keys.ini to change the keys.
   F11 or Alt+Enter: fullscreen.  F3: FPS counter.
   F12 (or both thumbsticks clicked together): mark a problem, see below.
+  While playing, to try a setting on a problem as it happens (shown on
+  screen and written to the log; the next start uses the launcher's again):
+    F4 HD textures on/off, F5 draw distance Normal / Far / Maximum,
+    F6 rider shadows on/off.
 
 HD textures
   The hd-textures folder holds Bl4ckH4nd's HD texture pack for SSX 3

@@ -113,6 +113,10 @@ static DWORD WINAPI mark_thread(LPVOID unused)
         int k = xbox_FramebufferKeyPresses(VK_F12), held = 0;
         while (k-- > 0)
             mark("F12");
+        {
+            extern void ssx3_LiveKeysPoll(void);    /* live.c: F4 / F5 / F6 */
+            ssx3_LiveKeysPoll();
+        }
         if (!keyboard_seen) {
             int vk;
             for (vk = 8; vk < 256 && !xbox_FramebufferKeyDown(vk); vk++)

@@ -134,9 +134,11 @@ The launcher's choices are these environment variables:
 | 1 3 | Left / right trigger | Arrows | D-pad |
 | Numpad 8/4/2/6 | Left stick | I J K L | Right stick |
 | F11 / Alt+Enter | Fullscreen | F3 | FPS counter |
-| F12 | Mark a problem in the log | | |
+| F12 | Mark a problem in the log | F4 | HD textures on/off |
+| F5 | Draw distance Normal / Far / Maximum | F6 | Rider shadows on/off |
 
-F11 and F3 work on Windows only.
+F3-F6, F11 and F12 work on Windows only. F4-F6 change the setting until the
+game is closed, show it on screen and write it to the log.
 
 **Controller.** An Xbox/XInput controller works without setup, rumble
 included; two controllers enable Multi Play.
