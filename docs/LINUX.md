@@ -13,9 +13,11 @@ fontconfig; skipped by CMake when those are missing) is the Windows launcher's
 counterpart. It has the same settings, the same `launcher.ini` next to it, and
 the same `RECOMP_*` hand-off. "Auto" resolution comes from the desktop the
 launcher is on, "Auto" aspect ratio follows the game window, and
-`RECOMP_USB_PADS` comes from the number of controllers. The launcher has no Fullscreen, FPS counter or 5.1 rows. In game, F11 or
-Alt+Enter toggles borderless fullscreen. The folder picker is zenity
-or kdialog, and you can also type the path. The game starts in the launcher's
+`RECOMP_USB_PADS` comes from the number of controllers.
+
+The launcher has no Fullscreen, FPS counter or 5.1 rows. In game, F11 or Alt+Enter toggles borderless fullscreen. Set `RECOMP_FULLSCREEN=1` to start the game in desktop-sized fullscreen (also when started from the launcher). This gives the SDL presenter a full-resolution drawable instead of downsampling into its default 640x480 window before the compositor scales it up. The `[FBWIN] presentation` log reports the window and drawable dimensions.
+
+The folder picker is zenity or kdialog, and you can also type the path. The game starts in the launcher's
 folder, or its parent when `hd-textures/` is there (`build-linux/` in this
 tree). Without a terminal, its output goes to `logs/` beside the game folder.
 
@@ -23,6 +25,18 @@ Deps: `tools/linux/install_deps.sh` in the toolkit (SDL2, libepoxy, OpenSSL),
 plus the Vulkan headers and glslc for the renderer (Arch: `vulkan-headers`,
 `shaderc`). Tested on aarch64 (Asahi) with GCC 16 and on x86-64 (Arch,
 GCC, NVIDIA RTX 4080 SUPER).
+
+## Streaming with Moonshine
+
+Run the launcher with `RECOMP_FULLSCREEN=1` inside a Gamescope display sized to the client, and leave its resolution and aspect ratio on Auto. Fullscreen must apply to the game window itself: a high internal render resolution alone does not prevent a small SDL window from losing detail before the compositor upscales it.
+
+If SDL selects native PipeWire, it bypasses Moonshine's per-session `PULSE_SERVER`. Set `SDL_AUDIODRIVER=pulseaudio` in the streaming application command so the game uses that socket instead. Keep this setting scoped to streaming rather than changing normal desktop audio globally:
+
+```bash
+SDL_AUDIODRIVER=pulseaudio RECOMP_FULLSCREEN=1 build-linux/launcher
+```
+
+See [Moonshine's client-sized Gamescope recipe](https://github.com/hgaiser/moonshine/blob/main/TIPS.md#use-gamescope-with-the-clients-resolution) for the `MOONSHINE_CLIENT_WIDTH`, `MOONSHINE_CLIENT_HEIGHT` and `MOONSHINE_CLIENT_FRAMERATE` arguments to the Gamescope wrapper.
 
 ## Status x86-64 (2026-10-20)
 

@@ -8796,10 +8796,10 @@ index 08bae4b..b52ae02 100644
  #endif
 diff --git a/src/video/fb_present_sdl.c b/src/video/fb_present_sdl.c
 new file mode 100644
-index 0000000..8871403
+index 0000000..9eb4dae
 --- /dev/null
 +++ b/src/video/fb_present_sdl.c
-@@ -0,0 +1,518 @@
+@@ -0,0 +1,543 @@
 +/**
 + * POSIX counterpart of fb_present.c: show the guest framebuffer in an SDL2
 + * window. Same contract (RECOMP_FB_WINDOW, flip-time copy, BMP dump, snap
@@ -9134,6 +9134,7 @@ index 0000000..8871403
 +    double t0 = 0;
 +    int f0 = 0;
 +    int fullscreen = 0;
++    int output_w = 0, output_h = 0;
 +
 +    (void)unused;
 +    if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
@@ -9144,7 +9145,22 @@ index 0000000..8871403
 +    win = SDL_CreateWindow("Xbox Recomp - Framebuffer",
 +                           SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
 +                           (int)s_fb_width, (int)s_fb_height,
-+                           SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
++                           SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE |
++                           SDL_WINDOW_ALLOW_HIGHDPI);
++    /* Match the Windows presenter: RECOMP_FULLSCREEN requests the actual
++     * desktop-sized drawable, not compositor upscaling of a 640x480 window.
++     * The Vulkan image can be 1600p/4K while the guest framebuffer stays 480p. */
++    if (win) {
++        const char *fs = getenv("RECOMP_FULLSCREEN");
++        if (fs && *fs && *fs != '0') {
++            if (SDL_SetWindowFullscreen(win, SDL_WINDOW_FULLSCREEN_DESKTOP) == 0) {
++                fullscreen = 1;
++                fprintf(stderr, "[FBWIN] fullscreen on\n");
++            } else {
++                fprintf(stderr, "[FBWIN] fullscreen setup failed: %s\n", SDL_GetError());
++            }
++        }
++    }
 +    ren = win ? SDL_CreateRenderer(win, -1, SDL_RENDERER_PRESENTVSYNC) : NULL;
 +    tex = ren ? SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
 +                                  SDL_TEXTUREACCESS_STREAMING,
@@ -9222,6 +9238,15 @@ index 0000000..8871403
 +            SDL_GetWindowSize(win, &cw, &ch);
 +            __atomic_store_n(&s_client_w, cw, __ATOMIC_RELAXED);
 +            __atomic_store_n(&s_client_h, ch, __ATOMIC_RELAXED);
++            {
++                int rw, rh;
++                if (SDL_GetRendererOutputSize(ren, &rw, &rh) == 0 &&
++                    (rw != output_w || rh != output_h)) {
++                    output_w = rw; output_h = rh;
++                    fprintf(stderr, "[FBWIN] presentation: window %dx%d, drawable %dx%d\n",
++                            cw, ch, rw, rh);
++                }
++            }
 +        }
 +        pthread_mutex_lock(&s_hi_lock);
 +        if (s_hi && now_ms() - s_hi_at < 250.0) {

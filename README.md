@@ -128,7 +128,7 @@ The launcher's choices are these environment variables:
 | `RECOMP_SKIP_INTRO` | `1` | `0` plays the EA/THX/intro movies |
 | `RECOMP_GPU` | Vulkan | `sw` = the software rasteriser (reference/fallback) |
 | `RECOMP_PRESENT_FILTER` | linear | `point` for sharp pixels |
-| `RECOMP_FULLSCREEN` | `0` | `1` = start in fullscreen (F11 toggles); Windows |
+| `RECOMP_FULLSCREEN` | `0` | `1` = start in desktop-sized fullscreen (F11 toggles); Windows and Linux |
 | `RECOMP_CRT` | `0` | `1` = CRT TV shader (needs a resolution above 480); tune with `RECOMP_CRT_PARAMS` |
 | `RECOMP_DEBUG_MENU` | `0` | `1` = EA's quick-start menu (Start on the title screen) |
 | `RECOMP_MONEY_CHEAT` | `0` | `1` = for testing: each Home key press gives player 1's rider 200,000 cash (spendable cash only; the career total earned is left alone) |
@@ -163,7 +163,7 @@ The launcher's choices are these environment variables:
 
 F4-F6 change the setting until the game is closed, show it on screen and
 write it to the log. F12 and F4-F6 also work on Linux (without the
-on-screen message); F3 and F11 are Windows only.
+on-screen message); F3 is Windows only. F11 and Alt+Enter toggle fullscreen on both Windows and Linux.
 
 **Controller.** An Xbox/XInput controller works without setup, rumble
 included; two controllers enable Multi Play.
